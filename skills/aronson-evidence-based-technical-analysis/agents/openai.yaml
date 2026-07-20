@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aronson 循证技术分析"
+  short_description: "用科学方法、联合统计推断与样本外证据审计技术规则和回测结论"
+  default_prompt: "使用 $aronson-evidence-based-technical-analysis 审计这项交易策略的研究证据。"

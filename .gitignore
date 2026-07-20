@@ -1,0 +1,27 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Copyrighted source books stay local.
+*.pdf
+*.epub
+*.mobi
+*.azw*
+
+# Market data and generated research artifacts.
+data/
+reports/
+artifacts/
+*.parquet
+*.duckdb
+
+# Python and Node build state.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+node_modules/
+dist/
+coverage/

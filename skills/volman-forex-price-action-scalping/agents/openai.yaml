@@ -1,0 +1,4 @@
+interface:
+  display_name: "Volman 外汇价格行为剥头皮"
+  short_description: "将七类超短线价格行为形态、背景筛选和动态退出转成可审计研究规格"
+  default_prompt: "使用 $volman-forex-price-action-scalping 将这个超短线价格行为想法规格化。"

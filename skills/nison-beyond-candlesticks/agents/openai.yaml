@@ -1,0 +1,4 @@
+interface:
+  display_name: "尼森《日本蜡烛图技术新解》"
+  short_description: "将尼森蜡烛图、新价图与风险收益框架转为可审计交易规则"
+  default_prompt: "使用 $nison-beyond-candlesticks 将尼森框架转成可审计的交易研究假设。"
