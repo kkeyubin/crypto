@@ -27,6 +27,7 @@ PostgreSQL stores small structured state. Partitioned Parquet under `/srv/crypto
 Binance REST/WebSocket
 → raw data + manifest
 → normalization and quality checks
+→ empirical per-symbol profile and eligibility
 → historical or live MarketEvent
 → frozen StrategySpec
 → Signal → RiskEngine → PaperBroker
@@ -35,6 +36,8 @@ Binance REST/WebSocket
 ```
 
 The AI path receives a copy of a frozen market snapshot after deterministic processing. It cannot call broker or risk-control mutations.
+
+Strategy families are reusable, but an executable MVP `StrategySpec` is bound to one venue, market, and contract symbol. Profiles, evidence conclusions, paper accounts, and risk limits are independently keyed; no symbol inherits another symbol's approval.
 
 ## Failure Semantics
 

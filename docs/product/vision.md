@@ -18,11 +18,13 @@ The owner can add a Binance USDⓈ-M symbol, acquire verified historical and liv
 6. AI is an auditable analyst, not an invisible order authority.
 7. Missing or stale data fails closed for new positions.
 8. Deferred ideas remain in the roadmap with prerequisites.
+9. Strategy semantics may be shared, but every symbol earns its own evidence and paper-trading approval.
 
 ## MVP Scope
 
 - Binance USDⓈ-M market data.
 - Dynamic symbol watchlist.
+- Empirical per-symbol profiles, eligibility, costs, evidence conclusions, and risk limits.
 - Historical backtest and replay.
 - BB/RB deterministic strategy families.
 - Long/short perpetual paper trading, default `1x` leverage.

@@ -4,6 +4,8 @@
 
 **Date:** 2026-07-20
 
+**Last revised:** 2026-07-21
+
 **Audience:** Single owner/operator
 
 **Deployment target:** `keyubin@192.168.1.4`
@@ -80,6 +82,24 @@ Every dataset has a manifest containing source, venue, contract, time range, ret
 
 A WebSocket disconnect triggers reconnection and REST gap repair. Stale or unverified data blocks new paper positions. Time bars and event bars are separate preregistered research families; no crypto bar is called a “70-tick equivalent” without calibration.
 
+### 5.1 Symbol Onboarding and Adaptation
+
+Adding a symbol starts an independent research pipeline; it never inherits another symbol's evidence or paper-trading approval:
+
+```text
+add symbol
+→ verify contract metadata and data availability
+→ backfill and validate history
+→ build empirical symbol profile
+→ run preregistered strategy experiments
+→ candidate | rejected | insufficient evidence
+→ explicit owner approval before paper trading
+```
+
+The profile records realized volatility and jumps, spread, estimated slippage, volume and liquidity by time of day, funding, price/quantity precision, data gaps, and abnormal-market frequency. Classification is based on measured properties rather than a manually assigned label such as “meme coin.”
+
+Strategy-family semantics remain shared across symbols, but bar construction, cost assumptions, normalized thresholds, position risk, leverage ceiling, and circuit breakers may be symbol-specific. Those adaptations must be declared before the final holdout is read. BTC results never qualify PEPE, and a profitable PEPE search never changes the frozen BTC version.
+
 ## 6. Strategy Contract
 
 The unified trading-research Skill produces or reviews a machine-validated `StrategySpec`. It does not place orders or mutate runtime state.
@@ -88,7 +108,7 @@ Each specification includes:
 
 - identity, semantic version, state, author, and content hash;
 - book/Skill/section provenance;
-- venue, market, symbols, data type, and bar construction;
+- venue, market, symbol, data type, and bar construction; an MVP executable version targets exactly one contract symbol;
 - Nison context variables when used;
 - Volman setup chronology, frozen signal line, trigger, clear-path test, and invalidation;
 - order, fill, fee, spread, slippage, funding, target, and tipping-point rules;
@@ -128,6 +148,8 @@ Operator controls include pause, reduce-only mode, simulated flatten, per-strate
 Every backtest report includes full trades, equity, drawdown, Sharpe/Sortino, turnover, win/loss distribution, cost sensitivity, regime breakdown, all searched configurations, and comparison with simple and randomized benchmarks.
 
 The workflow separates training, validation, and untouched final test data. Searches are replayed as complete procedures during walk-forward testing. Appropriate multiple-testing or maximum-statistic correction is required when selecting among rules. Results end with `candidate`, `rejected`, or `insufficient evidence`; profitable in-sample output alone cannot enable paper trading.
+
+Evidence conclusions are scoped to the complete tuple of venue, market, contract symbol, data version, strategy version, parameter-search family, and cost model. Cross-symbol comparisons may test robustness, but cannot silently pool approvals or transfer a conclusion from one symbol to another.
 
 ## 10. Deterministic Core and AI Shadow
 
@@ -175,6 +197,8 @@ The React console contains:
 
 Destructive controls require explicit confirmation and create audit events.
 
+The detailed visual, information-architecture, i18n, and motion contract is defined in [Personal Console UX Design](./2026-07-21-personal-console-ux-design.md).
+
 ## 13. Security and Operations
 
 - No exchange-account secrets or wallet material are needed.
@@ -200,6 +224,8 @@ add BTCUSDT
 → record AI shadow opinion without changing the order
 → restart services and recover paper/data/notification state
 ```
+
+The acceptance suite also adds a second, materially different contract such as `PEPEUSDT` and proves that it receives an independent profile, cost/risk configuration, experiment ledger, evidence conclusion, and paper-enable decision. The two symbols are allowed—and expected—to produce different outcomes.
 
 Automated tests cover bar construction, no-lookahead timing, deterministic replay, fee/funding accounting, risk rejection, restart recovery, data-gap blocking, outbox idempotency, and schema/version validation.
 

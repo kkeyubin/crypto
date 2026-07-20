@@ -16,6 +16,7 @@ This file preserves both committed and deferred work. A deferred item is not per
 **Status:** planned
 
 - Dynamic USDⓈ-M symbol watchlist.
+- Independent symbol onboarding, empirical volatility/liquidity/cost profile, and eligibility state.
 - Historical 1m klines, mark price, funding, and selected aggTrades.
 - Live WebSocket klines, aggTrades, and best bid/ask.
 - Parquet partitioning, checksums, data catalog, gap detection, and REST repair.
@@ -29,6 +30,7 @@ This file preserves both committed and deferred work. A deferred item is not per
 - BB and RB time-bar/event-bar strategy families.
 - Conservative fill, fee, funding, spread, and slippage models.
 - Parameter ledger, benchmarks, walk-forward testing, and Aronson evidence report.
+- Per-symbol frozen strategy versions, evidence conclusions, and cost/risk calibration.
 - Web experiment comparison.
 
 ## Phase 3 — Live Paper Trading and Feishu
