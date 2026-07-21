@@ -1336,10 +1336,12 @@ if __name__ == "__main__":
   "private": true,
   "engines": { "node": ">=24 <25" },
   "scripts": {
-    "contracts:types": "node contracts/generate-types.mjs"
+    "contracts:types": "node contracts/generate-types.mjs",
+    "contracts:check-types": "tsc --noEmit --strict --lib es2015 contracts/types/*.ts"
   },
   "devDependencies": {
-    "json-schema-to-typescript": "^15.0.4"
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.9.3"
   }
 }
 ```
@@ -1381,9 +1383,10 @@ source /Users/kyle/.nvm/nvm.sh
 nvm use
 npm install
 npm run contracts:types
+npm run contracts:check-types
 ```
 
-Expected: schema check exits 0, npm creates `package-lock.json`, and `contracts/types/index.ts` exports the four root model types from isolated generated modules without duplicate nested declarations.
+Expected: schema check exits 0, npm creates `package-lock.json`, TypeScript type-checking passes with an explicit ES2015 library for transitive declaration compatibility, and `contracts/types/index.ts` exports the four root model types from isolated generated modules without duplicate nested declarations.
 
 - [ ] **Step 6: Run all backend checks**
 

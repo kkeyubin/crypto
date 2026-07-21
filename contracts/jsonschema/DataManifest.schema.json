@@ -1,0 +1,165 @@
+{
+  "$defs": {
+    "DataType": {
+      "enum": [
+        "kline_1m",
+        "mark_price",
+        "funding",
+        "agg_trade",
+        "best_bid_ask"
+      ],
+      "title": "DataType",
+      "type": "string"
+    },
+    "InstrumentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "market": {
+          "const": "USD_M_PERPETUAL",
+          "title": "Market",
+          "type": "string"
+        },
+        "symbol": {
+          "pattern": "^[A-Z0-9]+$",
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "const": "BINANCE",
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue",
+        "market",
+        "symbol"
+      ],
+      "title": "InstrumentRef",
+      "type": "object"
+    },
+    "MissingInterval": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "format": "date-time",
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "MissingInterval",
+      "type": "object"
+    },
+    "RepairRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "result": {
+          "title": "Result",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "started_at",
+        "completed_at",
+        "source",
+        "result"
+      ],
+      "title": "RepairRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "checksum": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Checksum",
+      "type": "string"
+    },
+    "data_type": {
+      "$ref": "#/$defs/DataType"
+    },
+    "end": {
+      "format": "date-time",
+      "title": "End",
+      "type": "string"
+    },
+    "instrument": {
+      "$ref": "#/$defs/InstrumentRef"
+    },
+    "manifest_id": {
+      "format": "uuid",
+      "title": "Manifest Id",
+      "type": "string"
+    },
+    "missing_intervals": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MissingInterval"
+      },
+      "title": "Missing Intervals",
+      "type": "array"
+    },
+    "normalization_version": {
+      "title": "Normalization Version",
+      "type": "string"
+    },
+    "repair_history": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RepairRecord"
+      },
+      "title": "Repair History",
+      "type": "array"
+    },
+    "retrieved_at": {
+      "format": "date-time",
+      "title": "Retrieved At",
+      "type": "string"
+    },
+    "schema_version": {
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "start": {
+      "format": "date-time",
+      "title": "Start",
+      "type": "string"
+    }
+  },
+  "required": [
+    "manifest_id",
+    "instrument",
+    "data_type",
+    "start",
+    "end",
+    "retrieved_at",
+    "checksum",
+    "schema_version",
+    "normalization_version"
+  ],
+  "title": "DataManifest",
+  "type": "object"
+}

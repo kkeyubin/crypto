@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "AIOpinion": {
+      "enum": [
+        "SUPPORT",
+        "OPPOSE",
+        "UNCERTAIN"
+      ],
+      "title": "AIOpinion",
+      "type": "string"
+    },
+    "PrincipleCitation": {
+      "additionalProperties": false,
+      "properties": {
+        "section": {
+          "title": "Section",
+          "type": "string"
+        },
+        "skill": {
+          "title": "Skill",
+          "type": "string"
+        }
+      },
+      "required": [
+        "skill",
+        "section"
+      ],
+      "title": "PrincipleCitation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "assessment_id": {
+      "format": "uuid",
+      "title": "Assessment Id",
+      "type": "string"
+    },
+    "citations": {
+      "items": {
+        "$ref": "#/$defs/PrincipleCitation"
+      },
+      "minItems": 1,
+      "title": "Citations",
+      "type": "array"
+    },
+    "market_data_cutoff": {
+      "format": "date-time",
+      "title": "Market Data Cutoff",
+      "type": "string"
+    },
+    "model_id": {
+      "title": "Model Id",
+      "type": "string"
+    },
+    "opinion": {
+      "$ref": "#/$defs/AIOpinion"
+    },
+    "prompt_version": {
+      "title": "Prompt Version",
+      "type": "string"
+    },
+    "reasons": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Reasons",
+      "type": "array"
+    },
+    "risk_notes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Risk Notes",
+      "type": "array"
+    },
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "skill_version": {
+      "title": "Skill Version",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "format": "uuid",
+      "title": "Snapshot Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "assessment_id",
+    "snapshot_id",
+    "opinion",
+    "reasons",
+    "citations",
+    "risk_notes",
+    "market_data_cutoff",
+    "model_id",
+    "prompt_version",
+    "skill_version"
+  ],
+  "title": "AIAssessment",
+  "type": "object"
+}

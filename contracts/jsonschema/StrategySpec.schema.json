@@ -1,0 +1,529 @@
+{
+  "$defs": {
+    "BarKind": {
+      "enum": [
+        "time",
+        "event"
+      ],
+      "title": "BarKind",
+      "type": "string"
+    },
+    "BarSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "dollar_value": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dollar Value"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval"
+        },
+        "kind": {
+          "$ref": "#/$defs/BarKind"
+        },
+        "trade_count": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trade Count"
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Volume"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "BarSpec",
+      "type": "object"
+    },
+    "EvidencePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "benchmark": {
+          "title": "Benchmark",
+          "type": "string"
+        },
+        "multiple_testing": {
+          "title": "Multiple Testing",
+          "type": "string"
+        },
+        "test_end": {
+          "format": "date-time",
+          "title": "Test End",
+          "type": "string"
+        },
+        "train_end": {
+          "format": "date-time",
+          "title": "Train End",
+          "type": "string"
+        },
+        "validation_end": {
+          "format": "date-time",
+          "title": "Validation End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "train_end",
+        "validation_end",
+        "test_end",
+        "benchmark",
+        "multiple_testing"
+      ],
+      "title": "EvidencePlan",
+      "type": "object"
+    },
+    "ExecutionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "collision_policy": {
+          "default": "event_order_or_conservative_stop_first",
+          "title": "Collision Policy",
+          "type": "string"
+        },
+        "fill_timing": {
+          "default": "next_executable_event",
+          "title": "Fill Timing",
+          "type": "string"
+        },
+        "funding_included": {
+          "default": true,
+          "title": "Funding Included",
+          "type": "boolean"
+        },
+        "latency_ms": {
+          "default": 250,
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "maker_fee_bps": {
+          "default": 2.0,
+          "minimum": 0,
+          "title": "Maker Fee Bps",
+          "type": "number"
+        },
+        "order_type": {
+          "default": "stop_market",
+          "title": "Order Type",
+          "type": "string"
+        },
+        "signal_source": {
+          "default": "completed_bar",
+          "title": "Signal Source",
+          "type": "string"
+        },
+        "slippage_bps": {
+          "default": 2.0,
+          "minimum": 0,
+          "title": "Slippage Bps",
+          "type": "number"
+        },
+        "spread_bps": {
+          "default": 1.0,
+          "minimum": 0,
+          "title": "Spread Bps",
+          "type": "number"
+        },
+        "taker_fee_bps": {
+          "default": 5.0,
+          "minimum": 0,
+          "title": "Taker Fee Bps",
+          "type": "number"
+        }
+      },
+      "title": "ExecutionSpec",
+      "type": "object"
+    },
+    "InstrumentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "market": {
+          "const": "USD_M_PERPETUAL",
+          "title": "Market",
+          "type": "string"
+        },
+        "symbol": {
+          "pattern": "^[A-Z0-9]+$",
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "const": "BINANCE",
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue",
+        "market",
+        "symbol"
+      ],
+      "title": "InstrumentRef",
+      "type": "object"
+    },
+    "NisonCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "title": "Expression",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "source_section": {
+          "title": "Source Section",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "expression",
+        "source_section"
+      ],
+      "title": "NisonCondition",
+      "type": "object"
+    },
+    "ParameterFamily": {
+      "additionalProperties": false,
+      "properties": {
+        "fixed": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "title": "Fixed",
+          "type": "object"
+        },
+        "search_space": {
+          "additionalProperties": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "title": "Search Space",
+          "type": "object"
+        }
+      },
+      "required": [
+        "fixed",
+        "search_space"
+      ],
+      "title": "ParameterFamily",
+      "type": "object"
+    },
+    "ProvenanceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "section": {
+          "title": "Section",
+          "type": "string"
+        },
+        "skill": {
+          "title": "Skill",
+          "type": "string"
+        }
+      },
+      "required": [
+        "skill",
+        "section"
+      ],
+      "title": "ProvenanceRef",
+      "type": "object"
+    },
+    "RiskSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "max_daily_loss_fraction": {
+          "default": 0.02,
+          "exclusiveMinimum": 0,
+          "maximum": 0.25,
+          "title": "Max Daily Loss Fraction",
+          "type": "number"
+        },
+        "max_drawdown_fraction": {
+          "default": 0.1,
+          "exclusiveMinimum": 0,
+          "maximum": 0.5,
+          "title": "Max Drawdown Fraction",
+          "type": "number"
+        },
+        "max_leverage": {
+          "default": 1.0,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Leverage",
+          "type": "number"
+        },
+        "risk_fraction": {
+          "default": 0.005,
+          "exclusiveMinimum": 0,
+          "maximum": 0.05,
+          "title": "Risk Fraction",
+          "type": "number"
+        },
+        "stale_data_blocks_entries": {
+          "default": true,
+          "title": "Stale Data Blocks Entries",
+          "type": "boolean"
+        }
+      },
+      "title": "RiskSpec",
+      "type": "object"
+    },
+    "StrategyFamily": {
+      "enum": [
+        "BB",
+        "RB",
+        "DD",
+        "FB",
+        "SB",
+        "IRB",
+        "ARB"
+      ],
+      "title": "StrategyFamily",
+      "type": "string"
+    },
+    "StrategyIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "author": {
+          "default": "owner",
+          "title": "Author",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z0-9-]+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/StrategyState",
+          "default": "draft"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "StrategyIdentity",
+      "type": "object"
+    },
+    "StrategyMode": {
+      "enum": [
+        "executable",
+        "observation"
+      ],
+      "title": "StrategyMode",
+      "type": "string"
+    },
+    "StrategyState": {
+      "enum": [
+        "draft",
+        "reviewed",
+        "frozen",
+        "backtested",
+        "paper_enabled",
+        "retired"
+      ],
+      "title": "StrategyState",
+      "type": "string"
+    },
+    "VolmanRules": {
+      "additionalProperties": false,
+      "properties": {
+        "chronology": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 3,
+          "title": "Chronology",
+          "type": "array"
+        },
+        "clear_path": {
+          "title": "Clear Path",
+          "type": "string"
+        },
+        "family": {
+          "$ref": "#/$defs/StrategyFamily"
+        },
+        "frozen_signal_line": {
+          "title": "Frozen Signal Line",
+          "type": "string"
+        },
+        "invalidation": {
+          "title": "Invalidation",
+          "type": "string"
+        },
+        "trigger": {
+          "title": "Trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "family",
+        "chronology",
+        "frozen_signal_line",
+        "trigger",
+        "clear_path",
+        "invalidation"
+      ],
+      "title": "VolmanRules",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bar": {
+      "$ref": "#/$defs/BarSpec"
+    },
+    "content_hash": {
+      "readOnly": true,
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "evidence": {
+      "$ref": "#/$defs/EvidencePlan"
+    },
+    "execution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExecutionSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "identity": {
+      "$ref": "#/$defs/StrategyIdentity"
+    },
+    "instrument": {
+      "$ref": "#/$defs/InstrumentRef"
+    },
+    "mode": {
+      "$ref": "#/$defs/StrategyMode"
+    },
+    "nison_context": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/NisonCondition"
+      },
+      "title": "Nison Context",
+      "type": "array"
+    },
+    "parameters": {
+      "$ref": "#/$defs/ParameterFamily"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/ProvenanceRef"
+      },
+      "minItems": 2,
+      "title": "Provenance",
+      "type": "array"
+    },
+    "risk": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RiskSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "volman": {
+      "$ref": "#/$defs/VolmanRules"
+    }
+  },
+  "required": [
+    "mode",
+    "identity",
+    "provenance",
+    "instrument",
+    "bar",
+    "volman",
+    "parameters",
+    "evidence",
+    "content_hash"
+  ],
+  "title": "StrategySpec",
+  "type": "object"
+}

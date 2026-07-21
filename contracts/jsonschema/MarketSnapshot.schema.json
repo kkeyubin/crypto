@@ -1,0 +1,206 @@
+{
+  "$defs": {
+    "BestBidAsk": {
+      "additionalProperties": false,
+      "properties": {
+        "ask": {
+          "exclusiveMinimum": 0,
+          "title": "Ask",
+          "type": "number"
+        },
+        "bid": {
+          "exclusiveMinimum": 0,
+          "title": "Bid",
+          "type": "number"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        }
+      },
+      "required": [
+        "timestamp",
+        "bid",
+        "ask"
+      ],
+      "title": "BestBidAsk",
+      "type": "object"
+    },
+    "FundingObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "rate": {
+          "title": "Rate",
+          "type": "number"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        }
+      },
+      "required": [
+        "timestamp",
+        "rate"
+      ],
+      "title": "FundingObservation",
+      "type": "object"
+    },
+    "InstrumentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "market": {
+          "const": "USD_M_PERPETUAL",
+          "title": "Market",
+          "type": "string"
+        },
+        "symbol": {
+          "pattern": "^[A-Z0-9]+$",
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "const": "BINANCE",
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue",
+        "market",
+        "symbol"
+      ],
+      "title": "InstrumentRef",
+      "type": "object"
+    },
+    "OHLCVBar": {
+      "additionalProperties": false,
+      "properties": {
+        "close": {
+          "exclusiveMinimum": 0,
+          "title": "Close",
+          "type": "number"
+        },
+        "high": {
+          "exclusiveMinimum": 0,
+          "title": "High",
+          "type": "number"
+        },
+        "low": {
+          "exclusiveMinimum": 0,
+          "title": "Low",
+          "type": "number"
+        },
+        "open": {
+          "exclusiveMinimum": 0,
+          "title": "Open",
+          "type": "number"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "volume": {
+          "minimum": 0,
+          "title": "Volume",
+          "type": "number"
+        }
+      },
+      "required": [
+        "timestamp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "title": "OHLCVBar",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bars": {
+      "items": {
+        "$ref": "#/$defs/OHLCVBar"
+      },
+      "title": "Bars",
+      "type": "array"
+    },
+    "best_bid_ask": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BestBidAsk"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cutoff": {
+      "format": "date-time",
+      "title": "Cutoff",
+      "type": "string"
+    },
+    "data_manifest_id": {
+      "format": "uuid",
+      "title": "Data Manifest Id",
+      "type": "string"
+    },
+    "deterministic_signal_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Deterministic Signal Id"
+    },
+    "funding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FundingObservation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "instrument": {
+      "$ref": "#/$defs/InstrumentRef"
+    },
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "format": "uuid",
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "strategy_spec_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Strategy Spec Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "instrument",
+    "cutoff",
+    "data_manifest_id",
+    "strategy_spec_hash",
+    "bars"
+  ],
+  "title": "MarketSnapshot",
+  "type": "object"
+}
