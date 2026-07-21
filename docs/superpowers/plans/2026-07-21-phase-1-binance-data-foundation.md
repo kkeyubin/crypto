@@ -414,11 +414,13 @@ Record sanitized commands, timestamps, row counts, manifest IDs, checksums, sour
 
 **Acceptance result (2026-07-22): complete.** A `VERIFIED` Phase 0 backup preceded deployment. Seven bounded jobs produced seven approved source objects, manifests, and archive partitions; all seven official ZIP hashes and all seven normalized Parquet hashes matched. Both symbols delivered canonical `aggTrade`, `bookTicker`, `kline_1m`, and `markPrice@1s` events through the scoped proxy after recorded direct failures. Restart identities remained 7/7/7 with no duplicate live IDs, browser acceptance showed independent Chinese BTC/1000PEPE evidence and 4/4 streams, and only `127.0.0.1:55432` plus `127.0.0.1:8088` listened. Exact job IDs, hashes, rows, profiles, gaps, and limitations are retained in `.superpowers/sdd/task-8-report.md`.
 
+**Final review re-acceptance (2026-07-22): complete.** Candidate `f9b888a` passed 659 local API tests plus 5 real PostgreSQL integration tests, 62 Web tests, lint, schema/type drift, production builds, Compose validation, and server image builds. A new `VERIFIED` backup preceded migration to Alembic `20260722_0005`. Runtime acceptance proved immutable manifest-hole evidence and safe partial reconciliation, 404/409 evidence boundaries, blocked approved-job retry, unchanged-source recheck, fail-closed `profile_incomplete`, independent BTC/1000PEPE metrics, eight connected streams at the final snapshot, stable core catalog counts across restart, non-root API/worker execution, and loopback-only exposure. The independent final review returned **Ready to merge: Yes** with no findings.
+
 Acceptance does not mean the data is eligible for Phase 2. The official BTC mark-price archive contains one missing day; test restarts and recurring proxy reconnects are recorded as open gaps; REST instrument metadata remains unverified. Eligibility therefore stays false until those conditions are resolved and a sustained stable observation window passes.
 
 **Step 5: Complete roadmap and commit**
 
-Phase 1 was changed to `complete` after the acceptance items passed with all upstream and reconnect limitations explicit and fail-closed.
+Phase 1 was changed to `complete` after the original acceptance and final review re-acceptance passed with all upstream and reconnect limitations explicit and fail-closed.
 
 Commit: `docs: complete Phase 1 data foundation`
 

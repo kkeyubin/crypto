@@ -13,7 +13,7 @@ This file preserves both committed and deferred work. A deferred item is not per
 
 ## Phase 1 — Binance Data Foundation
 
-**Status:** in progress (prior bounded server acceptance passed; review remediation and re-acceptance required)
+**Status:** complete (2026-07-22; operational gate remains before Phase 2)
 
 - Dynamic USDⓈ-M symbol watchlist.
 - Independent symbol onboarding, empirical volatility/liquidity/cost profile, and eligibility state.
@@ -22,7 +22,7 @@ This file preserves both committed and deferred work. A deferred item is not per
 - Parquet partitioning, checksums, data catalog, gap detection, and catalog-approved gap reconciliation. The validated REST adapter remains inactive while both measured USDⓈ-M REST paths are unreachable; `rest_healthy=false` is intentional.
 - Liquidity eligibility and stale-data gate.
 
-Accepted evidence is retained in `.superpowers/sdd/task-8-report.md`: seven official archive objects and seven normalized Parquet objects matched their hashes; both symbols produced all four canonical live streams; restart identity and loopback-only exposure passed; and `PEPE`/`PEPEUSDT` resolved to `1000PEPEUSDT`.
+Accepted server acceptance evidence is retained in `.superpowers/sdd/task-8-report.md`: seven official archive objects and seven normalized Parquet objects matched their hashes; both symbols produced all four canonical live streams; restart identity and loopback-only exposure passed; and `PEPE`/`PEPEUSDT` resolved to `1000PEPEUSDT`. Final remediation also proved immutable manifest-hole evidence, fail-closed partial reconciliation, safe retry/recheck/version behavior, a mandatory PostgreSQL CI gate, and `profile_incomplete` eligibility blocking. The independent final review reported no findings.
 
 **Operational gate before Phase 2:** the accepted dataset remains ineligible. Resolve the upstream BTC mark-price gap, restart/disconnect gaps, recurring proxy reconnect churn, and `metadata_unverified`; then demonstrate a sustained stable observation window. Phase 2 must consume only approved, gap-free eligible partitions and must not bypass this gate.
 

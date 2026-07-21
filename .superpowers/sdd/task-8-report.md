@@ -62,6 +62,16 @@ Live acceptance observed canonical `aggTrade`, `bookTicker`, `kline_1m`, and `ma
 
 Restart checks preserved 7 jobs, 7 approved source objects, 7 manifests, and 7 archive partitions. Live shards continued increasing, while duplicate live IDs remained zero. The 2026-07-21T20:36Z snapshot contained 10,636 live partitions and explicit open gaps: each symbol had 26 `source_unknown_disconnect` and 13 `worker_restart` gaps; BTC also had the one upstream missing-minute gap. Proxy reconnects can transiently mark `bookTicker` disconnected, so eligibility correctly remains false with `unrepaired_gap`, `metadata_unverified`, and `data_not_ready`. These limitations are visible and are a hard gate before Phase 2, not an acceptance failure hidden by the UI.
 
+## Final review remediation and re-acceptance
+
+The final candidate `f9b888a` closed the remaining provenance and eligibility review findings. An independent re-review returned **Ready to merge: Yes** with no Critical, Important, or Minor findings. The final deployment used a newly verified backup at `/home/keyubin/crypto-research-backups/phase1-pre-f9b888a-20260721T224434Z`, migrated PostgreSQL to Alembic `20260722_0005`, and ran API/worker image `sha256:126062cded6a790478e5a1d260ed5e16227a8c5dacf15f622322f4584f291b1e` plus Web image `sha256:bfc8e4ba1a63fc38f0341475e29183682ca7c5da2441a5d6c2c43580630b852f`.
+
+The BTC mark-price v1 manifest now declares `[2026-06-29, 2026-06-30)` as an immutable missing interval. Reconciling the linked gap with that current approved partition returned `partial`, retained the partition ID in repair history/audit evidence, and left the gap open. Unknown evidence returned 404 without adding history; superseded evidence returns 409 in PostgreSQL integration coverage. An approved backfill retry returned 409, while rechecking an unchanged official archive returned `unchanged` with the prior checksum and no replacement IDs. The OpenAPI job enum includes `source_pending`.
+
+Both symbol cards retained independent five-metric profiles. BTC realized volatility was about `0.15369` from 43,199 samples; 1000PEPE was about `0.19383` from 44,639 samples. Missing spread evidence produced `profile_incomplete`, so neither symbol could become eligible. Archive health remained true, REST remained intentionally inactive/unhealthy, and a final snapshot showed all eight required symbol streams connected through the scoped proxy.
+
+A controlled API/worker/Web restart preserved the same container IDs and the core 7 jobs, 7 backfill objects, 7 source objects, 7 manifests, and 7 archive partitions. Live partitions continued to grow, while restart/reconnect gaps also increased and remain visible. API/worker ran as `1000:1000`; only one worker was active; and application/database listeners remained limited to `127.0.0.1:8088` and `127.0.0.1:55432`. This accepts Phase 1's data foundation while preserving the operational gate before Phase 2.
+
 ## Local verification
 
 Executed on 2026-07-22 in `/Users/kyle/Documents/crypto/.worktrees/phase-1-binance-data`:
@@ -84,6 +94,8 @@ Re-review focused verification:
 - runtime-user/deployment documentation policy — 14 tests passed.
 
 Docker Compose validation and API/Web builds passed on the Docker-capable server. A direct npm image rebuild later stalled at registry access; the one retry used the documented loopback proxy only for the build and did not add runtime proxy variables.
+
+Final remediation verification superseded the earlier counts: the local API suite reported `659 passed, 1 skipped`; a fresh isolated PostgreSQL 17 database ran all 5 integration tests; Ruff and schema freshness passed; generated contract/type gates passed; Web reported 62 tests passed and completed its production build; and `git diff --check` passed. The PostgreSQL-only local skip is therefore covered by the separate real-database run and by the mandatory PostgreSQL service in GitHub backend CI.
 
 ## Read-only server baseline
 

@@ -205,22 +205,24 @@ Before Task 5, the independent final review added four merge-blocking regression
 - Consumes: Tasks 1–4 and the existing verified backup/runtime installation.
 - Produces: reviewed merge decision and sanitized acceptance evidence.
 
-- [ ] **Step 1: Run the full clean matrix**
+- [x] **Step 1: Run the full clean matrix**
 
 Run the API, Ruff, schema, generated contracts, Web tests/build, Compose config, and both image builds recorded in the parent Phase 1 plan.
 
-- [ ] **Step 2: Request independent review**
+- [x] **Step 2: Request independent review**
 
 Review `eeda0400..HEAD` plus the four Important findings. Fix every Critical/Important finding before proceeding.
 
-- [ ] **Step 3: Deploy with a new verified backup**
+- [x] **Step 3: Deploy with a new verified backup**
 
 Preserve runtime secrets/data, migrate with API ownership, start all services as the validated non-root UID/GID, and verify loopback listeners.
 
-- [ ] **Step 4: Re-run bounded acceptance**
+- [x] **Step 4: Re-run bounded acceptance**
 
 Prove an incomplete manifest declares its hole and cannot self-repair it; pending/retry/recheck/replacement behavior is visible and immutable; REST failure is capability-scoped; both symbols show independent metric evidence and canonical 4/4 live streams; restart IDs remain unique.
 
-- [ ] **Step 5: Update completion state and merge only on evidence**
+- [x] **Step 5: Update completion state and merge only on evidence**
 
 If any Important gate fails, keep Phase 1 `in progress` and record the exact blocker. Otherwise commit the sanitized evidence, rerun `git diff --check`, merge to `main`, and push both branches.
+
+**Result (2026-07-22):** The clean matrix, real PostgreSQL integration run, independent review, verified-backup deployment, bounded re-acceptance, and restart checks passed. The final review reported no findings. Sanitized evidence is recorded in `.superpowers/sdd/task-8-report.md`; Phase 1 is merge-approved while the explicit operational gate still blocks Phase 2 consumption.
