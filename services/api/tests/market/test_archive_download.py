@@ -59,6 +59,13 @@ def patch_eocd(
     return bytes(patched)
 
 
+def append_zip64_locator(body: bytes) -> bytes:
+    position = body.rfind(b"PK\x05\x06")
+    assert position >= 0
+    locator = b"PK\x06\x07" + struct.pack("<LQL", 0, 1, 1)
+    return body[:position] + locator + body[position:]
+
+
 def object_for_test():
     return plan_archives(
         DatasetKind.KLINES,
@@ -201,6 +208,26 @@ def test_rejects_invalid_or_unbounded_central_directory_before_zip_parsing(
     async def scenario() -> None:
         async with client_for(body) as client:
             with pytest.raises(ArchiveSafetyError, match="central directory|exactly one"):
+                await fetch_archive(object_for_test(), tmp_path / "download.zip", client)
+
+    asyncio.run(scenario())
+
+
+def test_rejects_zip64_locator_with_unsaturated_classic_eocd_before_zipfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = append_zip64_locator(zip_bytes({"data.csv": b"x"}))
+
+    def zipfile_must_not_run(*args, **kwargs):
+        raise AssertionError("ZipFile construction must not run after ZIP64 locator detection")
+
+    monkeypatch.setattr(
+        "crypto_research.market.binance.archive.zipfile.ZipFile", zipfile_must_not_run
+    )
+
+    async def scenario() -> None:
+        async with client_for(body) as client:
+            with pytest.raises(ArchiveSafetyError, match="ZIP64"):
                 await fetch_archive(object_for_test(), tmp_path / "download.zip", client)
 
     asyncio.run(scenario())

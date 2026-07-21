@@ -145,3 +145,45 @@ services/api/.venv/bin/pytest -q services/api/tests/market
 ```
 
 Result: `52 passed`.
+
+## Descriptor-anchored storage hardening
+
+### RED
+
+Added regressions for a canonical ZIP64 locator beside an otherwise safe classic
+EOCD, immutable staging-descriptor handling, insecure/symlinked roots, ancestor
+and final-entry symlinks, unpredictable temporary files, path swap during
+publication, validation failure preservation, and raw destination symlinks.
+
+```text
+services/api/.venv/bin/pytest -q services/api/tests/market/test_storage.py services/api/tests/market/test_archive_download.py
+```
+
+Result before implementation: `10 failed, 24 passed`. The failures demonstrated
+the former pathname `replace`/unlink behavior, unavailable derived-path API,
+and ZIP64 locator reaching `ZipFile` construction.
+
+### GREEN
+
+Storage now derives output paths internally and performs all security-sensitive
+operations through a 0700, non-symlink, non-group/world-writable root directory
+descriptor. It creates each partition component relative to an opened parent
+descriptor with `O_NOFOLLOW`; creates unpredictable 0600 temporary names;
+validates Parquet through the temporary descriptor; hashes it through that same
+descriptor; and renames only by `src_dir_fd`/`dst_dir_fd` before fsyncing the
+opened directory. A simulated ancestor path replacement therefore publishes to
+the originally opened directory, never to the replacement path.
+
+Raw retention opens staging once with `O_NOFOLLOW`, requires a regular file,
+copies rather than moves it into a descriptor-anchored temporary file, verifies
+the hash, and leaves staging cleanup to its caller. Existing raw files are
+opened and verified through `dir_fd` with `O_NOFOLLOW`.
+
+The ZIP preflight now rejects a ZIP64 locator immediately preceding classic
+EOCD (and adjacent ZIP64 EOCD signatures) before `ZipFile` is constructed.
+
+```text
+services/api/.venv/bin/pytest -q services/api/tests/market
+```
+
+Result: `55 passed`.
