@@ -1699,7 +1699,7 @@ Replace root `package.json` with:
   "scripts": {
     "contracts:types": "node contracts/generate-types.mjs",
     "web:dev": "npm --workspace apps/web run dev",
-    "web:test": "npm --workspace apps/web run test",
+    "web:test": "npm --workspace apps/web run test --",
     "web:build": "npm --workspace apps/web run build"
   },
   "devDependencies": {
