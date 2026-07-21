@@ -22,6 +22,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+*.egg-info/
+**/*.egg-info/
 node_modules/
 dist/
 coverage/

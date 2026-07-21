@@ -36,3 +36,14 @@ jobs:
       - run: git diff --exit-code contracts
       - run: npm run web:test -- --run
       - run: npm run web:build
+
+  containers:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: ci-postgres-password
+      CRYPTO_SESSION_SECRET: ci-session-secret-that-is-at-least-32-characters
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f deploy/compose.yaml config --quiet
+      - run: docker build --no-cache -f deploy/api.Dockerfile .
+      - run: docker build --no-cache -f deploy/web.Dockerfile .

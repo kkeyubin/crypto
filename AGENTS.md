@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-The Phase 0 API is `services/api/src/crypto_research/`, with tests and schema tooling under `services/api/`. The React console is `apps/web/`; committed generated schemas and declarations are `contracts/`. Skills live in `skills/`, documentation in `docs/`, and deployment assets in `deploy/`. Do not commit source books, data, reports, artifacts, dependencies, secrets, or `.superpowers/` sessions.
+The Phase 0 API is `services/api/src/crypto_research/`, with tests and schema tooling under `services/api/`. The React console is `apps/web/`; committed generated schemas and declarations are `contracts/`. Skills live in `skills/`, documentation in `docs/`, and deployment assets in `deploy/`. Do not commit source books, runtime data, reports, and artifacts; also exclude dependencies, secrets, and temporary `.superpowers/` sessions. Reviewed `.superpowers/sdd/*-report.md` files may be committed.
 
 ## Build, Test, and Development Commands
 
@@ -23,7 +23,7 @@ Use concise imperative Conventional Commits, for example `feat: add price feed a
 
 ## Coding, Testing, and Security
 
-Follow committed formatters and two-space indentation for JSON, YAML, JavaScript, and TypeScript. Use `camelCase`, `PascalCase`, and `kebab-case` appropriately. Every behavior change needs focused tests plus the relevant full suite. Network, exchange, wallet, and market-data tests use mocks or sandbox endpoints, never live funds or mutable production data.
+Follow committed formatters and two-space indentation for JSON, YAML, JavaScript, and TypeScript. Use `camelCase`, `PascalCase`, and `kebab-case` appropriately. Every behavior change needs focused tests plus the relevant full suite. Pytest and Vitest have no numeric coverage threshold. Network, exchange, wallet, and market-data tests use mocks or sandbox endpoints, never live funds or mutable production data.
 
 Never commit seed phrases, private keys, wallet files, exchange/API secrets, or populated `.env` files. Keep runtime secrets in `/srv/crypto-research/config/runtime.env`, validate at startup, and redact logs and fixtures. Phase 0 authorizes no trading, simulated order service, exchange credential, or public port exposure.
 

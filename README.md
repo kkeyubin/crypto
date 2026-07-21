@@ -29,18 +29,32 @@ npm run web:build
 git diff --check
 ```
 
-## Server smoke run
+## Server deployment prerequisites
 
-The commands below are the reproducible server procedure; the remote smoke result is not asserted here. On `keyubin@192.168.1.4`, keep runtime secrets outside the repository and create the required directories:
+The commands below are a reproducible procedure, not a claim that the remote smoke run has happened. A server administrator needs Docker Engine with the Compose plugin, `sudo`, a reviewed repository checkout, and two new random secrets. First clone or copy the reviewed repository to `/srv/crypto-research/repo`; do this before creating the runtime env file:
 
 ```bash
+sudo install -d -m 0755 /srv/crypto-research
+sudo git clone <REPOSITORY_URL> /srv/crypto-research/repo
+# Alternatively, copy an already-reviewed checkout to /srv/crypto-research/repo.
 sudo install -d -m 0750 /srv/crypto-research/config /srv/crypto-research/data
 sudo cp /srv/crypto-research/repo/.env.example /srv/crypto-research/config/runtime.env
 sudo chmod 0600 /srv/crypto-research/config/runtime.env
 sudoedit /srv/crypto-research/config/runtime.env
 ```
 
-Replace `POSTGRES_PASSWORD` and `CRYPTO_SESSION_SECRET` with distinct, non-example values; the session secret must contain at least 32 characters. Then run:
+Generate distinct values before editing `runtime.env`:
+
+```bash
+openssl rand -hex 32  # POSTGRES_PASSWORD
+openssl rand -hex 32  # CRYPTO_SESSION_SECRET
+```
+
+Use each output once. Hex is recommended for easy operator handling; the API entrypoint safely percent-encodes any PostgreSQL password before constructing its DSN. Keep both values out of shell history, logs, and the repository.
+
+## Server smoke run
+
+After the prerequisites are complete, an administrator may run:
 
 ```bash
 cd /srv/crypto-research/repo/deploy
@@ -62,4 +76,4 @@ sudo systemctl status crypto-research.service
 
 ## Safety boundaries
 
-Do not commit source books, market data, reports, generated artifacts, wallet files, exchange credentials, populated `.env` files, or other secrets. See [docs/roadmap.md](docs/roadmap.md) for the approved later phases.
+Do not commit source books, runtime data, reports, runtime outputs, wallet files, exchange credentials, populated `.env` files, or other secrets. Committed contracts and reviewed SDD reports are exceptions; they are repository records, not runtime outputs. See [docs/roadmap.md](docs/roadmap.md) for the approved later phases.

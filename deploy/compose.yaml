@@ -1,3 +1,5 @@
+name: crypto-research
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -20,7 +22,7 @@ services:
       dockerfile: deploy/api.Dockerfile
     environment:
       CRYPTO_ENVIRONMENT: production
-      CRYPTO_DATABASE_URL: postgresql+asyncpg://crypto:${POSTGRES_PASSWORD}@postgres:5432/crypto_research
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       CRYPTO_DATA_ROOT: /srv/crypto-research/data
       CRYPTO_INTERNAL_TIMEZONE: UTC
       CRYPTO_DEFAULT_LOCALE: zh-CN

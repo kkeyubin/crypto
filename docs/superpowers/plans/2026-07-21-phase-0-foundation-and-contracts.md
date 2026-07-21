@@ -1975,6 +1975,8 @@ git commit -m "feat: add Chinese-first console shell"
 
 ### Task 7: Reproducible Compose, CI, and Operator Commands
 
+**Review hardening amendment:** the API receives raw `POSTGRES_PASSWORD` and constructs its encoded asyncpg URL in `deploy/api-entrypoint.py`; it does not interpolate a password into Compose's `CRYPTO_DATABASE_URL`. The Compose project name is `crypto-research`, CI also validates/builds both images with safe placeholders, `*.egg-info/` metadata is excluded from Git/Docker contexts, and structured repository tests supersede the illustrative token checks below.
+
 **Files:**
 - Create: `deploy/api.Dockerfile`
 - Create: `deploy/web.Dockerfile`
