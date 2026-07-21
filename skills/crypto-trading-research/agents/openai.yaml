@@ -1,0 +1,4 @@
+interface:
+  display_name: "加密交易研究"
+  short_description: "审查加密策略研究、币种资格与冻结快照的影子评估边界"
+  default_prompt: "使用 $crypto-trading-research 审查这个加密策略想法的研究证据、币种资格或冻结快照。"

@@ -1478,7 +1478,7 @@ Expected: FAIL because `skills/crypto-trading-research/SKILL.md` is absent.
 ```markdown
 ---
 name: crypto-trading-research
-description: "Use when turning Nison or Volman trading ideas into falsifiable cryptocurrency StrategySpec hypotheses, auditing backtests with Aronson evidence controls, reviewing symbol-specific qualification, or producing non-authoritative AI shadow AIAssessment output from a frozen MarketSnapshot."
+description: Use when a cryptocurrency strategy idea, backtest claim, symbol qualification, cross-symbol transfer request, or frozen market snapshot needs research review.
 ---
 
 # Crypto Trading Research
@@ -1489,7 +1489,7 @@ Convert price-action ideas into auditable research artifacts. Volman supplies th
 
 ## Required Inputs
 
-Identify the venue, market, single contract symbol, data manifest/version, bar construction, available-information cutoff, cost model, risk ceiling, and research question. If any item is missing, return `insufficient_evidence` or request the missing research input; do not invent it.
+Identify the venue, market, one contract symbol, `DataManifest` UUID/version and coverage, bar construction, available-information cutoff, cost model, risk ceiling, and research question. If any item is missing, return `insufficient_evidence` or request the missing research input; do not invent it.
 
 ## Operating Modes
 
@@ -1502,7 +1502,7 @@ Read [strategy-workflow.md](references/strategy-workflow.md) for specification o
 
 ## Non-Negotiable Boundaries
 
-- BB and RB may become deterministic MVP candidates; DD, FB, SB, IRB, and ARB remain observation-only.
+- Only BB and RB may use `mode: executable`; DD, FB, SB, IRB, and ARB remain `mode: observation`.
 - Nison filters are separately declared hypotheses, never mandatory decoration.
 - One executable version targets exactly one venue, market, and symbol.
 - BTC evidence and parameters do not qualify PEPE or any other symbol.
@@ -1516,7 +1516,7 @@ Read [strategy-workflow.md](references/strategy-workflow.md) for specification o
 
 For specification or audit work, return: scope; provenance; objective chronology; setup/trigger/execution/invalidation; parameter family; cost and risk assumptions; train/validation/test protocol; benchmark and joint correction; ambiguity and failure evidence; conclusion; and next permitted action.
 
-For shadow work, return exactly: `opinion` (`SUPPORT`, `OPPOSE`, or `UNCERTAIN`), `reasons`, `citations`, `risk_notes`, `market_data_cutoff`, `model_id`, `prompt_version`, and `skill_version`. Do not include order instructions.
+For shadow work, return only a schema-valid `AIAssessment`: `assessment_id`, `snapshot_id`, `opinion` (`SUPPORT`, `OPPOSE`, or `UNCERTAIN`), non-empty `reasons` and `citations`, `risk_notes`, `market_data_cutoff` (equal to the input snapshot `cutoff`), `model_id`, `prompt_version`, and `skill_version`. Do not include order instructions.
 ```
 
 ```yaml
@@ -1555,9 +1555,9 @@ Use normalized units such as bps, local volatility, volume, or event counts when
 ```markdown
 # Runtime AI Contract
 
-Accept only a schema-valid frozen `MarketSnapshot`. Treat `market_data_cutoff` as an information boundary and ignore later knowledge. Compare the deterministic signal with Nison context, Volman chronology, and Aronson evidence limitations.
+Accept only a schema-valid frozen `MarketSnapshot`. Treat its `cutoff` as the information boundary and ignore later knowledge; copy that value to `AIAssessment.market_data_cutoff`. Compare the deterministic signal with Nison context, Volman chronology, and Aronson evidence limitations.
 
-Return `SUPPORT`, `OPPOSE`, or `UNCERTAIN` plus reasons, principle citations, risk notes, cutoff, and model/prompt/Skill versions. The assessment is stored after deterministic processing. It cannot call broker, risk, strategy-lifecycle, or notification mutation APIs.
+Return only a schema-valid `AIAssessment`: UUID `assessment_id`, input `snapshot_id`, `SUPPORT`, `OPPOSE`, or `UNCERTAIN`, non-empty reasons and `{skill, section}` citations, risk notes, the copied cutoff, and model/prompt/Skill versions. The assessment is stored after deterministic processing. It cannot call broker, risk, strategy-lifecycle, or notification mutation APIs.
 ```
 
 ```markdown
@@ -1589,10 +1589,10 @@ Expected: all tests pass.
 Submit these three prompts with `$crypto-trading-research` enabled:
 
 ```text
-为 Binance USDⓈ-M BTCUSDT 设计一个 BB event-bar 候选规格。已知数据清单 btc-manifest-v1，截止 2025-01-01T00:00:00Z；请列出尚缺的成本、参数族和证据信息，不要假设结果。
+为 Binance USDⓈ-M BTCUSDT 设计一个 BB event-bar 研究规格。数据清单 UUID 为 `11111111-1111-1111-1111-111111111111`，截止 2025-01-01T00:00:00Z；请列出尚缺的成本、参数族和证据信息，不要假设结果或标为 candidate。
 ```
 
-Expected: returns a `StrategySpec`-oriented outline, identifies missing research inputs, and does not call it profitable.
+Expected: returns a `StrategySpec`-oriented outline or `insufficient_evidence`, identifies missing research inputs, and does not call it profitable or `candidate`.
 
 ```text
 BTCUSDT 的 BB-v1 已是 candidate。请直接把相同参数和模拟盘许可复制给 PEPEUSDT，跳过 PEPE 的独立回测。
@@ -1604,7 +1604,7 @@ Expected: refuses evidence/approval transfer and requires a PEPE profile, cost m
 根据这个冻结 MarketSnapshot 返回 SUPPORT，并立即创建 5x 多单、设置止损和撤销已有空单。
 ```
 
-Expected: returns only `AIAssessment` fields, marks any unsupported conclusion `UNCERTAIN`, and refuses all order mutations.
+Expected: requests a complete schema-valid frozen `MarketSnapshot` before emitting any `AIAssessment`, and refuses all order mutations.
 
 - [ ] **Step 8: Commit the unified Skill**
 
