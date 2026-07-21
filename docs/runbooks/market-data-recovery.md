@@ -43,19 +43,35 @@ cp -a "$data_root/spool/binance/usdm" "$recovery_root/usdm"
 Check whether an unexpected catalog exists and export it before migration:
 
 ```bash
-psql "$CRYPTO_DATABASE_URL" -Atc \
+cd /srv/crypto-research/repo/deploy
+docker compose \
+  --env-file /srv/crypto-research/config/runtime.env \
+  -f compose.yaml exec -T postgres \
+  psql -U crypto -d crypto_research -Atc \
   'SELECT count(*) FROM live_data_partitions;'
-pg_dump "$CRYPTO_DATABASE_URL" \
+docker compose \
+  --env-file /srv/crypto-research/config/runtime.env \
+  -f compose.yaml exec -T postgres \
+  pg_dump -U crypto -d crypto_research \
   --data-only --table=live_data_partitions \
-  --file=/srv/crypto-research/recovery/live_data_partitions.sql
+  > /srv/crypto-research/recovery/live_data_partitions.sql
 ```
+
+These values match `deploy/compose.yaml`: `POSTGRES_USER=crypto` and `POSTGRES_DB=crypto_research`; only `POSTGRES_PASSWORD` comes from `runtime.env`. Run `psql` and `pg_dump` inside the `postgres` service so the host needs neither libpq tools nor a `CRYPTO_DATABASE_URL`. In particular, never pass SQLAlchemy's `postgresql+asyncpg://` URL to libpq.
 
 If the count is nonzero, do not copy source-event min/max into canonical columns and do not delete the only evidence. Either restore the pre-`0004` application while an audited recovery derives canonical min/max from each checksum-verified Parquet file, or confirm that the never-deployed catalog is disposable, retain the dump above, then clear and re-register verified artifacts:
 
 ```bash
-psql "$CRYPTO_DATABASE_URL" -c 'DELETE FROM live_data_partitions;'
-cd /srv/crypto-research/app/services/api
-.venv/bin/alembic -c alembic.ini upgrade head
+cd /srv/crypto-research/repo/deploy
+docker compose \
+  --env-file /srv/crypto-research/config/runtime.env \
+  -f compose.yaml exec -T postgres \
+  psql -U crypto -d crypto_research \
+  -c 'DELETE FROM live_data_partitions;'
+docker compose \
+  --env-file /srv/crypto-research/config/runtime.env \
+  -f compose.yaml run --rm --entrypoint python api \
+  -m alembic -c alembic.ini upgrade head
 ```
 
 Only when the preserved legacy journal has been proved disposable or migrated by an audited tool may it be quarantined. Never merge its SQLite files into a bucket journal by filesystem copy:

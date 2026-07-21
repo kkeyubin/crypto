@@ -510,6 +510,44 @@ def test_startup_rejects_symlinked_legacy_spool_without_following_it(
         LiveStorage(root).acquire_writer("worker-a")
 
 
+@pytest.mark.parametrize(
+    "component",
+    [
+        "bucket=+1",
+        "bucket=-0",
+        "bucket= 1",
+        "bucket=0A",
+        "bucket=０１",
+        "bucket=001",
+        "bucket=00x",
+    ],
+)
+def test_startup_rejects_every_noncanonical_bucket_component(
+    tmp_path: Path, component: str
+) -> None:
+    root = tmp_path / "market-data"
+    (root / "spool/binance/usdm" / component).mkdir(
+        parents=True, mode=0o700
+    )
+
+    with pytest.raises(LiveStorageError, match="unsafe legacy live spool"):
+        LiveStorage(root).acquire_writer("worker-a")
+
+
+@pytest.mark.parametrize("component", ["bucket=00", "bucket=0a", "bucket=3f"])
+def test_startup_accepts_canonical_bucket_components(
+    tmp_path: Path, component: str
+) -> None:
+    root = tmp_path / "market-data"
+    (root / "spool/binance/usdm" / component).mkdir(
+        parents=True, mode=0o700
+    )
+
+    lease = LiveStorage(root).acquire_writer("worker-a")
+
+    lease.close()
+
+
 @pytest.mark.parametrize("crash_on_publish", [1, 2])
 def test_prepared_batch_recovers_with_deterministic_artifacts_after_crash(
     tmp_path: Path,

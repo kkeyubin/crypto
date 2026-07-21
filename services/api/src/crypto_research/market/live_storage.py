@@ -70,6 +70,9 @@ BOOK_TICKER_SCHEMA = pa.schema(
 
 _LOCK_NAME = ".live-writer.lock"
 _LIVE_JOURNAL_BUCKETS = 64
+_CANONICAL_BUCKET_COMPONENTS = frozenset(
+    f"bucket={bucket:02x}" for bucket in range(_LIVE_JOURNAL_BUCKETS)
+)
 _DIRECTORY_READ_FLAGS = (
     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 )
@@ -524,13 +527,7 @@ def _reject_legacy_spool(data_root: Path) -> None:
 
 
 def _is_bucket_component(value: str) -> bool:
-    if len(value) != len("bucket=00") or not value.startswith("bucket="):
-        return False
-    try:
-        bucket = int(value.removeprefix("bucket="), 16)
-    except ValueError:
-        return False
-    return 0 <= bucket < _LIVE_JOURNAL_BUCKETS
+    return value in _CANONICAL_BUCKET_COMPONENTS
 
 
 def _open_existing_spool_directory(parent_fd: int, name: str) -> int | None:
