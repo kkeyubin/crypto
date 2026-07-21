@@ -46,16 +46,16 @@ class LiveDataset(StrEnum):
 
 
 _KIND_ROUTE = {
-    StreamKind.AGG_TRADE: StreamRoute.PUBLIC,
+    StreamKind.AGG_TRADE: StreamRoute.MARKET,
     StreamKind.BOOK_TICKER: StreamRoute.PUBLIC,
     StreamKind.KLINE: StreamRoute.MARKET,
     StreamKind.MARK_PRICE: StreamRoute.MARKET,
 }
 _KIND_SUFFIX = {
-    StreamKind.AGG_TRADE: "aggtrade",
-    StreamKind.BOOK_TICKER: "bookticker",
+    StreamKind.AGG_TRADE: "aggTrade",
+    StreamKind.BOOK_TICKER: "bookTicker",
     StreamKind.KLINE: "kline_1m",
-    StreamKind.MARK_PRICE: "markprice@1s",
+    StreamKind.MARK_PRICE: "markPrice@1s",
 }
 _KIND_SOURCE = {
     StreamKind.AGG_TRADE: BinanceStream.AGG_TRADE,
@@ -171,9 +171,7 @@ def parse_stream_message(
     if parser is None:
         raise StreamMessageError(f"unsupported Binance stream event: {event_type}")
     parsed = parser(event, receive_time)
-    if stream_name is not None and (
-        stream_name != stream_name.lower() or stream_name != parsed.stream.name
-    ):
+    if stream_name is not None and stream_name != parsed.stream.name:
         raise StreamMessageError("combined stream identity does not match event")
     return parsed
 

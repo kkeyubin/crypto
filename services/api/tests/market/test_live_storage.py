@@ -94,7 +94,7 @@ def midnight_final_kline():
 
 def aggregate_trade(identity: int = 42):
     return event(
-        "1000pepeusdt@aggtrade",
+        "1000pepeusdt@aggTrade",
         {
             "e": "aggTrade",
             "E": 1_753_099_200_010 + identity,
@@ -268,7 +268,7 @@ def test_mark_and_book_ticker_remain_decimal_exact_in_separate_schemas(
     storage = LiveStorage(tmp_path / "market-data")
     lease = storage.acquire_writer("worker-a")
     mark = event(
-        "btcusdt@markprice@1s",
+        "btcusdt@markPrice@1s",
         {
             "e": "markPriceUpdate",
             "E": 1_753_099_200_999,
@@ -281,7 +281,7 @@ def test_mark_and_book_ticker_remain_decimal_exact_in_separate_schemas(
         },
     )
     ticker = event(
-        "btcusdt@bookticker",
+        "btcusdt@bookTicker",
         {
             "e": "bookTicker",
             "E": 1_753_099_200_011,

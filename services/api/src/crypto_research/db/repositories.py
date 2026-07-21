@@ -695,10 +695,10 @@ class SqlAlchemyDataStateRepository:
                 StreamStateRow.stream_name
                 == func.lower(SymbolRow.symbol) + literal(suffix)
                 for suffix in (
-                    "@aggtrade",
-                    "@bookticker",
+                    "@aggTrade",
+                    "@bookTicker",
                     "@kline_1m",
-                    "@markprice@1s",
+                    "@markPrice@1s",
                 )
             )
         )

@@ -11,7 +11,7 @@ from crypto_research.db.models import BackfillObjectRow
 from crypto_research.db.repositories import StreamState, SymbolState
 from crypto_research.market import __main__ as market_main
 from crypto_research.market.binance.archive_paths import DatasetKind, plan_archives
-from crypto_research.market.binance.streams import group_streams, streams_for_symbols
+from crypto_research.market.binance.streams import StreamKind, group_streams, streams_for_symbols
 from crypto_research.market.live_storage import LiveAcceptResult, LiveWriteResult
 from crypto_research.market.worker import (
     ConnectionMode,
@@ -233,7 +233,7 @@ def test_events_are_durably_spooled_then_cataloged_and_committed_as_one_batch() 
         )
         message = json.dumps(
             {
-                "stream": "btcusdt@aggtrade",
+                "stream": "btcusdt@aggTrade",
                 "data": {
                     "e": "aggTrade",
                     "E": 1_753_099_200_010,
@@ -284,15 +284,12 @@ def test_connected_stream_without_first_event_becomes_stale() -> None:
     async def scenario() -> None:
         repository = Repository()
         supervisor = Supervisor()
-        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
-        supervisor.connections = (
+        groups = group_streams(streams_for_symbols(("BTCUSDT",)))
+        supervisor.connections = tuple(
             ManagedConnection(
-                group,
-                SilentSocket(),
-                ConnectionMode.DIRECT,
-                NOW,
-                timedelta(hours=23, minutes=55),
-            ),
+                group, SilentSocket(), ConnectionMode.DIRECT, NOW, timedelta(hours=23, minutes=55)
+            )
+            for group in groups
         )
         market_worker = worker(
             repository, supervisor, Storage(), Backfill()
@@ -303,8 +300,10 @@ def test_connected_stream_without_first_event_becomes_stale() -> None:
 
         stale = [state for state in repository.streams if state.status == "degraded"]
         assert {state.stream_name for state in stale} == {
-            "btcusdt@aggtrade",
-            "btcusdt@bookticker",
+            "btcusdt@aggTrade",
+            "btcusdt@bookTicker",
+            "btcusdt@kline_1m",
+            "btcusdt@markPrice@1s",
         }
 
     asyncio.run(scenario())
@@ -316,23 +315,25 @@ def test_disconnect_window_becomes_idempotent_per_stream_gap_on_reconnect() -> N
         market_worker = worker(
             repository, Supervisor(), Storage(), Backfill()
         )
-        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
-        connection = ManagedConnection(
-            group,
-            Socket(),
-            ConnectionMode.DIRECT,
-            NOW,
-            timedelta(hours=23, minutes=55),
-        )
+        groups = group_streams(streams_for_symbols(("BTCUSDT",)))
+        for group in groups:
+            connection = ManagedConnection(
+                group,
+                Socket(),
+                ConnectionMode.DIRECT,
+                NOW,
+                timedelta(hours=23, minutes=55),
+            )
+            await market_worker.note_disconnect(connection, NOW + timedelta(minutes=1))
+            await market_worker.note_reconnect(group, NOW + timedelta(minutes=2))
+            await market_worker.note_reconnect(group, NOW + timedelta(minutes=2))
 
-        await market_worker.note_disconnect(connection, NOW + timedelta(minutes=1))
-        await market_worker.note_reconnect(group, NOW + timedelta(minutes=2))
-        await market_worker.note_reconnect(group, NOW + timedelta(minutes=2))
-
-        assert len(repository.gaps) == 2
+        assert len(repository.gaps) == 4
         assert {gap.dataset for gap in repository.gaps.values()} == {
             "agg_trade",
             "best_bid_ask",
+            "kline_1m",
+            "mark_price",
         }
         assert all(gap.reason == "source_unknown_disconnect" for gap in repository.gaps.values())
         disconnected = [
@@ -389,25 +390,29 @@ def test_planned_rotation_records_gap_with_authoritative_data_types() -> None:
     async def scenario() -> None:
         repository = Repository()
         market_worker = worker(repository, Supervisor(), Storage(), Backfill())
-        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
-        connection = ManagedConnection(
-            group,
-            Socket(),
-            ConnectionMode.DIRECT,
-            NOW,
-            timedelta(hours=23, minutes=55),
-        )
-
-        await market_worker.note_disconnect(
-            connection,
-            NOW + timedelta(minutes=1),
-            reason="planned_pre_24_hour_rotation",
-        )
-        await market_worker.note_reconnect(group, NOW + timedelta(minutes=1, seconds=2))
+        groups = group_streams(streams_for_symbols(("BTCUSDT",)))
+        for group in groups:
+            connection = ManagedConnection(
+                group,
+                Socket(),
+                ConnectionMode.DIRECT,
+                NOW,
+                timedelta(hours=23, minutes=55),
+            )
+            await market_worker.note_disconnect(
+                connection,
+                NOW + timedelta(minutes=1),
+                reason="planned_pre_24_hour_rotation",
+            )
+            await market_worker.note_reconnect(
+                group, NOW + timedelta(minutes=1, seconds=2)
+            )
 
         assert {gap.dataset for gap in repository.gaps.values()} == {
             "agg_trade",
             "best_bid_ask",
+            "kline_1m",
+            "mark_price",
         }
         assert {
             gap.reason for gap in repository.gaps.values()
@@ -444,7 +449,7 @@ def test_run_consumes_managed_websocket_messages_before_shutdown() -> None:
         storage = Storage()
         message = json.dumps(
             {
-                "stream": "btcusdt@aggtrade",
+                "stream": "btcusdt@aggTrade",
                 "data": {
                     "e": "aggTrade",
                     "E": 1_753_099_200_010,
@@ -459,7 +464,11 @@ def test_run_consumes_managed_websocket_messages_before_shutdown() -> None:
                 },
             }
         )
-        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
+        group = next(
+            group
+            for group in group_streams(streams_for_symbols(("BTCUSDT",)))
+            if any(stream.kind is StreamKind.AGG_TRADE for stream in group.streams)
+        )
         supervisor.connections = (
             ManagedConnection(
                 group,
@@ -691,7 +700,7 @@ def test_handle_message_waits_for_durable_accept_not_batch_publish() -> None:
         )
         message = json.dumps(
             {
-                "stream": "btcusdt@aggtrade",
+                "stream": "btcusdt@aggTrade",
                 "data": {
                     "e": "aggTrade",
                     "E": 1_753_099_200_010,
@@ -731,7 +740,7 @@ def test_unrepresentable_decimal_is_rejected_before_durable_accept() -> None:
         )
         message = json.dumps(
             {
-                "stream": "btcusdt@aggtrade",
+                "stream": "btcusdt@aggTrade",
                 "data": {
                     "e": "aggTrade",
                     "E": 1_753_099_200_010,
@@ -766,7 +775,7 @@ def test_scientific_zero_is_arrow_safe_before_durable_accept() -> None:
         )
         message = json.dumps(
             {
-                "stream": "btcusdt@bookticker",
+                "stream": "btcusdt@bookTicker",
                 "data": {
                     "e": "bookTicker",
                     "E": 1_753_099_200_011,
@@ -815,7 +824,7 @@ def test_low_volume_events_roll_together_at_the_fixed_flush_deadline() -> None:
             await market_worker.handle_message(
                 json.dumps(
                     {
-                        "stream": "btcusdt@aggtrade",
+                        "stream": "btcusdt@aggTrade",
                         "data": {
                             **base,
                             "E": 1_753_099_200_000 + identity,
@@ -847,11 +856,15 @@ def test_stream_message_details_preserve_source_mode_after_batch_flush() -> None
     async def scenario() -> None:
         repository = Repository()
         supervisor = Supervisor()
-        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
+        group = next(
+            group
+            for group in group_streams(streams_for_symbols(("BTCUSDT",)))
+            if any(stream.kind is StreamKind.AGG_TRADE for stream in group.streams)
+        )
         supervisor.connections = (
             ManagedConnection(
                 group,
-                    BlockingSocket(),
+                BlockingSocket(),
                 ConnectionMode.PROXY,
                 NOW,
                 timedelta(hours=23, minutes=55),
@@ -861,7 +874,7 @@ def test_stream_message_details_preserve_source_mode_after_batch_flush() -> None
         await market_worker.run_cycle()
         message = json.dumps(
             {
-                "stream": "btcusdt@aggtrade",
+                "stream": "btcusdt@aggTrade",
                 "data": {
                     "e": "aggTrade",
                     "E": 1_753_099_200_010,
@@ -1033,7 +1046,7 @@ def test_transient_batch_checkpoint_failure_retries_without_losing_buffer() -> N
         await market_worker.handle_message(
             json.dumps(
                 {
-                    "stream": "btcusdt@aggtrade",
+                    "stream": "btcusdt@aggTrade",
                     "data": {
                         "e": "aggTrade",
                         "E": 1_753_099_200_010,

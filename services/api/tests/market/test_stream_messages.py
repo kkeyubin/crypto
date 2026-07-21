@@ -128,7 +128,7 @@ def test_kline_parser_preserves_exact_decimal_strings_and_close_state(closed: bo
 def test_mark_price_parser_retains_funding_fields() -> None:
     parsed = parse_stream_message(
         combined(
-            "btcusdt@markprice@1s",
+            "btcusdt@markPrice@1s",
             {
                 "e": "markPriceUpdate",
                 "E": 1_753_099_200_999,
@@ -157,7 +157,7 @@ def test_mark_price_parser_retains_funding_fields() -> None:
 def test_aggregate_trade_and_book_ticker_parsers_preserve_source_ids() -> None:
     aggregate = parse_stream_message(
         combined(
-            "1000pepeusdt@aggtrade",
+            "1000pepeusdt@aggTrade",
             {
                 "e": "aggTrade",
                 "E": 1_753_099_200_010,
@@ -175,7 +175,7 @@ def test_aggregate_trade_and_book_ticker_parsers_preserve_source_ids() -> None:
     )
     ticker = parse_stream_message(
         combined(
-            "1000pepeusdt@bookticker",
+            "1000pepeusdt@bookTicker",
             {
                 "e": "bookTicker",
                 "E": 1_753_099_200_011,
@@ -206,9 +206,9 @@ def test_aggregate_trade_and_book_ticker_parsers_preserve_source_ids() -> None:
         "not-json",
         json.dumps({"stream": "btcusdt@kline_1m"}),
         combined("btcusdt@unknown", {"e": "unknown", "E": 1, "s": "BTCUSDT"}),
-        combined("btcusdt@aggtrade", {"e": "aggTrade", "E": 1, "s": "ETHUSDT"}),
+        combined("btcusdt@aggTrade", {"e": "aggTrade", "E": 1, "s": "ETHUSDT"}),
         combined(
-            "btcusdt@bookticker",
+            "btcusdt@bookTicker",
             {
                 "e": "bookTicker",
                 "E": 1,
@@ -232,7 +232,7 @@ def test_receive_time_must_be_utc_aware() -> None:
     with pytest.raises(StreamMessageError, match="UTC"):
         parse_stream_message(
             combined(
-                "btcusdt@aggtrade",
+                "btcusdt@aggTrade",
                 {
                     "e": "aggTrade",
                     "E": 1,
@@ -253,13 +253,13 @@ def test_receive_time_must_be_utc_aware() -> None:
 @pytest.mark.parametrize(
     ("stream", "event", "field", "invalid"),
     [
-        ("btcusdt@aggtrade", valid_aggregate(), "E", -1),
-        ("btcusdt@aggtrade", valid_aggregate(), "a", MAX_INT64 + 1),
-        ("btcusdt@aggtrade", valid_aggregate(), "f", -1),
-        ("btcusdt@aggtrade", valid_aggregate(), "T", MAX_INT64 + 1),
-        ("btcusdt@bookticker", valid_book(), "u", -1),
-        ("btcusdt@bookticker", valid_book(), "T", MAX_INT64 + 1),
-        ("btcusdt@markprice@1s", valid_mark(), "T", -1),
+        ("btcusdt@aggTrade", valid_aggregate(), "E", -1),
+        ("btcusdt@aggTrade", valid_aggregate(), "a", MAX_INT64 + 1),
+        ("btcusdt@aggTrade", valid_aggregate(), "f", -1),
+        ("btcusdt@aggTrade", valid_aggregate(), "T", MAX_INT64 + 1),
+        ("btcusdt@bookTicker", valid_book(), "u", -1),
+        ("btcusdt@bookTicker", valid_book(), "T", MAX_INT64 + 1),
+        ("btcusdt@markPrice@1s", valid_mark(), "T", -1),
     ],
 )
 def test_all_source_integer_fields_are_unsigned_int64(
@@ -275,12 +275,12 @@ def test_all_source_integer_fields_are_unsigned_int64(
 @pytest.mark.parametrize(
     ("stream", "event", "field", "invalid"),
     [
-        ("btcusdt@aggtrade", valid_aggregate(), "p", "0"),
-        ("btcusdt@aggtrade", valid_aggregate(), "q", "0"),
-        ("btcusdt@bookticker", valid_book(), "b", "-1"),
-        ("btcusdt@bookticker", valid_book(), "B", "-1"),
-        ("btcusdt@markprice@1s", valid_mark(), "p", "0"),
-        ("btcusdt@markprice@1s", valid_mark(), "i", "-1"),
+        ("btcusdt@aggTrade", valid_aggregate(), "p", "0"),
+        ("btcusdt@aggTrade", valid_aggregate(), "q", "0"),
+        ("btcusdt@bookTicker", valid_book(), "b", "-1"),
+        ("btcusdt@bookTicker", valid_book(), "B", "-1"),
+        ("btcusdt@markPrice@1s", valid_mark(), "p", "0"),
+        ("btcusdt@markPrice@1s", valid_mark(), "i", "-1"),
     ],
 )
 def test_price_and_quantity_fields_enforce_market_semantics(
@@ -317,14 +317,14 @@ def test_trade_id_order_and_uncrossed_book_are_required() -> None:
     crossed["a"] = "1.25"
 
     with pytest.raises(StreamMessageError, match="trade ID"):
-        parse_stream_message(combined("btcusdt@aggtrade", trade), RECEIVED_AT)
+        parse_stream_message(combined("btcusdt@aggTrade", trade), RECEIVED_AT)
     with pytest.raises(StreamMessageError, match="bid"):
-        parse_stream_message(combined("btcusdt@bookticker", crossed), RECEIVED_AT)
+        parse_stream_message(combined("btcusdt@bookTicker", crossed), RECEIVED_AT)
 
 
 def test_negative_provisional_funding_rate_remains_valid() -> None:
     parsed = parse_stream_message(
-        combined("btcusdt@markprice@1s", valid_mark()), RECEIVED_AT
+        combined("btcusdt@markPrice@1s", valid_mark()), RECEIVED_AT
     )
 
     assert parsed.values["provisional_funding_rate"] == "-0.0001"
@@ -343,7 +343,7 @@ def test_decimal_fields_must_fit_decimal128_38_18(value: str) -> None:
     trade["p"] = value
 
     with pytest.raises(StreamMessageError, match=r"decimal128\(38, 18\)"):
-        parse_stream_message(combined("btcusdt@aggtrade", trade), RECEIVED_AT)
+        parse_stream_message(combined("btcusdt@aggTrade", trade), RECEIVED_AT)
 
 
 @pytest.mark.parametrize(
@@ -355,7 +355,7 @@ def test_decimal128_extremes_and_scientific_notation_are_exact(value: str) -> No
     trade["p"] = value
 
     parsed = parse_stream_message(
-        combined("btcusdt@aggtrade", trade), RECEIVED_AT
+        combined("btcusdt@aggTrade", trade), RECEIVED_AT
     )
 
     assert parsed.values["price"] == value
@@ -379,9 +379,9 @@ def test_decimal128_extremes_and_scientific_notation_are_exact(value: str) -> No
             "Q",
             "taker_buy_quote_asset_volume",
         ),
-        ("btcusdt@markprice@1s", valid_mark, "r", "provisional_funding_rate"),
-        ("btcusdt@bookticker", valid_book, "B", "bid_quantity"),
-        ("btcusdt@bookticker", valid_book, "A", "ask_quantity"),
+        ("btcusdt@markPrice@1s", valid_mark, "r", "provisional_funding_rate"),
+        ("btcusdt@bookTicker", valid_book, "B", "bid_quantity"),
+        ("btcusdt@bookTicker", valid_book, "A", "ask_quantity"),
     ],
 )
 def test_scientific_zero_is_canonicalized_before_storage(
@@ -408,13 +408,13 @@ def test_scientific_zero_is_canonicalized_before_storage(
         ("btcusdt@kline_1m", valid_kline, "h"),
         ("btcusdt@kline_1m", valid_kline, "l"),
         ("btcusdt@kline_1m", valid_kline, "c"),
-        ("btcusdt@aggtrade", valid_aggregate, "p"),
-        ("btcusdt@aggtrade", valid_aggregate, "q"),
-        ("btcusdt@markprice@1s", valid_mark, "p"),
-        ("btcusdt@markprice@1s", valid_mark, "i"),
-        ("btcusdt@markprice@1s", valid_mark, "P"),
-        ("btcusdt@bookticker", valid_book, "b"),
-        ("btcusdt@bookticker", valid_book, "a"),
+        ("btcusdt@aggTrade", valid_aggregate, "p"),
+        ("btcusdt@aggTrade", valid_aggregate, "q"),
+        ("btcusdt@markPrice@1s", valid_mark, "p"),
+        ("btcusdt@markPrice@1s", valid_mark, "i"),
+        ("btcusdt@markPrice@1s", valid_mark, "P"),
+        ("btcusdt@bookTicker", valid_book, "b"),
+        ("btcusdt@bookTicker", valid_book, "a"),
     ],
 )
 def test_scientific_zero_still_fails_positive_decimal_semantics(

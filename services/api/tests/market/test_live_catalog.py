@@ -107,7 +107,7 @@ def aggregate_trade(identity: int = 42):
     return parse_stream_message(
         json.dumps(
             {
-                "stream": "btcusdt@aggtrade",
+                "stream": "btcusdt@aggTrade",
                 "data": {
                     "e": "aggTrade",
                     "E": 1_753_099_200_010 + identity,

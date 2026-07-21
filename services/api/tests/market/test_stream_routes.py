@@ -11,22 +11,22 @@ from crypto_research.market.binance.streams import (
 )
 
 
-def test_routed_sources_are_fixed_and_stream_names_are_lowercase() -> None:
+def test_routed_sources_match_binance_canonical_routes_and_stream_case() -> None:
     streams = streams_for_symbols(("BTCUSDT",))
 
     assert [(stream.kind, stream.route, stream.name) for stream in streams] == [
-        (StreamKind.AGG_TRADE, StreamRoute.PUBLIC, "btcusdt@aggtrade"),
-        (StreamKind.BOOK_TICKER, StreamRoute.PUBLIC, "btcusdt@bookticker"),
+        (StreamKind.AGG_TRADE, StreamRoute.MARKET, "btcusdt@aggTrade"),
+        (StreamKind.BOOK_TICKER, StreamRoute.PUBLIC, "btcusdt@bookTicker"),
         (StreamKind.KLINE, StreamRoute.MARKET, "btcusdt@kline_1m"),
-        (StreamKind.MARK_PRICE, StreamRoute.MARKET, "btcusdt@markprice@1s"),
+        (StreamKind.MARK_PRICE, StreamRoute.MARKET, "btcusdt@markPrice@1s"),
     ]
     groups = group_streams(streams)
     assert all(isinstance(stream.source, BinanceWebSocketSource) for stream in streams)
     assert [group.uri for group in groups] == [
         "wss://fstream.binance.com/public/stream?streams="
-        "btcusdt@aggtrade/btcusdt@bookticker",
+        "btcusdt@bookTicker",
         "wss://fstream.binance.com/market/stream?streams="
-        "btcusdt@kline_1m/btcusdt@markprice@1s",
+        "btcusdt@aggTrade/btcusdt@kline_1m/btcusdt@markPrice@1s",
     ]
 
 
@@ -50,4 +50,4 @@ def test_grouping_never_exceeds_binance_stream_limit() -> None:
     groups = group_streams(streams)
 
     assert [len(group.streams) for group in groups] == [1024, 1]
-    assert all(group.route is StreamRoute.PUBLIC for group in groups)
+    assert all(group.route is StreamRoute.MARKET for group in groups)
