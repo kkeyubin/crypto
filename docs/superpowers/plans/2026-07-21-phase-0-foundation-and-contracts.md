@@ -2251,7 +2251,7 @@ git diff --check
 
 Expected: every command exits 0; no generated contract drift or tracked book source appears.
 
-- [ ] **Step 7: Run the server smoke verification**
+- [x] **Step 7: Run the server smoke verification**
 
 After copying the repository and creating runtime secrets, run:
 
@@ -2265,6 +2265,8 @@ curl --fail http://127.0.0.1:8088/api/health/live
 ```
 
 Expected: `postgres`, `api`, and `web` are healthy/running and the health endpoint returns the stable JSON shape. Do not expose port `8088` publicly in this task.
+
+Execution note (2026-07-21): the reviewed tree was smoke-tested in `/home/keyubin/crypto-research-phase0-smoke` because the user account has no passwordless `sudo`. Compose config and API/Web builds passed; all three services were healthy, live/readiness/Web checks passed, and the only published mapping was `127.0.0.1:8088:80`. The first Docker build hit DNS restrictions, so the existing loopback proxy on port `17891` was used only as a build argument. Formal `/srv` and systemd installation remains an administrator action.
 
 - [x] **Step 8: Commit operations and CI**
 

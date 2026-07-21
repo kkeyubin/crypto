@@ -31,7 +31,7 @@ git diff --check
 
 ## Server deployment prerequisites
 
-The commands below are a reproducible procedure, not a claim that the remote smoke run has happened. A server administrator needs Docker Engine with the Compose plugin, `sudo`, a reviewed repository checkout, and two new random secrets. First clone or copy the reviewed repository to `/srv/crypto-research/repo`; do this before creating the runtime env file:
+The commands below are the formal installation procedure. A server administrator needs Docker Engine with the Compose plugin, `sudo`, a reviewed repository checkout, and two new random secrets. First clone or copy the reviewed repository to `/srv/crypto-research/repo`; do this before creating the runtime env file:
 
 ```bash
 sudo install -d -m 0755 /srv/crypto-research
@@ -73,6 +73,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now crypto-research.service
 sudo systemctl status crypto-research.service
 ```
+
+## Verified smoke record
+
+On 2026-07-21, the reviewed Phase 0 commit was smoke-tested on `keyubin@192.168.1.4` in the isolated user-owned path `/home/keyubin/crypto-research-phase0-smoke`. PostgreSQL, API, and Web were healthy with `unless-stopped`; live/readiness endpoints and the Web root passed; only `127.0.0.1:8088` was bound. The raw database password was absent from the API process after DSN construction.
+
+Docker's first API build could not resolve PyPI. In accordance with the repository rule, the existing loopback proxy on port `17891` was used only for the restricted image-build step; it is not part of Compose, the image runtime environment, or the service configuration. The isolated smoke stack remains running. The formal `/srv/crypto-research` checkout and systemd unit were not installed because that requires administrator privileges.
 
 ## Safety boundaries
 
