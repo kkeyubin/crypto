@@ -76,3 +76,19 @@ Final GREEN verification: focused contracts `90 passed`; full API `117
 passed`; Ruff including the deploy entrypoint, schema drift, contract generation
 and types/no-drift, Web `10 passed`, production build, and whitespace checks all
 passed.
+
+## Final remote refresh — 2026-07-21
+
+After the final review returned no Critical, Important, or Minor findings, the
+committed runtime source at `0226feba8bbefec207c7eee5b40c93c68a22e922` replaced
+the isolated smoke tree. API and Web images were rebuilt with `--no-cache`; the
+already-confirmed Docker network restriction required the loopback proxy only
+as predefined build arguments. The proxy is absent from image runtime
+environments and Compose.
+
+Compose recreated API and Web against the final images while preserving the
+healthy PostgreSQL volume. Controller checks confirmed all three services are
+healthy with `unless-stopped`, the API child environment omits raw
+`POSTGRES_PASSWORD`, and only `127.0.0.1:8088:80` is published. Live and ready
+JSON checks passed, and the Web root returned HTTP `200`. The isolated stack was
+left running; `/srv/crypto-research` and systemd remain administrator actions.

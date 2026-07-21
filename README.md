@@ -76,7 +76,7 @@ sudo systemctl status crypto-research.service
 
 ## Verified smoke record
 
-On 2026-07-21, the reviewed Phase 0 commit was smoke-tested on `keyubin@192.168.1.4` in the isolated user-owned path `/home/keyubin/crypto-research-phase0-smoke`. PostgreSQL, API, and Web were healthy with `unless-stopped`; live/readiness endpoints and the Web root passed; only `127.0.0.1:8088` was bound. The raw database password was absent from the API process after DSN construction.
+On 2026-07-21, the reviewed Phase 0 runtime source at `0226feba8bbefec207c7eee5b40c93c68a22e922` was smoke-tested on `keyubin@192.168.1.4` in the isolated user-owned path `/home/keyubin/crypto-research-phase0-smoke`. PostgreSQL, API, and Web were healthy with `unless-stopped`; live/readiness endpoints and the Web root passed; only `127.0.0.1:8088` was bound. The raw database password was absent from the API process after DSN construction.
 
 Docker's first API build could not resolve PyPI. In accordance with the repository rule, the existing loopback proxy on port `17891` was used only for the restricted image-build step; it is not part of Compose, the image runtime environment, or the service configuration. The isolated smoke stack remains running. The formal `/srv/crypto-research` checkout and systemd unit were not installed because that requires administrator privileges.
 
