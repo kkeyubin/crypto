@@ -12,14 +12,17 @@ from crypto_research.db.models import (
     IngestionJobRow,
     StreamStateRow,
     SymbolRow,
+    WorkerHeartbeatRow,
 )
 from crypto_research.db.repositories import (
     AddSymbolCommand,
     BackfillCommand,
     GapRecord,
     PartitionCandidate,
+    SourceTransition,
     SqlAlchemyDataStateRepository,
     StreamState,
+    WorkerHeartbeat,
 )
 from crypto_research.market.backfill import BackfillObject, BackfillState
 from crypto_research.market.gaps import ApprovedCoverage, TimeRange
@@ -45,6 +48,8 @@ class FakeAsyncSession:
             ):
                 return row
             if isinstance(row, StreamStateRow) and (row.symbol, row.stream_name) == identity:
+                return row
+            if isinstance(row, WorkerHeartbeatRow) and row.worker_id == identity:
                 return row
         return None
 
@@ -308,6 +313,89 @@ def test_stream_heartbeat_upsert_preserves_one_row_per_stream() -> None:
         streams = [row for row in session.rows if isinstance(row, StreamStateRow)]
         assert len(streams) == 1
         assert streams[0].last_event_at == later_seen
+
+    asyncio.run(scenario())
+
+
+def test_worker_heartbeat_upsert_persists_latest_status() -> None:
+    async def scenario() -> None:
+        session = FakeAsyncSession()
+        repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
+        first = datetime(2026, 7, 20, tzinfo=UTC)
+        second = first + timedelta(minutes=1)
+
+        await repository.update_worker_heartbeat(
+            WorkerHeartbeat("worker-a", "running", first, {"active_symbols": 2})
+        )
+        await repository.update_worker_heartbeat(
+            WorkerHeartbeat("worker-a", "stopped", second, {"active_symbols": 0})
+        )
+
+        rows = [row for row in session.rows if isinstance(row, WorkerHeartbeatRow)]
+        assert len(rows) == 1
+        assert rows[0].status == "stopped"
+        assert rows[0].heartbeat_at == second
+
+    asyncio.run(scenario())
+
+
+def test_active_symbols_are_queried_separately_and_source_transition_is_audited() -> None:
+    class Scalars:
+        def __init__(self, rows) -> None:
+            self.rows = rows
+
+        def all(self):
+            return self.rows
+
+    class Result:
+        def __init__(self, rows) -> None:
+            self.rows = rows
+
+        def scalars(self):
+            return Scalars(self.rows)
+
+    class QuerySession(FakeAsyncSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+            return Result(
+                sorted(
+                    (
+                        row
+                        for row in self.rows
+                        if isinstance(row, SymbolRow) and row.enabled
+                    ),
+                    key=lambda row: row.symbol,
+                )
+            )
+
+    async def scenario() -> None:
+        session = QuerySession()
+        session.add(SymbolRow(symbol="PEPEUSDT", enabled=True))
+        session.add(SymbolRow(symbol="BTCUSDT", enabled=True))
+        session.add(SymbolRow(symbol="ETHUSDT", enabled=False))
+        repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
+
+        active = await repository.list_active_symbols()
+        await repository.record_source_transition(
+            SourceTransition(
+                "worker-a",
+                datetime(2026, 7, 20, tzinfo=UTC),
+                "direct",
+                "proxy",
+                "timeout",
+            )
+        )
+
+        assert [item.symbol for item in active] == ["BTCUSDT", "PEPEUSDT"]
+        assert session.statement is not None
+        assert "symbols.enabled" in str(session.statement)
+        audits = [row for row in session.rows if isinstance(row, AuditEventRow)]
+        assert audits[-1].action == "market_source_transition"
+        assert audits[-1].details["reason"] == "timeout"
 
     asyncio.run(scenario())
 

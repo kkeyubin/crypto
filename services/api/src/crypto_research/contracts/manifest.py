@@ -156,11 +156,11 @@ WEBSOCKET_SOURCE_SPECS = MappingProxyType(
     {
         BinanceStream.KLINE_1M: WebSocketSourceSpec("market", "kline_1m", DataType.KLINE_1M),
         BinanceStream.MARK_PRICE: WebSocketSourceSpec(
-            "market", "markPrice@1s", DataType.MARK_PRICE
+            "market", "markprice@1s", DataType.MARK_PRICE
         ),
-        BinanceStream.AGG_TRADE: WebSocketSourceSpec("market", "aggTrade", DataType.AGG_TRADE),
+        BinanceStream.AGG_TRADE: WebSocketSourceSpec("public", "aggtrade", DataType.AGG_TRADE),
         BinanceStream.BEST_BID_ASK: WebSocketSourceSpec(
-            "public", "bookTicker", DataType.BEST_BID_ASK
+            "public", "bookticker", DataType.BEST_BID_ASK
         ),
     }
 )

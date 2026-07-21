@@ -16,6 +16,7 @@ from crypto_research.db.models import (
     IngestionJobRow,
     StreamStateRow,
     SymbolRow,
+    WorkerHeartbeatRow,
     is_legal_job_transition,
     new_id,
     normalize_symbol,
@@ -87,6 +88,24 @@ class StreamState:
 
 
 @dataclass(frozen=True)
+class WorkerHeartbeat:
+    worker_id: str
+    status: str
+    heartbeat_at: datetime
+    details: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class SourceTransition:
+    worker_id: str
+    at: datetime
+    from_mode: str
+    to_mode: str
+    reason: str
+    details: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class SymbolState:
     symbol: str
     enabled: bool
@@ -129,6 +148,8 @@ class DataGap:
 
 
 class DataStateRepository(Protocol):
+    async def list_active_symbols(self) -> tuple[SymbolState, ...]: ...
+
     async def add_symbol(self, command: AddSymbolCommand) -> SymbolState: ...
 
     async def create_backfill(self, command: BackfillCommand) -> IngestionJob: ...
@@ -146,6 +167,10 @@ class DataStateRepository(Protocol):
     ) -> DataGap: ...
 
     async def update_stream(self, state: StreamState) -> None: ...
+
+    async def update_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None: ...
+
+    async def record_source_transition(self, transition: SourceTransition) -> None: ...
 
     async def plan_backfill_object(self, work: BackfillObject) -> BackfillObject: ...
 
@@ -256,6 +281,15 @@ class SqlAlchemyDataStateRepository:
             self._add_audit("symbol_added", "symbol", symbol)
             await self._session.flush()
         return _symbol_state(row)
+
+    async def list_active_symbols(self) -> tuple[SymbolState, ...]:
+        statement = (
+            select(SymbolRow)
+            .where(SymbolRow.enabled.is_(True))
+            .order_by(SymbolRow.symbol)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return tuple(_symbol_state(row) for row in rows if row.enabled)
 
     async def disable_symbol(self, symbol: str) -> SymbolState:
         normalized = normalize_symbol(symbol)
@@ -407,6 +441,46 @@ class SqlAlchemyDataStateRepository:
             row.status = state.status
             row.last_event_at = last_event_at
             row.details = state.details or {}
+        await self._session.flush()
+
+    async def update_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
+        heartbeat_at = _require_utc(heartbeat.heartbeat_at)
+        if not heartbeat.worker_id:
+            raise ValueError("worker id must not be empty")
+        row = await self._session.get(WorkerHeartbeatRow, heartbeat.worker_id)
+        if row is None:
+            row = WorkerHeartbeatRow(
+                worker_id=heartbeat.worker_id,
+                status=heartbeat.status,
+                heartbeat_at=heartbeat_at,
+                details=heartbeat.details or {},
+            )
+            self._session.add(row)
+        else:
+            row.status = heartbeat.status
+            row.heartbeat_at = heartbeat_at
+            row.details = heartbeat.details or {}
+        await self._session.flush()
+
+    async def record_source_transition(self, transition: SourceTransition) -> None:
+        at = _require_utc(transition.at)
+        if not transition.worker_id:
+            raise ValueError("worker id must not be empty")
+        self._session.add(
+            AuditEventRow(
+                id=new_id(),
+                action="market_source_transition",
+                subject_type="market_worker",
+                subject_id=transition.worker_id,
+                details={
+                    "at": at.isoformat(),
+                    "from_mode": transition.from_mode,
+                    "to_mode": transition.to_mode,
+                    "reason": transition.reason,
+                    **(transition.details or {}),
+                },
+            )
+        )
         await self._session.flush()
 
     async def plan_backfill_object(self, work: BackfillObject) -> BackfillObject:

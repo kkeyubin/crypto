@@ -1,82 +1,119 @@
-# Task 5 — Unified Crypto Research Skill Report
+# Task 5: Routed WebSocket Capture and Market Worker
 
-## RED
+## Status
 
-Command:
+Task 5 implementation is complete. This report does not declare Phase 1
+complete; API, UI, deployment, and server acceptance remain later tasks.
 
-```bash
-cd services/api && .venv/bin/pytest tests/repository/test_unified_skill.py -q
-```
+## Delivered behavior
 
-Result: `2 failed`. Both tests raised `FileNotFoundError` for the absent
-`skills/crypto-trading-research/SKILL.md`, the intended missing-Skill baseline.
-The behavior baseline and its contract audit are preserved in
-`task-5-baseline-report.md`.
+- `RoutedStream` is backed by the existing structured
+  `BinanceWebSocketSource`; callers cannot supply a URL or base URL. Canonical
+  stream names are lowercase. Aggregate trade and best bid/ask use `/public`;
+  1-minute kline and 1-second mark price/funding use `/market`. Combined stream
+  groups are deterministic and never exceed Binance's 1024-stream limit.
+- Pure parsing is independent of transport and fails closed for invalid JSON,
+  unknown event types, stream/event identity mismatches, non-UTC receive time,
+  malformed fields, non-finite decimals, and invalid kline intervals. Parsed
+  events retain venue, market, symbol, dataset, event/receive time, source ID,
+  close state, and the exact source decimal strings.
+- Closed live klines and aggregate trades use the same Arrow schemas as archive
+  normalization. In-progress klines are retained raw but not normalized. Mark
+  price/funding and `bookTicker` have exact `decimal128(38,18)` live schemas.
+- Raw event evidence is written before normalization. All paths are derived
+  from structured descriptors beneath `CRYPTO_DATA_ROOT`; dir-fd traversal,
+  `O_NOFOLLOW`, fixed names, validated Parquet reads, `fsync`, and atomic
+  `os.replace` publication are used. Restart replay is idempotent. Per-partition
+  locks prevent overlapping reader threads from losing rows during read/merge/
+  replace.
+- The transport uses the installed `websockets` 16 asyncio API. Direct
+  connections explicitly pass `proxy=None`; auto fallback is unlocked only
+  after an awaited, classified direct failure record. Only loopback proxy URLs
+  are accepted. Successful proxy activation and direct recovery are separately
+  audited.
+- Protocol ping/pong settings, explicit ping checks, planned 23h55 rotation,
+  bounded exponential backoff with jitter, subscription refresh, and graceful
+  shutdown are covered deterministically. Existing proxy connections are
+  actively probed at the configured recovery interval and all groups migrate
+  back to direct after a successful probe.
+- `MarketWorker` reloads enabled symbols independently, reconciles routed
+  groups, consumes managed WebSocket messages, persists live evidence before
+  freshness state, runs one archive backfill lease beside live capture, and
+  updates worker heartbeats. Initial handshakes and established-reader losses
+  both reconnect with bounded backoff; SIGTERM interrupts an in-progress
+  backoff immediately.
+- Stream state records connecting, connected, degraded/stale, and disconnected
+  states. A connected stream with no first event also becomes stale. Disconnect
+  state retains its UTC anchor; reconnect creates deterministic, idempotent
+  per-stream `source_unknown_disconnect` gaps.
+- Runtime repositories use a session per operation so concurrent stream readers
+  never share a SQLAlchemy `AsyncSession`. The archive scheduler reconstructs
+  an official archive descriptor from each persisted planned object and rejects
+  any URL that does not exactly equal that structured plan.
+- Existing tables already cover the required state, so no `0003` migration was
+  added. No API, UI, strategy, backtest, trading, credential, wallet,
+  notification, or AI behavior was introduced.
 
-Review-hardening RED used the same focused command and produced
-`4 failed, 3 passed`. Those failures proved the previous token/link tests did
-not enforce the seven-family mode matrix, the complete per-symbol gate, the
-exact runtime schema and authority boundary, or the presence of a reusable
-three-case eval contract.
+## TDD evidence
 
-## GREEN and Verification
+Initial RED runs failed because `streams.py`, `live_storage.py`, `worker.py`,
+and `market.__main__` did not exist. Later focused RED cases reproduced and then
+guarded:
 
-```bash
+- stale state missing when a connection received no first event;
+- existing proxy connections never running their periodic direct probe;
+- initial handshake failure terminating the worker instead of retrying;
+- SIGTERM waiting behind a long reconnect backoff;
+- 24 concurrent live events collapsing to only 3 rows through a lost-update
+  race;
+- disconnect state omitting its persisted UTC anchor;
+- the prior structured WebSocket contract routing aggregate trades through
+  `/market` with mixed-case stream suffixes.
+
+Every case was observed failing before the corresponding production change.
+The final focused market result is `159 passed`.
+
+## Verification
+
+All commands below completed with exit code 0 after the final changes:
+
+```text
 cd services/api
-.venv/bin/python - <<'PY'
-from pathlib import Path
-import yaml
+.venv/bin/pytest -q tests/market
+# 159 passed
 
-path = Path('../../skills/crypto-trading-research/agents/openai.yaml')
-value = yaml.safe_load(path.read_text())
-assert set(value) == {'interface'}
-assert set(value['interface']) == {'display_name', 'short_description', 'default_prompt'}
-assert all(isinstance(item, str) and item for item in value['interface'].values())
-PY
-.venv/bin/pytest tests/repository/test_unified_skill.py -q
 .venv/bin/pytest -q
-.venv/bin/ruff check .
+# 387 passed, 1 skipped
+
+.venv/bin/ruff check src tests migrations
+# All checks passed!
+
+.venv/bin/python scripts/export_schemas.py --check
+
+source /Users/kyle/.nvm/nvm.sh && nvm use
+# Node v24.15.0, npm v11.12.1
+npm run contracts:test-generation
+npm run contracts:check-types
+npm run contracts:types
+git diff --exit-code contracts
+
+git diff --check
 ```
 
-Results:
+The skipped test is the opt-in PostgreSQL integration suite because
+`CRYPTO_TEST_DATABASE_URL` was not set. No real Binance endpoint, mutable
+production data, credential, live fund, or server deployment was used.
 
-- YAML metadata: valid `interface` structure.
-- Focused repository policy test: `7 passed`.
-- Full API suite: `61 passed`.
-- Ruff: `All checks passed!`.
-- Markdown link policy is exercised by the focused test; every Skill/reference
-  link is local and resolves.
-- `evals/cases.json` is parsed and checked for the three exact prompts,
-  non-empty expected/forbidden behaviors, and critical safety expectations.
+## Remaining risks and acceptance boundary
 
-## Files
-
-- `skills/crypto-trading-research/SKILL.md`
-- `skills/crypto-trading-research/agents/openai.yaml`
-- `skills/crypto-trading-research/references/strategy-workflow.md`
-- `skills/crypto-trading-research/references/runtime-ai.md`
-- `skills/crypto-trading-research/references/source-map.md`
-- `skills/crypto-trading-research/evals/cases.json`
-- `services/api/tests/repository/test_unified_skill.py`
-- `docs/superpowers/plans/2026-07-21-phase-0-foundation-and-contracts.md`
-- `.superpowers/sdd/task-5-baseline-report.md`
-- `.superpowers/sdd/task-5-green-report.md`
-
-## Commit
-
-- Initial implementation: `3bd4e45 feat: add unified crypto research skill`.
-- Review hardening: `test: harden unified skill boundaries`.
-
-## Concerns
-
-- The Skill is a research and shadow-analysis contract, not a runtime
-  implementation. Actual object validation and order isolation remain enforced
-  by the existing Pydantic contracts and deterministic runtime boundary.
-- `evals/cases.json` is deliberately a fixed pressure-test contract. It does not
-  invoke or score an LLM; the RED and GREEN reports preserve the actual answers
-  and human audits separately.
-- In the current `MarketSnapshot`, `deterministic_signal_id` is only an optional
-  UUID identifier. It has no signal payload or timestamp; adding either requires
-  a future contract extension.
-- The unchanged `.superpowers/sdd/task-5-brief.md` is an SDD ledger artifact;
-  the executable plan was corrected only in the project plan document.
+- Live daily Parquet publication currently performs a deterministic whole-file
+  merge. It is correct and protected against in-process overlap, but sustained
+  high-rate production load should move to larger buffered batches/immutable
+  shards before broad symbol expansion.
+- The per-partition lock is process-local. Deployment must keep one authoritative
+  live writer per partition unless a later task adds an inter-process lease or
+  append-only shard protocol.
+- Routed connectivity, loopback proxy behavior, 24-hour operation, PostgreSQL
+  persistence across container restart, and archive/live reconciliation still
+  require the Phase 1 server smoke/acceptance gate. They were not inferred from
+  mocked tests.

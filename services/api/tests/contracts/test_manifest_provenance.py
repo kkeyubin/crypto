@@ -286,9 +286,9 @@ def test_rest_source_rejects_invalid_limits_and_time_rules(source: dict[str, obj
     ("stream", "expected_url"),
     [
         (BinanceStream.KLINE_1M, "wss://fstream.binance.com/market/ws/btcusdt@kline_1m"),
-        (BinanceStream.MARK_PRICE, "wss://fstream.binance.com/market/ws/btcusdt@markPrice@1s"),
-        (BinanceStream.AGG_TRADE, "wss://fstream.binance.com/market/ws/btcusdt@aggTrade"),
-        (BinanceStream.BEST_BID_ASK, "wss://fstream.binance.com/public/ws/btcusdt@bookTicker"),
+        (BinanceStream.MARK_PRICE, "wss://fstream.binance.com/market/ws/btcusdt@markprice@1s"),
+        (BinanceStream.AGG_TRADE, "wss://fstream.binance.com/public/ws/btcusdt@aggtrade"),
+        (BinanceStream.BEST_BID_ASK, "wss://fstream.binance.com/public/ws/btcusdt@bookticker"),
     ],
 )
 def test_websocket_source_computes_canonical_routed_urls(
