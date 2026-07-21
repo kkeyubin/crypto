@@ -492,6 +492,8 @@ def _live_part(
         unique_keys=unique_keys,
         min_source_event_time=1,
         max_source_event_time=2,
+        min_canonical_time=1,
+        max_canonical_time=2,
         relative_path=relative,
     )
 

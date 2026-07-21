@@ -61,6 +61,37 @@ def kline(*, closed: bool):
     )
 
 
+def midnight_final_kline():
+    open_time = int(
+        datetime(2026, 7, 21, 23, 59, tzinfo=UTC).timestamp() * 1_000
+    )
+    source_event_time = open_time + 60_500
+    return event(
+        "btcusdt@kline_1m",
+        {
+            "e": "kline",
+            "E": source_event_time,
+            "s": "BTCUSDT",
+            "k": {
+                "t": open_time,
+                "T": open_time + 59_999,
+                "s": "BTCUSDT",
+                "i": "1m",
+                "o": "1.23",
+                "c": "1.25",
+                "h": "1.26",
+                "l": "1.22",
+                "v": "10",
+                "n": 4,
+                "x": True,
+                "q": "12.5",
+                "V": "4",
+                "Q": "5",
+            },
+        },
+    )
+
+
 def aggregate_trade(identity: int = 42):
     return event(
         "pepeusdt@aggtrade",
@@ -98,8 +129,9 @@ def test_batch_publishes_immutable_raw_ndjson_and_normalized_parquet_shards(
 ) -> None:
     storage = LiveStorage(tmp_path / "market-data")
     lease = storage.acquire_writer("worker-a")
+    trade = aggregate_trade()
 
-    result = publish_all(storage, lease, (kline(closed=True), aggregate_trade()))
+    result = publish_all(storage, lease, (kline(closed=True), trade))
 
     assert len(result.raw) == 2
     assert all(part.path.name.startswith("part-") for part in result.raw)
@@ -114,6 +146,11 @@ def test_batch_publishes_immutable_raw_ndjson_and_normalized_parquet_shards(
     kline_raw = next(part for part in result.raw if "/klines/" in str(part.path))
     rows = [json.loads(line) for line in gzip.decompress(kline_raw.path.read_bytes()).splitlines()]
     assert rows[0]["payload"]["e"] == "kline"
+    trade_part = next(
+        part for part in result.normalized if "/agg_trades/" in str(part.path)
+    )
+    assert trade_part.min_canonical_time == trade.values["transact_time"]
+    assert trade_part.max_canonical_time == trade.values["transact_time"]
     assert not list(storage.data_root.rglob("live.parquet"))
     lease.close()
 
@@ -239,7 +276,7 @@ def test_mark_and_book_ticker_remain_decimal_exact_in_separate_schemas(
             "p": "117415.500000000000000000",
             "i": "117400.100000000000000000",
             "P": "117390.000000000000000000",
-            "r": "0.000100000000000000",
+            "r": "0E+1000",
             "T": 1_753_128_000_000,
         },
     )
@@ -252,7 +289,7 @@ def test_mark_and_book_ticker_remain_decimal_exact_in_separate_schemas(
             "s": "BTCUSDT",
             "u": 99,
             "b": "117415.500000000000000000",
-            "B": "1.000000000000000000",
+            "B": "-0E+1000",
             "a": "117415.600000000000000000",
             "A": "2.000000000000000000",
         },
@@ -275,6 +312,12 @@ def test_mark_and_book_ticker_remain_decimal_exact_in_separate_schemas(
     assert ticker_table.column("bid_price").to_pylist() == [
         Decimal("117415.500000000000000000")
     ]
+    assert mark_table.column("provisional_funding_rate").to_pylist() == [
+        Decimal("0")
+    ]
+    assert ticker_table.column("bid_quantity").to_pylist() == [Decimal("0")]
+    assert mark_part.min_canonical_time == mark.source_event_time
+    assert ticker_part.min_canonical_time == ticker.values["transact_time"]
     lease.close()
 
 
@@ -361,6 +404,27 @@ def test_normalized_primary_key_is_unique_across_raw_shards(tmp_path: Path) -> N
     lease.close()
 
 
+def test_partition_records_source_provenance_and_dataset_canonical_range(
+    tmp_path: Path,
+) -> None:
+    storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
+    parsed = midnight_final_kline()
+
+    storage.accept(lease, parsed)
+    result = storage.publish_next_batch(lease, max_events=10)
+
+    assert result is not None
+    expected_canonical = int(parsed.values["open_time"])
+    for part in (*result.raw, *result.normalized):
+        assert part.partition_date == "2026-07-22"
+        assert part.min_source_event_time == parsed.source_event_time
+        assert part.max_source_event_time == parsed.source_event_time
+        assert part.min_canonical_time == expected_canonical
+        assert part.max_canonical_time == expected_canonical
+    lease.close()
+
+
 def test_source_natural_key_conflicts_across_source_dates(tmp_path: Path) -> None:
     storage = LiveStorage(tmp_path / "market-data")
     lease = storage.acquire_writer("worker-a")
@@ -408,6 +472,42 @@ def test_fixed_bucket_journal_and_direct_ack_do_not_glob_history(
     monkeypatch.setattr(Path, "glob", reject_glob)
     storage.acknowledge_cataloged(lease, result.batch_id)
     lease.close()
+
+
+def test_startup_fails_closed_when_legacy_per_day_spool_exists(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "market-data"
+    legacy = (
+        root
+        / "spool/binance/usdm/BTCUSDT/klines/date=2026-07-21/journal.sqlite3"
+    )
+    legacy.parent.mkdir(parents=True, mode=0o700)
+    legacy.touch(mode=0o600)
+
+    with pytest.raises(
+        LiveStorageError,
+        match=r"legacy per-day live spool.*cp -a DATA_ROOT/spool/binance/usdm",
+    ):
+        LiveStorage(root).acquire_writer("worker-a")
+
+
+def test_startup_rejects_symlinked_legacy_spool_without_following_it(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "market-data"
+    usdm = root / "spool/binance/usdm"
+    usdm.mkdir(parents=True, mode=0o700)
+    outside = tmp_path / "outside/BTCUSDT/klines/date=2026-07-21"
+    outside.mkdir(parents=True, mode=0o700)
+    (outside / "journal.sqlite3").touch(mode=0o600)
+    (usdm / "BTCUSDT").symlink_to(outside.parents[2], target_is_directory=True)
+
+    with pytest.raises(
+        LiveStorageError,
+        match=r"unsafe legacy live spool.*cp -a DATA_ROOT/spool/binance/usdm",
+    ):
+        LiveStorage(root).acquire_writer("worker-a")
 
 
 @pytest.mark.parametrize("crash_on_publish", [1, 2])

@@ -116,6 +116,8 @@ class SqlAlchemyLiveCatalogRepository:
                 unique_keys=list(part.unique_keys),
                 min_source_event_time=part.min_source_event_time,
                 max_source_event_time=part.max_source_event_time,
+                min_canonical_time=part.min_canonical_time,
+                max_canonical_time=part.max_canonical_time,
                 row_count=part.row_count,
                 approval_status="approved",
                 approved_at=now,
@@ -142,11 +144,11 @@ class SqlAlchemyLiveCatalogRepository:
                 LiveDataPartitionRow.dataset == dataset,
                 LiveDataPartitionRow.layer == "normalized",
                 LiveDataPartitionRow.approval_status == "approved",
-                LiveDataPartitionRow.max_source_event_time >= start_event_time,
-                LiveDataPartitionRow.min_source_event_time <= end_event_time,
+                LiveDataPartitionRow.max_canonical_time >= start_event_time,
+                LiveDataPartitionRow.min_canonical_time < end_event_time,
             )
             .order_by(
-                LiveDataPartitionRow.min_source_event_time,
+                LiveDataPartitionRow.min_canonical_time,
                 LiveDataPartitionRow.relative_path,
             )
         )
@@ -201,8 +203,8 @@ class SecureLiveDuckDBCatalog:
                     or row.approval_status != "approved"
                     or row.symbol != requested_symbol
                     or row.dataset != dataset
-                    or row.max_source_event_time < start_event_time
-                    or row.min_source_event_time > end_event_time
+                    or row.max_canonical_time < start_event_time
+                    or row.min_canonical_time >= end_event_time
                 ):
                     raise LiveCatalogError(
                         "live query repository returned an unapproved partition"
@@ -291,6 +293,13 @@ def _validate_partition(part: StoredLivePartition) -> None:
         or part.min_source_event_time > part.max_source_event_time
     ):
         raise LiveCatalogError("live partition event range is invalid")
+    if (
+        part.min_canonical_time is None
+        or part.max_canonical_time is None
+        or part.min_canonical_time < 0
+        or part.min_canonical_time > part.max_canonical_time
+    ):
+        raise LiveCatalogError("live partition canonical range is invalid")
     expected = (
         _NORMALIZED_CONTRACTS[part.dataset]
         if part.layer == "normalized"
@@ -351,6 +360,8 @@ def _part_identity(batch_id: str, part: StoredLivePartition) -> tuple[object, ..
         list(part.unique_keys),
         part.min_source_event_time,
         part.max_source_event_time,
+        part.min_canonical_time,
+        part.max_canonical_time,
         part.row_count,
         "approved",
     )
@@ -370,6 +381,8 @@ def _row_identity(row: LiveDataPartitionRow) -> tuple[object, ...]:
         row.unique_keys,
         row.min_source_event_time,
         row.max_source_event_time,
+        row.min_canonical_time,
+        row.max_canonical_time,
         row.row_count,
         row.approval_status,
     )
@@ -389,5 +402,7 @@ def _part_from_row(row: LiveDataPartitionRow, data_root: Path) -> StoredLivePart
         unique_keys=tuple(row.unique_keys),
         min_source_event_time=row.min_source_event_time,
         max_source_event_time=row.max_source_event_time,
+        min_canonical_time=row.min_canonical_time,
+        max_canonical_time=row.max_canonical_time,
         relative_path=row.relative_path,
     )

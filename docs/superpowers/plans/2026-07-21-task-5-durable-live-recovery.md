@@ -4,7 +4,7 @@
 
 **Goal:** Make routed Binance live capture durably accepted before acknowledgement, crash-recoverable, uniquely normalized across shards, and consumable only through an approved PostgreSQL live catalog.
 
-**Architecture:** Replace the per-day JSON ledger and in-memory acceptance queue with one bounded SQLite WAL journal per symbol/dataset/day. SQLite owns event identity, normalized primary-key uniqueness, durable spool state, and prepared/published/cataloged batch state; immutable shard paths and checksums are deterministic and recoverable. PostgreSQL migration `20260721_0003` adds the formal approved live-partition registry, while the worker restores stream state, registers every `LiveWriteResult`, and acknowledges a local batch only after the catalog/state transaction commits.
+**Architecture:** Replace the per-day JSON ledger and in-memory acceptance queue with 64 fixed SQLite WAL bucket journals selected by stable symbol/dataset uniqueness domain. SQLite owns cross-date event identity, normalized primary-key uniqueness, per-event source partition, durable spool state, and prepared/published/cataloged batch state; immutable shard paths and checksums are deterministic and recoverable. PostgreSQL migration `20260721_0003` adds the formal approved live-partition registry unchanged; follow-up `20260721_0004` adds canonical query ranges and stricter constraints. The worker restores stream state, registers every `LiveWriteResult`, and acknowledges a local batch only after the catalog/state transaction commits.
 
 **Tech Stack:** Python 3.12, stdlib `sqlite3` WAL/FULL synchronous mode, PyArrow/Parquet, SQLAlchemy 2 async, Alembic, PostgreSQL, pytest, DuckDB-safe relative paths.
 
@@ -50,10 +50,10 @@
   `batches(batch_id PRIMARY KEY, state, manifest_json, created_at)` and
   `batch_events(batch_id, event_identity, PRIMARY KEY(batch_id,event_identity))`.
 
-- [ ] Add failing tests proving `accept` commits SQLite before returning, survives a new `LiveStorage` instance, uses WAL/FULL synchronous mode, keeps journals day-partitioned and publication batches bounded, performs identity lookup without rewriting a JSON ledger, and serializes `close` against an in-flight accept/publish call.
+- [ ] Add failing tests proving `accept` commits SQLite before returning, survives a new `LiveStorage` instance, uses WAL/FULL synchronous mode, keeps publication batches source-partition bounded inside 64 fixed journals, performs identity lookup without rewriting a JSON ledger, and serializes `close` against an in-flight accept/publish call.
 - [ ] Add failing tests proving same identity/same payload is idempotent, same identity/different payload conflicts, closed-kline `open_time` and aggregate ID are unique normalized keys across separate batches, and same normalized key/different payload fails closed.
 - [ ] Run the focused storage tests and capture RED.
-- [ ] Implement structured per-day journal creation, explicit `BEGIN IMMEDIATE` transactions, normalized-key reservation, bounded publication batches, and event reconstruction with payload-hash revalidation.
+- [ ] Implement descriptor-safe fixed-bucket journal creation, startup rejection of legacy per-day/symlinked spools, explicit `BEGIN IMMEDIATE` transactions, normalized-key reservation, bounded source-partition batches, direct batch-to-bucket acknowledgement, and event reconstruction with payload-hash revalidation.
 - [ ] Change `LiveWriterLease.close` and every storage mutation to share the storage `RLock`, checking `active` only after acquiring it.
 - [ ] Remove `events-index.json` code and re-run focused tests/Ruff to GREEN.
 
@@ -67,7 +67,7 @@
 **Interfaces:**
 - Produces: `LiveStorage.publish_next_batch(lease, max_events=...) -> LiveWriteResult | None`.
 - Produces: `LiveStorage.acknowledge_cataloged(lease, batch_id) -> None`.
-- `LiveWriteResult` contains `batch_id`, immutable raw/normalized `StoredLivePartition` records, event count, symbol/dataset/date, and source-event range.
+- `LiveWriteResult` contains `batch_id`, immutable raw/normalized `StoredLivePartition` records, event count, symbol/dataset/date, source-event provenance range, and dataset-canonical query range.
 
 - [ ] Add failure-injection tests for crashes after batch prepare, raw publication, normalized publication, and PostgreSQL-before-local acknowledgement; a reopened storage instance must publish or return the same deterministic result without duplicates.
 - [ ] Verify prepared batch manifests contain deterministic relative paths, checksums, schema name, sort/unique keys, source-event range, and row count before any final shard is made consumable.
@@ -76,10 +76,11 @@
 - [ ] Ensure published-but-not-cataloged shards are returned for catalog retry and never deleted or treated as approved locally.
 - [ ] Re-run focused storage tests/Ruff to GREEN.
 
-### Task 4: PostgreSQL Live Catalog and Migration 0003
+### Task 4: PostgreSQL Live Catalog and Migrations 0003/0004
 
 **Files:**
 - Create: `services/api/migrations/versions/20260721_0003_live_data_catalog.py`
+- Create: `services/api/migrations/versions/20260721_0004_live_canonical_time.py`
 - Modify: `services/api/src/crypto_research/db/models.py`
 - Modify: `services/api/src/crypto_research/db/repositories.py`
 - Create: `services/api/src/crypto_research/market/live_catalog.py`
@@ -89,9 +90,9 @@
 - Create: `services/api/tests/market/test_live_catalog.py`
 
 **Interfaces:**
-- Adds `live_data_partitions` with deterministic ID, batch ID, layer, symbol, dataset, partition date, relative path, checksum, schema name, sort keys, unique keys, min/max source event time, row count, approval status, and timestamps.
+- Migration `0003` adds `live_data_partitions` with deterministic ID, batch ID, layer, symbol, dataset, partition date, relative path, checksum, schema name, sort keys, unique keys, min/max source event time, row count, approval status, and timestamps. Immutable migration `0004` adds min/max canonical time, stronger constraints, and a canonical overlap index; it aborts rather than guessing ranges for existing rows.
 - Produces: `SqlAlchemyLiveCatalogRepository.register_batch`, `list_approved_normalized`, and the database-backed `approved_parquet_paths` query boundary.
-- Query boundary returns only approved normalized relative Parquet paths in deterministic range order.
+- Query boundary opens only approved normalized Parquet through checksum-revalidated descriptors and filters/orders on kline `open_time`, aggregate/book `transact_time`, or mark `event_time`.
 
 - [ ] Add failing model/migration tests for checksums, positive row counts, time order, supported layer/status, unique path, and immutable batch/layer/path identity.
 - [ ] Add failing repository tests proving idempotent identical registration, conflict rejection, and approved-only deterministic DuckDB-safe query results.

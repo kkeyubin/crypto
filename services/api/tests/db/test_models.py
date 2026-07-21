@@ -98,6 +98,8 @@ def test_live_catalog_is_independent_and_records_query_contract() -> None:
         "unique_keys",
         "min_source_event_time",
         "max_source_event_time",
+        "min_canonical_time",
+        "max_canonical_time",
         "row_count",
         "approval_status",
     }.issubset(LiveDataPartitionRow.__table__.columns.keys())
@@ -110,6 +112,7 @@ def test_live_catalog_is_independent_and_records_query_contract() -> None:
     assert "json_array_length(unique_keys)" in check_sql
     assert "schema_name" in check_sql
     assert "left(checksum_sha256, 24)" in check_sql
+    assert "max_canonical_time >= min_canonical_time" in check_sql
     assert any(
         {column.name for column in item.columns} == {"relative_path"}
         for item in uniques

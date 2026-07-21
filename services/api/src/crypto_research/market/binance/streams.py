@@ -414,11 +414,12 @@ def _decimal(
         raise StreamMessageError(f"{field} must be a finite decimal string")
     if not _fits_decimal128_38_18(parsed):
         raise StreamMessageError(f"{field} must fit decimal128(38, 18)")
+    canonical = "0" if parsed.is_zero() else value
     if positive and parsed <= 0:
         raise StreamMessageError(f"{field} must be a positive decimal string")
     if nonnegative and parsed < 0:
         raise StreamMessageError(f"{field} must be a nonnegative decimal string")
-    return value, parsed
+    return canonical, parsed
 
 
 def _fits_decimal128_38_18(value: Decimal) -> bool:

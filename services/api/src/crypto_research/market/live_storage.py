@@ -70,6 +70,13 @@ BOOK_TICKER_SCHEMA = pa.schema(
 
 _LOCK_NAME = ".live-writer.lock"
 _LIVE_JOURNAL_BUCKETS = 64
+_DIRECTORY_READ_FLAGS = (
+    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+)
+_LEGACY_RECOVERY = (
+    "stop the worker; cp -a DATA_ROOT/spool/binance/usdm RECOVERY_ROOT/usdm; "
+    "follow docs/runbooks/market-data-recovery.md; do not delete or merge journals"
+)
 
 
 class LiveStorageError(ValueError):
@@ -94,6 +101,8 @@ class StoredLivePartition:
     unique_keys: tuple[str, ...] = ()
     min_source_event_time: int | None = None
     max_source_event_time: int | None = None
+    min_canonical_time: int | None = None
+    max_canonical_time: int | None = None
     relative_path: str = ""
 
 
@@ -318,6 +327,7 @@ class LiveStorage:
     def _discover_journals(self) -> None:
         if self._journals_discovered:
             return
+        _reject_legacy_spool(self.data_root)
         for bucket in range(_LIVE_JOURNAL_BUCKETS):
             self._journal_for_bucket(bucket, create=False)
         self._journals_discovered = True
@@ -480,6 +490,122 @@ def _batch_bucket(batch_id: str) -> int:
     return bucket
 
 
+def _reject_legacy_spool(data_root: Path) -> None:
+    descriptors = [_open_secure_root(data_root)]
+    try:
+        for component in ("spool", "binance", "usdm"):
+            descriptor = _open_existing_spool_directory(
+                descriptors[-1], component
+            )
+            if descriptor is None:
+                return
+            descriptors.append(descriptor)
+        usdm_fd = descriptors[-1]
+        for entry in sorted(os.listdir(usdm_fd)):
+            if _is_bucket_component(entry):
+                bucket_fd = _open_existing_spool_directory(usdm_fd, entry)
+                if bucket_fd is None:
+                    continue
+                os.close(bucket_fd)
+                continue
+            legacy_path = _find_legacy_journal(usdm_fd, entry)
+            if legacy_path is not None:
+                raise LiveStorageError(
+                    f"legacy per-day live spool detected at {legacy_path}; "
+                    f"recovery: {_LEGACY_RECOVERY}"
+                )
+            raise LiveStorageError(
+                f"unsafe legacy live spool entry detected at "
+                f"spool/binance/usdm/{entry}; recovery: {_LEGACY_RECOVERY}"
+            )
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _is_bucket_component(value: str) -> bool:
+    if len(value) != len("bucket=00") or not value.startswith("bucket="):
+        return False
+    try:
+        bucket = int(value.removeprefix("bucket="), 16)
+    except ValueError:
+        return False
+    return 0 <= bucket < _LIVE_JOURNAL_BUCKETS
+
+
+def _open_existing_spool_directory(parent_fd: int, name: str) -> int | None:
+    try:
+        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise LiveStorageError(
+            f"unsafe legacy live spool entry detected; recovery: {_LEGACY_RECOVERY}"
+        )
+    try:
+        descriptor = os.open(name, _DIRECTORY_READ_FLAGS, dir_fd=parent_fd)
+    except OSError as error:
+        raise LiveStorageError(
+            f"unsafe legacy live spool entry detected; recovery: {_LEGACY_RECOVERY}"
+        ) from error
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or opened.st_dev != before.st_dev
+        or opened.st_ino != before.st_ino
+    ):
+        os.close(descriptor)
+        raise LiveStorageError(
+            f"unsafe legacy live spool entry detected; recovery: {_LEGACY_RECOVERY}"
+        )
+    return descriptor
+
+
+def _find_legacy_journal(usdm_fd: int, symbol: str) -> str | None:
+    symbol_fd = _open_existing_spool_directory(usdm_fd, symbol)
+    if symbol_fd is None:
+        return None
+    try:
+        for dataset in sorted(os.listdir(symbol_fd)):
+            dataset_fd = _open_existing_spool_directory(symbol_fd, dataset)
+            if dataset_fd is None:
+                continue
+            try:
+                for partition in sorted(os.listdir(dataset_fd)):
+                    if not partition.startswith("date="):
+                        continue
+                    partition_fd = _open_existing_spool_directory(
+                        dataset_fd, partition
+                    )
+                    if partition_fd is None:
+                        continue
+                    try:
+                        try:
+                            journal = os.stat(
+                                "journal.sqlite3",
+                                dir_fd=partition_fd,
+                                follow_symlinks=False,
+                            )
+                        except FileNotFoundError:
+                            continue
+                        if not stat.S_ISREG(journal.st_mode):
+                            raise LiveStorageError(
+                                "unsafe legacy live spool entry detected; "
+                                f"recovery: {_LEGACY_RECOVERY}"
+                            )
+                        return (
+                            f"spool/binance/usdm/{symbol}/{dataset}/"
+                            f"{partition}/journal.sqlite3"
+                        )
+                    finally:
+                        os.close(partition_fd)
+            finally:
+                os.close(dataset_fd)
+    finally:
+        os.close(symbol_fd)
+    return None
+
+
 def _normalized_payload_hash(event: ParsedStreamEvent) -> str:
     return hashlib.sha256(
         _json_bytes(
@@ -538,6 +664,8 @@ def _planned_artifacts(
                 ("event_key",),
                 min(item.event.source_event_time for item in indexed),
                 max(item.event.source_event_time for item in indexed),
+                min(_canonical_time(item.event) for item in indexed),
+                max(_canonical_time(item.event) for item in indexed),
                 ".ndjson.gz",
             ),
         )
@@ -570,6 +698,8 @@ def _planned_artifacts(
                     unique_keys,
                     min(event.source_event_time for event in normalized_events),
                     max(event.source_event_time for event in normalized_events),
+                    min(_canonical_time(event) for event in normalized_events),
+                    max(_canonical_time(event) for event in normalized_events),
                     ".parquet",
                 ),
             )
@@ -585,8 +715,10 @@ def _artifact_record(
     schema_name: str,
     sort_keys: tuple[str, ...],
     unique_keys: tuple[str, ...],
-    minimum: int,
-    maximum: int,
+    minimum_source_event_time: int,
+    maximum_source_event_time: int,
+    minimum_canonical_time: int,
+    maximum_canonical_time: int,
     suffix: str,
 ) -> dict[str, object]:
     checksum = hashlib.sha256(payload).hexdigest()
@@ -606,9 +738,25 @@ def _artifact_record(
         "schema_name": schema_name,
         "sort_keys": list(sort_keys),
         "unique_keys": list(unique_keys),
-        "min_source_event_time": minimum,
-        "max_source_event_time": maximum,
+        "min_source_event_time": minimum_source_event_time,
+        "max_source_event_time": maximum_source_event_time,
+        "min_canonical_time": minimum_canonical_time,
+        "max_canonical_time": maximum_canonical_time,
     }
+
+
+def _canonical_time(event: ParsedStreamEvent) -> int:
+    if event.dataset is LiveDataset.KLINES:
+        value = event.values["open_time"]
+    elif event.dataset in {LiveDataset.AGG_TRADES, LiveDataset.BOOK_TICKER}:
+        value = event.values["transact_time"]
+    elif event.dataset is LiveDataset.MARK_PRICE:
+        value = event.source_event_time
+    else:
+        raise LiveStorageError(f"unsupported live dataset: {event.dataset}")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise LiveStorageError("live event canonical time is invalid")
+    return value
 
 
 def _normalized_order(event: ParsedStreamEvent) -> tuple[int, int]:
@@ -690,6 +838,8 @@ def _stored_partition(data_root: Path, record: object) -> StoredLivePartition:
     unique_keys = record.get("unique_keys")
     minimum = record.get("min_source_event_time")
     maximum = record.get("max_source_event_time")
+    minimum_canonical = record.get("min_canonical_time")
+    maximum_canonical = record.get("max_canonical_time")
     if (
         not isinstance(relative, str)
         or relative.startswith("/")
@@ -710,6 +860,10 @@ def _stored_partition(data_root: Path, record: object) -> StoredLivePartition:
         or not isinstance(minimum, int)
         or not isinstance(maximum, int)
         or minimum > maximum
+        or not isinstance(minimum_canonical, int)
+        or not isinstance(maximum_canonical, int)
+        or minimum_canonical < 0
+        or minimum_canonical > maximum_canonical
     ):
         raise LiveStorageError("live batch artifact record is invalid")
     try:
@@ -719,19 +873,21 @@ def _stored_partition(data_root: Path, record: object) -> StoredLivePartition:
     except ValueError as error:
         raise LiveStorageError("live batch artifact is missing or unsafe") from error
     return StoredLivePartition(
-        data_root / relative,
-        checksum,
-        row_count,
-        layer,
-        symbol,
-        dataset,
-        partition_date,
-        schema_name,
-        tuple(sort_keys),
-        tuple(unique_keys),
-        minimum,
-        maximum,
-        relative,
+        path=data_root / relative,
+        sha256=checksum,
+        row_count=row_count,
+        layer=layer,
+        symbol=symbol,
+        dataset=dataset,
+        partition_date=partition_date,
+        schema_name=schema_name,
+        sort_keys=tuple(sort_keys),
+        unique_keys=tuple(unique_keys),
+        min_source_event_time=minimum,
+        max_source_event_time=maximum,
+        min_canonical_time=minimum_canonical,
+        max_canonical_time=maximum_canonical,
+        relative_path=relative,
     )
 
 

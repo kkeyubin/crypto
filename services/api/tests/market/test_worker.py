@@ -755,6 +755,40 @@ def test_unrepresentable_decimal_is_rejected_before_durable_accept() -> None:
     asyncio.run(scenario())
 
 
+def test_scientific_zero_is_arrow_safe_before_durable_accept() -> None:
+    async def scenario() -> None:
+        storage = Storage()
+        market_worker = worker(
+            Repository(),
+            Supervisor(),
+            storage,
+            Backfill(),
+        )
+        message = json.dumps(
+            {
+                "stream": "btcusdt@bookticker",
+                "data": {
+                    "e": "bookTicker",
+                    "E": 1_753_099_200_011,
+                    "T": 1_753_099_200_010,
+                    "s": "BTCUSDT",
+                    "u": 99,
+                    "b": "1.24",
+                    "B": "-0E+1000",
+                    "a": "1.25",
+                    "A": "2",
+                },
+            }
+        )
+
+        await market_worker.handle_message(message)
+
+        assert len(storage.events) == 1
+        assert storage.events[0].values["bid_quantity"] == "0"
+
+    asyncio.run(scenario())
+
+
 def test_low_volume_events_roll_together_at_the_fixed_flush_deadline() -> None:
     async def scenario() -> None:
         repository = Repository()

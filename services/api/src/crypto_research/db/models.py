@@ -385,6 +385,11 @@ class LiveDataPartitionRow(Base):
             name="ck_live_data_partitions_event_time_order",
         ),
         CheckConstraint(
+            "min_canonical_time >= 0 AND "
+            "max_canonical_time >= min_canonical_time",
+            name="ck_live_data_partitions_canonical_time_order",
+        ),
+        CheckConstraint(
             "relative_path !~ '(^/|(^|/)\\.\\.(/|$))'",
             name="ck_live_data_partitions_relative_path",
         ),
@@ -407,8 +412,8 @@ class LiveDataPartitionRow(Base):
             "dataset",
             "layer",
             "approval_status",
-            "min_source_event_time",
-            "max_source_event_time",
+            "min_canonical_time",
+            "max_canonical_time",
         ),
     )
 
@@ -427,6 +432,8 @@ class LiveDataPartitionRow(Base):
     unique_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     min_source_event_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
     max_source_event_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    min_canonical_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    max_canonical_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
     row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
     approval_status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -2,8 +2,9 @@
 
 ## Status
 
-Task 5 implementation and both independent-review remediation rounds are
-complete.
+Task 5 implementation includes the final independent-review remediation for
+migration immutability, legacy spool detection, decimal zero, and canonical
+query time.
 This report does not declare Phase 1 server acceptance complete; routed
 connectivity, the shared production volume, PostgreSQL restart recovery, and
 long-running operation remain Task 8 acceptance gates.
@@ -30,13 +31,18 @@ long-running operation remain Task 8 acceptance gates.
   `DataType.FUNDING`, and ticks are never synthesized into OHLC. Official
   archive/REST sources remain authoritative for mark-price klines and realized
   funding history.
-- `handle_message` returns only after a per-symbol/dataset/day SQLite journal
-  commits the event with WAL and `synchronous=FULL`. Indexed identity and
-  payload-hash lookup is logarithmic; no daily JSON ledger is read or rewritten.
-  The in-memory signal only wakes the publisher and is never the durable source
-  of truth.
+- `handle_message` returns only after one of 64 fixed bucket SQLite journals
+  commits the event with WAL and `synchronous=FULL`. A stable symbol/dataset
+  domain keeps source and normalized identities cross-date unique; each event
+  also carries a source `partition_key`, and queued batches never mix source
+  partitions. Batch IDs encode the bucket for direct acknowledgement. Startup
+  enumerates the fixed paths and descriptor-safely rejects any legacy per-day
+  or symlinked spool. Indexed identity and payload-hash lookup is logarithmic;
+  no daily JSON ledger is read or rewritten. The in-memory signal only wakes
+  the publisher and is never the durable source of truth.
 - Each prepared batch records event membership, deterministic raw/normalized
-  paths, SHA-256, schema name, sort/unique keys, event-time range, and row count
+  paths, SHA-256, schema name, sort/unique keys, source-event provenance range,
+  dataset-canonical query range, and row count
   before publishing immutable gzip NDJSON and zstd Parquet shards. The journal
   advances through `prepared`, `published`, and `cataloged`; restart recovery
   reconstructs or verifies the same objects and resumes any unacknowledged
@@ -90,11 +96,17 @@ long-running operation remain Task 8 acceptance gates.
   block WebSocket supervision, heartbeat refresh, or SIGTERM. Cleanup attempts
   readers, backfill, force-flush, all sockets, stopped heartbeat, and writer
   release independently; cleanup failures do not mask the primary worker error.
-- Migration `20260721_0003` adds the independent `live_data_partitions`
-  registry. It has no archive `source_object` coupling and records immutable
-  batch/layer/path identity plus checksum, schema, ordering, uniqueness, range,
-  row count, approval state, and timestamps. The DuckDB-facing boundary returns
-  only approved normalized Parquet paths under the fixed data root; raw or
+- Migration `20260721_0003` remains byte-identical to its first committed form
+  and adds the independent `live_data_partitions` registry. Follow-up migration
+  `20260721_0004` adds canonical ranges and the stronger catalog constraints;
+  it aborts if any existing row lacks a trustworthy canonical range. The
+  reviewed 0003 and intermediate Task 5 commits were never deployed to the
+  server, so an unexpected nonempty table is recovery evidence, not something
+  to guess from source `E`. The catalog records source min/max for provenance
+  and canonical min/max for selection: kline `open_time`, aggregate/book
+  `transact_time`, and mark `event_time`. The DuckDB-facing boundary reads only
+  approved normalized Parquet through checksum-revalidated descriptors and
+  uses the canonical axis for shard guards, filters, and ordering; raw or
   unregistered shards cannot enter that boundary.
 - No trading, exchange credential, wallet, public port, strategy, paper
   execution, notification, or AI behavior was added.
@@ -105,13 +117,18 @@ Every remediation below was first represented by a failing focused test:
 
 - parser unsigned-int64, signed/unsigned decimal, OHLC, trade-ID, and book
   relationship enforcement;
+- decimal128 precision/scale rejection plus Arrow-safe canonicalization of
+  `0E+100`, `0E+1000`, and signed scientific zero before durable acceptance;
 - WAL-before-return acceptance, immutable batch shards replacing the daily JSON
   ledger, batch-boundary replay, normalized-primary-key conflict detection, and
   same-batch duplicate replay;
 - prepared-batch crash injection, deterministic restart recovery, and
   published-before-catalog acknowledgement;
 - live-catalog completeness, immutable idempotent registration, migration head,
-  and approved-normalized-only DuckDB path resolution;
+  immutable 0003 history, fail-closed 0004 canonical migration, midnight-kline
+  canonical-day queries, and approved-normalized-only descriptor resolution;
+- fixed-bucket cross-date uniqueness, direct acknowledgement, restart recovery,
+  and descriptor-safe legacy/symlinked spool rejection;
 - two storage instances and a separate Python process contending for the writer
   lock;
 - durable acceptance before batch publication, atomic catalog/state commit,
@@ -133,10 +150,10 @@ The final verification commands are:
 ```text
 cd services/api
 .venv/bin/pytest -q tests/market
-# 207 passed
+# 290 passed
 
 .venv/bin/pytest -q
-# 436 passed, 1 skipped
+# 519 passed, 1 skipped
 
 .venv/bin/ruff check src tests migrations
 # All checks passed!
@@ -145,7 +162,10 @@ cd services/api
 # passed
 
 .venv/bin/python -m alembic -c alembic.ini heads
-# 20260721_0003 (head)
+# 20260721_0004 (head)
+
+shasum -a 256 migrations/versions/20260721_0003_live_data_catalog.py
+# 08609cb5e2291093ad4178ad25439aaadc27f66c6a2dda88bab433e908d5ac6b
 
 source /Users/kyle/.nvm/nvm.sh && nvm use
 # Node v24.15.0, npm v11.12.1

@@ -359,3 +359,70 @@ def test_decimal128_extremes_and_scientific_notation_are_exact(value: str) -> No
     )
 
     assert parsed.values["price"] == value
+
+
+@pytest.mark.parametrize("zero", ["0E+100", "0E+1000", "-0E+100"])
+@pytest.mark.parametrize(
+    ("stream", "payload_factory", "field", "value_key"),
+    [
+        ("btcusdt@kline_1m", valid_kline, "v", "volume"),
+        ("btcusdt@kline_1m", valid_kline, "q", "quote_asset_volume"),
+        (
+            "btcusdt@kline_1m",
+            valid_kline,
+            "V",
+            "taker_buy_base_asset_volume",
+        ),
+        (
+            "btcusdt@kline_1m",
+            valid_kline,
+            "Q",
+            "taker_buy_quote_asset_volume",
+        ),
+        ("btcusdt@markprice@1s", valid_mark, "r", "provisional_funding_rate"),
+        ("btcusdt@bookticker", valid_book, "B", "bid_quantity"),
+        ("btcusdt@bookticker", valid_book, "A", "ask_quantity"),
+    ],
+)
+def test_scientific_zero_is_canonicalized_before_storage(
+    zero: str,
+    stream: str,
+    payload_factory,
+    field: str,
+    value_key: str,
+) -> None:
+    payload = payload_factory()
+    target = payload["k"] if stream.endswith("@kline_1m") else payload
+    target[field] = zero  # type: ignore[index]
+
+    parsed = parse_stream_message(combined(stream, payload), RECEIVED_AT)
+
+    assert parsed.values[value_key] == "0"
+
+
+@pytest.mark.parametrize("zero", ["0E+100", "0E+1000", "-0E+100"])
+@pytest.mark.parametrize(
+    ("stream", "payload_factory", "field"),
+    [
+        ("btcusdt@kline_1m", valid_kline, "o"),
+        ("btcusdt@kline_1m", valid_kline, "h"),
+        ("btcusdt@kline_1m", valid_kline, "l"),
+        ("btcusdt@kline_1m", valid_kline, "c"),
+        ("btcusdt@aggtrade", valid_aggregate, "p"),
+        ("btcusdt@aggtrade", valid_aggregate, "q"),
+        ("btcusdt@markprice@1s", valid_mark, "p"),
+        ("btcusdt@markprice@1s", valid_mark, "i"),
+        ("btcusdt@markprice@1s", valid_mark, "P"),
+        ("btcusdt@bookticker", valid_book, "b"),
+        ("btcusdt@bookticker", valid_book, "a"),
+    ],
+)
+def test_scientific_zero_still_fails_positive_decimal_semantics(
+    zero: str, stream: str, payload_factory, field: str
+) -> None:
+    payload = payload_factory()
+    target = payload["k"] if stream.endswith("@kline_1m") else payload
+    target[field] = zero  # type: ignore[index]
+
+    with pytest.raises(StreamMessageError, match="positive decimal"):
+        parse_stream_message(combined(stream, payload), RECEIVED_AT)

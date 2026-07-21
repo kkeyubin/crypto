@@ -6,7 +6,7 @@ For each symbol and stream, track exchange event time, receive time, sequence/tr
 
 ## Automatic Response
 
-1. Preserve the per-day SQLite WAL spool and inspect non-`cataloged` batches; do not delete `journal.sqlite3`, `-wal`, or `-shm` files while the writer is running.
+1. Preserve the fixed-bucket SQLite WAL spool under `spool/binance/usdm/bucket=00..3f/` and inspect non-`cataloged` batches; do not delete `journal.sqlite3`, `-wal`, or `-shm` files while the writer is running.
 2. Restart the single authoritative worker on the same `CRYPTO_DATA_ROOT`. It must reconstruct/verify `prepared` artifacts and resubmit `published` batches to PostgreSQL before accepting them as cataloged.
 3. Mark the affected stream `degraded` and block new strategy entries requiring that stream.
 4. Continue recording unaffected data and manage existing paper positions under the declared degraded-data policy.
@@ -19,6 +19,56 @@ For each symbol and stream, track exchange event time, receive time, sequence/tr
 
 Only rows in PostgreSQL `live_data_partitions` with `layer=normalized` and `approval_status=approved` may enter the DuckDB live query boundary. A Parquet file existing on disk is not approval evidence by itself.
 
+## Legacy Spool and Migration 0004
+
+The reviewed `20260721_0003` catalog migration and intermediate Task 5 commits were never deployed to the server. Migration `20260721_0004` therefore expects `live_data_partitions` to be empty. It deliberately aborts if rows exist because source event `E` cannot be used to infer the canonical query range.
+
+With the worker stopped, detect the obsolete per-day layout without following directory symlinks:
+
+```bash
+data_root=/srv/crypto-research/data
+find -P "$data_root/spool/binance/usdm" \
+  -type f -path '*/date=*/journal.sqlite3' -print
+```
+
+The worker performs its own descriptor-relative check while acquiring the authoritative writer lock. If it reports a legacy or unsafe spool, keep the worker stopped. Preserve the complete tree before any recovery decision:
+
+```bash
+data_root=/srv/crypto-research/data
+recovery_root=/srv/crypto-research/recovery/task-5-legacy-spool
+mkdir -p "$recovery_root"
+cp -a "$data_root/spool/binance/usdm" "$recovery_root/usdm"
+```
+
+Check whether an unexpected catalog exists and export it before migration:
+
+```bash
+psql "$CRYPTO_DATABASE_URL" -Atc \
+  'SELECT count(*) FROM live_data_partitions;'
+pg_dump "$CRYPTO_DATABASE_URL" \
+  --data-only --table=live_data_partitions \
+  --file=/srv/crypto-research/recovery/live_data_partitions.sql
+```
+
+If the count is nonzero, do not copy source-event min/max into canonical columns and do not delete the only evidence. Either restore the pre-`0004` application while an audited recovery derives canonical min/max from each checksum-verified Parquet file, or confirm that the never-deployed catalog is disposable, retain the dump above, then clear and re-register verified artifacts:
+
+```bash
+psql "$CRYPTO_DATABASE_URL" -c 'DELETE FROM live_data_partitions;'
+cd /srv/crypto-research/app/services/api
+.venv/bin/alembic -c alembic.ini upgrade head
+```
+
+Only when the preserved legacy journal has been proved disposable or migrated by an audited tool may it be quarantined. Never merge its SQLite files into a bucket journal by filesystem copy:
+
+```bash
+data_root=/srv/crypto-research/data
+mv "$data_root/spool/binance/usdm" \
+  "$data_root/spool/binance/usdm.legacy"
+mkdir -m 700 -p "$data_root/spool/binance/usdm"
+```
+
+After restart, verify new journals appear only as `bucket=00..3f/journal.sqlite3`, then reconcile the approved catalog and stream checkpoints before treating capture as healthy.
+
 ## Manual Investigation
 
 Compare UTC boundaries, symbol/contract status, duplicates, gaps, trade IDs, and exchange maintenance notices. Determine whether direct access failed before enabling proxy port `17891`. Record the incident, affected datasets, repair source, and verification result.
@@ -29,5 +79,6 @@ Compare UTC boundaries, symbol/contract status, duplicates, gaps, trade IDs, and
 - Repaired data conflicts with already processed events.
 - Contract metadata changed without a new manifest version.
 - Paper-ledger state cannot be reconciled after replay.
+- A legacy/symlinked spool layout is present, or migration `0004` finds catalog rows without independently verified canonical ranges.
 
 In these cases keep ingestion or repair running, but leave new paper entries disabled and issue a Feishu `SYSTEM` or `RISK` notification.
