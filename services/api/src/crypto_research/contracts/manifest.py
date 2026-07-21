@@ -1,8 +1,10 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from re import compile as compile_regex
+from types import MappingProxyType
 from typing import Literal
-from urllib.parse import parse_qs, parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 from uuid import UUID
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
@@ -11,17 +13,48 @@ from crypto_research.contracts.base import UTCModel
 from crypto_research.contracts.strategy import InstrumentRef
 
 CONTRACT_SYMBOL_PATTERN = compile_regex(r"^[A-Z0-9]{3,32}$")
-REST_ENDPOINT_PARAMETERS = {
-    "/fapi/v1/klines": frozenset({"symbol", "interval", "startTime", "endTime", "limit"}),
-    "/fapi/v1/markPriceKlines": frozenset(
-        {"symbol", "interval", "startTime", "endTime", "limit"}
-    ),
-    "/fapi/v1/aggTrades": frozenset({"symbol", "fromId", "startTime", "endTime", "limit"}),
-    "/fapi/v1/fundingRate": frozenset({"symbol", "startTime", "endTime", "limit"}),
-}
-KLINE_REST_ENDPOINTS = frozenset({"/fapi/v1/klines", "/fapi/v1/markPriceKlines"})
-SENSITIVE_REST_PARAMETER_NAMES = frozenset(
+UNSIGNED_INTEGER_PATTERN = compile_regex(r"^(?:0|[1-9][0-9]*)$")
+MAX_INT64 = 9_223_372_036_854_775_807
+NUMERIC_REST_PARAMETERS = frozenset({"startTime", "endTime", "fromId", "limit"})
+SENSITIVE_QUERY_PARAMETER_NAMES = frozenset(
     {"signature", "apikey", "api_key", "listenkey", "listen_key"}
+)
+
+
+@dataclass(frozen=True)
+class RestEndpointSpec:
+    allowed_parameters: frozenset[str]
+    limit_maximum: int
+    requires_one_minute_interval: bool = False
+    from_id_excludes_times: bool = False
+    maximum_time_range_ms: int | None = None
+
+
+KLINE_REST_PARAMETERS = frozenset({"symbol", "interval", "startTime", "endTime", "limit"})
+TIME_REST_PARAMETERS = frozenset({"symbol", "startTime", "endTime", "limit"})
+REST_ENDPOINT_SPECS = MappingProxyType(
+    {
+        "/fapi/v1/klines": RestEndpointSpec(
+            allowed_parameters=KLINE_REST_PARAMETERS,
+            limit_maximum=1500,
+            requires_one_minute_interval=True,
+        ),
+        "/fapi/v1/markPriceKlines": RestEndpointSpec(
+            allowed_parameters=KLINE_REST_PARAMETERS,
+            limit_maximum=1500,
+            requires_one_minute_interval=True,
+        ),
+        "/fapi/v1/aggTrades": RestEndpointSpec(
+            allowed_parameters=frozenset({*TIME_REST_PARAMETERS, "fromId"}),
+            limit_maximum=1000,
+            from_id_excludes_times=True,
+            maximum_time_range_ms=3_600_000,
+        ),
+        "/fapi/v1/fundingRate": RestEndpointSpec(
+            allowed_parameters=TIME_REST_PARAMETERS,
+            limit_maximum=1000,
+        ),
+    }
 )
 
 
@@ -196,29 +229,75 @@ def _validate_archive_url(parsed: object) -> None:
 def _validate_rest_url(parsed: object) -> None:
     if parsed.scheme != "https" or parsed.netloc != "fapi.binance.com":
         raise ValueError("source URL must be a canonical Binance REST URL")
-    allowed_parameters = REST_ENDPOINT_PARAMETERS.get(parsed.path)
-    if allowed_parameters is None:
+    specification = REST_ENDPOINT_SPECS.get(parsed.path)
+    if specification is None:
         raise ValueError("source URL must use an allowed public Binance REST endpoint")
+    values = _parse_rest_query_parameters(parsed.query, specification)
+    symbol = values.get("symbol")
+    if symbol is None or CONTRACT_SYMBOL_PATTERN.fullmatch(symbol) is None:
+        raise ValueError("source URL must contain one uppercase contract symbol")
+    if specification.requires_one_minute_interval and values.get("interval") != "1m":
+        raise ValueError("source URL must contain interval=1m for kline data")
+    _validate_rest_numeric_parameters(values, specification)
+
+
+def _parse_rest_query_parameters(query: str, specification: RestEndpointSpec) -> dict[str, str]:
     try:
-        parameters = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+        parameters = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
     except ValueError as error:
         raise ValueError("source URL must have valid REST query parameters") from error
     values: dict[str, str] = {}
     for key, value in parameters:
         if not key.strip() or not value.strip():
             raise ValueError("source URL cannot contain blank REST query keys or values")
-        if key.casefold() in SENSITIVE_REST_PARAMETER_NAMES:
-            raise ValueError("source URL cannot contain sensitive REST query parameters")
-        if key not in allowed_parameters:
+        _reject_sensitive_query_parameter(key)
+        if key not in specification.allowed_parameters:
             raise ValueError("source URL contains an unsupported REST query parameter")
         if key in values:
             raise ValueError("source URL cannot repeat REST query parameters")
         values[key] = value
-    symbol = values.get("symbol")
-    if symbol is None or CONTRACT_SYMBOL_PATTERN.fullmatch(symbol) is None:
-        raise ValueError("source URL must contain one uppercase contract symbol")
-    if parsed.path in KLINE_REST_ENDPOINTS and values.get("interval") != "1m":
-        raise ValueError("source URL must contain interval=1m for kline data")
+    return values
+
+
+def _validate_rest_numeric_parameters(
+    values: dict[str, str], specification: RestEndpointSpec
+) -> None:
+    parsed_values = {
+        key: _parse_unsigned_rest_integer(key, value)
+        for key, value in values.items()
+        if key in NUMERIC_REST_PARAMETERS
+    }
+    limit = parsed_values.get("limit")
+    if limit is not None and not 1 <= limit <= specification.limit_maximum:
+        raise ValueError("source URL contains an out-of-range REST limit")
+    start_time = parsed_values.get("startTime")
+    end_time = parsed_values.get("endTime")
+    if start_time is not None and end_time is not None:
+        if start_time > end_time:
+            raise ValueError("source URL startTime cannot exceed endTime")
+        if (
+            specification.maximum_time_range_ms is not None
+            and end_time - start_time > specification.maximum_time_range_ms
+        ):
+            raise ValueError("source URL REST time range exceeds the endpoint maximum")
+    if specification.from_id_excludes_times and "fromId" in parsed_values and (
+        start_time is not None or end_time is not None
+    ):
+        raise ValueError("source URL cannot mix aggTrades fromId with time parameters")
+
+
+def _parse_unsigned_rest_integer(key: str, value: str) -> int:
+    if UNSIGNED_INTEGER_PATTERN.fullmatch(value) is None:
+        raise ValueError("source URL must use canonical unsigned REST integers")
+    parsed_value = int(value)
+    if key != "limit" and parsed_value > MAX_INT64:
+        raise ValueError("source URL REST integer exceeds int64")
+    return parsed_value
+
+
+def _reject_sensitive_query_parameter(key: str) -> None:
+    if key.casefold() in SENSITIVE_QUERY_PARAMETER_NAMES:
+        raise ValueError("source URL cannot contain sensitive query parameters")
 
 
 def _validate_websocket_url(parsed: object) -> None:
@@ -238,9 +317,21 @@ def _validate_websocket_url(parsed: object) -> None:
         return
     if endpoint != "stream":
         raise ValueError("source URL must use a WebSocket ws or stream endpoint")
-    streams = parse_qs(parsed.query, keep_blank_values=True).get("streams", [])
-    has_empty_stream = any(
-        not stream or any(not item for item in stream.split("/")) for stream in streams
-    )
-    if not streams or has_empty_stream:
+    streams = _parse_combined_websocket_streams(parsed.query)
+    if any(not item for item in streams.split("/")):
         raise ValueError("source URL must carry non-empty stream identifiers")
+
+
+def _parse_combined_websocket_streams(query: str) -> str:
+    try:
+        parameters = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as error:
+        raise ValueError("source URL must have valid WebSocket query parameters") from error
+    for key, _ in parameters:
+        _reject_sensitive_query_parameter(key)
+    if len(parameters) != 1:
+        raise ValueError("source URL must contain exactly one WebSocket streams parameter")
+    key, streams = parameters[0]
+    if key != "streams" or not streams.strip():
+        raise ValueError("source URL must contain one non-empty streams parameter")
+    return streams

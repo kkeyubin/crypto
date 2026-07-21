@@ -193,3 +193,48 @@ git diff --check
 
 All checks passed; `rg` confirms no generated TypeScript declaration retains
 the root unknown index signature. No concerns remain.
+
+## Third review-fix evidence
+
+### RED
+
+Added table-driven endpoint/query cases for canonical unsigned numeric values,
+int64 overflow, endpoint limit maxima, timestamp ordering, aggTrades cursor/time
+mutual exclusion and time span, plus strict combined-WebSocket query cases.
+
+```bash
+cd services/api && .venv/bin/pytest -q tests/contracts/test_runtime_contracts.py
+```
+
+failed as intended with 18 failures: the prior exact REST path/key validation
+still accepted noncanonical/overflow numeric fields, invalid endpoint limits,
+inconsistent time/cursor combinations, and combined stream queries containing
+credentials, duplicate streams, or unrelated keys.
+
+### GREEN
+
+Replaced the mutable endpoint key map with immutable `RestEndpointSpec` entries
+that declare allowed keys, limit maxima, one-minute interval requirements,
+cursor/time exclusion, and maximum time span. Shared helpers parse canonical
+ASCII unsigned integers, enforce int64 bounds and relationships, and reject
+sensitive query names. Combined WebSocket URLs now require exactly one exact,
+nonblank `streams` pair and no other query data.
+
+Final verification:
+
+```bash
+cd services/api && .venv/bin/pytest -q tests/contracts
+# 194 passed in 5.81s
+cd services/api && .venv/bin/pytest -q
+# 244 passed, 1 skipped in 10.71s
+cd services/api && .venv/bin/ruff check src tests
+# All checks passed!
+cd services/api && .venv/bin/python scripts/export_schemas.py --check
+source /Users/kyle/.nvm/nvm.sh && nvm use
+npm run contracts:types
+npm run contracts:test-generation
+npm run contracts:check-types
+git diff --check
+```
+
+All checks passed. No concerns remain.

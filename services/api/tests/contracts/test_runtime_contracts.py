@@ -157,6 +157,79 @@ def test_manifest_rejects_private_or_malformed_rest_urls(source_object_url: str)
         manifest(source_kind=SourceKind.BINANCE_REST, source_object_url=source_object_url)
 
 
+@pytest.mark.parametrize(
+    ("path", "query"),
+    [
+        (
+            "/fapi/v1/klines",
+            "symbol=BTCUSDT&interval=1m&startTime=0&endTime=9223372036854775807&limit=1500",
+        ),
+        (
+            "/fapi/v1/markPriceKlines",
+            "symbol=BTCUSDT&interval=1m&startTime=1&endTime=1&limit=1500",
+        ),
+        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&startTime=0&endTime=3600000&limit=1000"),
+        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&fromId=0&limit=1"),
+        ("/fapi/v1/fundingRate", "symbol=BTCUSDT&startTime=0&endTime=0&limit=1000"),
+    ],
+)
+def test_manifest_accepts_bounded_canonical_rest_numeric_parameters(
+    path: str, query: str
+) -> None:
+    source_object_url = f"https://fapi.binance.com{path}?{query}"
+
+    assert manifest(
+        source_kind=SourceKind.BINANCE_REST, source_object_url=source_object_url
+    ).source_object_url == source_object_url
+
+
+@pytest.mark.parametrize(
+    ("path", "query"),
+    [
+        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&startTime=01"),
+        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&startTime=-1"),
+        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&startTime=1.0"),
+        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&startTime=1e3"),
+        (
+            "/fapi/v1/klines",
+            "symbol=BTCUSDT&interval=1m&startTime=9223372036854775808",
+        ),
+        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&limit=0"),
+        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&limit=1501"),
+        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&limit=1001"),
+        ("/fapi/v1/fundingRate", "symbol=BTCUSDT&limit=1001"),
+        ("/fapi/v1/fundingRate", "symbol=BTCUSDT&startTime=2&endTime=1"),
+        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&fromId=1&startTime=1"),
+        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&fromId=1&endTime=1"),
+        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&startTime=0&endTime=3600001"),
+    ],
+)
+def test_manifest_rejects_noncanonical_or_inconsistent_rest_numeric_parameters(
+    path: str, query: str
+) -> None:
+    with pytest.raises(ValidationError, match="source URL"):
+        manifest(
+            source_kind=SourceKind.BINANCE_REST,
+            source_object_url=f"https://fapi.binance.com{path}?{query}",
+        )
+
+
+@pytest.mark.parametrize(
+    "source_object_url",
+    [
+        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&apiKey=x",
+        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&signature=x",
+        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&listenKey=x",
+        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&streams=pepeusdt@aggTrade",
+        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&foo=x",
+        "wss://fstream.binance.com/public/stream?Streams=btcusdt@aggTrade",
+    ],
+)
+def test_manifest_rejects_noncanonical_combined_websocket_queries(source_object_url: str) -> None:
+    with pytest.raises(ValidationError, match="source URL"):
+        manifest(source_kind=SourceKind.BINANCE_WEBSOCKET, source_object_url=source_object_url)
+
+
 def test_manifest_requires_explicit_v2_schema_version() -> None:
     payload = manifest().model_dump(mode="python")
     del payload["schema_version"]
