@@ -16,7 +16,7 @@ export interface SymbolMutationResult {
   readonly actionToken: number;
 }
 
-const REQUIRED_STREAM_SUFFIXES = ["aggtrade", "bookticker", "kline_1m", "markprice@1s"] as const;
+const REQUIRED_STREAM_SUFFIXES = ["aggTrade", "bookTicker", "kline_1m", "markPrice@1s"] as const;
 
 function summarizeFreshness(evidence: SymbolEvidence) {
   const requiredNames = REQUIRED_STREAM_SUFFIXES.map((suffix) => `${evidence.symbol.symbol.toLowerCase()}@${suffix}`);

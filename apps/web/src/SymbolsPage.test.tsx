@@ -111,7 +111,7 @@ function dashboardResponse(path: string): Response {
   }
   if (path.includes("/streams")) {
     const symbol = isBtc ? "BTCUSDT" : "1000PEPEUSDT";
-    const suffixes = ["aggtrade", "bookticker", "kline_1m", "markprice@1s"];
+    const suffixes = ["aggTrade", "bookTicker", "kline_1m", "markPrice@1s"];
     return jsonResponse(suffixes.slice(0, isBtc ? 4 : 3).map((suffix, index) => ({
       symbol,
       stream_name: `${symbol.toLowerCase()}@${suffix}`,
@@ -301,7 +301,7 @@ test("shows backend stale status while retaining the oldest exact required-strea
         });
       }
       if (path.includes("1000PEPEUSDT/streams")) {
-        return jsonResponse(["aggtrade", "bookticker", "kline_1m", "markprice@1s"].map((suffix, index) => ({
+        return jsonResponse(["aggTrade", "bookTicker", "kline_1m", "markPrice@1s"].map((suffix, index) => ({
           symbol: "1000PEPEUSDT",
           stream_name: `1000pepeusdt@${suffix}`,
           status: "connected",
