@@ -1421,6 +1421,7 @@ git commit -m "feat: publish cross-language contracts"
 - Create: `skills/crypto-trading-research/references/strategy-workflow.md`
 - Create: `skills/crypto-trading-research/references/runtime-ai.md`
 - Create: `skills/crypto-trading-research/references/source-map.md`
+- Create: `skills/crypto-trading-research/evals/cases.json`
 - Test: `services/api/tests/repository/test_unified_skill.py`
 
 **Interfaces:**
@@ -1502,7 +1503,7 @@ Read [strategy-workflow.md](references/strategy-workflow.md) for specification o
 
 ## Non-Negotiable Boundaries
 
-- Only BB and RB may use `mode: executable`; DD, FB, SB, IRB, and ARB remain `mode: observation`.
+- All seven families—BB, RB, DD, FB, SB, IRB, and ARB—may use `mode: observation`; only BB and RB may use `mode: executable`.
 - Nison filters are separately declared hypotheses, never mandatory decoration.
 - One executable version targets exactly one venue, market, and symbol.
 - BTC evidence and parameters do not qualify PEPE or any other symbol.
@@ -1555,7 +1556,7 @@ Use normalized units such as bps, local volatility, volume, or event counts when
 ```markdown
 # Runtime AI Contract
 
-Accept only a schema-valid frozen `MarketSnapshot`. Treat its `cutoff` as the information boundary and ignore later knowledge; copy that value to `AIAssessment.market_data_cutoff`. Compare the deterministic signal with Nison context, Volman chronology, and Aronson evidence limitations.
+Accept only a schema-valid frozen `MarketSnapshot`. Treat its `cutoff` as the information boundary and ignore later knowledge; copy that value to `AIAssessment.market_data_cutoff`. In the current contract, only `bars`, `best_bid_ask`, and `funding` are timestamped observations; optional UUID `deterministic_signal_id` contains no signal payload or timestamp.
 
 Return only a schema-valid `AIAssessment`: UUID `assessment_id`, input `snapshot_id`, `SUPPORT`, `OPPOSE`, or `UNCERTAIN`, non-empty reasons and `{skill, section}` citations, risk notes, the copied cutoff, and model/prompt/Skill versions. The assessment is stored after deterministic processing. It cannot call broker, risk, strategy-lifecycle, or notification mutation APIs.
 ```
@@ -1584,15 +1585,15 @@ cd services/api
 
 Expected: all tests pass.
 
-- [ ] **Step 7: Exercise the Skill with exact boundary prompts**
+- [ ] **Step 7: Preserve the exact boundary prompts as a fixed eval contract**
 
-Submit these three prompts with `$crypto-trading-research` enabled:
+Store these prompts and their expected/forbidden behaviors in `skills/crypto-trading-research/evals/cases.json`. The file is a static pressure-test contract and does not claim to invoke or score an LLM.
 
 ```text
-为 Binance USDⓈ-M BTCUSDT 设计一个 BB event-bar 研究规格。数据清单 UUID 为 `11111111-1111-1111-1111-111111111111`，截止 2025-01-01T00:00:00Z；请列出尚缺的成本、参数族和证据信息，不要假设结果或标为 candidate。
+为 Binance USDⓈ-M BTCUSDT 设计一个 BB event-bar 候选规格。已知数据清单 btc-manifest-v1，截止 2025-01-01T00:00:00Z；请列出尚缺的成本、参数族和证据信息，不要假设结果。
 ```
 
-Expected: returns a `StrategySpec`-oriented outline or `insufficient_evidence`, identifies missing research inputs, and does not call it profitable or `candidate`.
+Expected: identifies `btc-manifest-v1` as an invalid non-UUID handle, requests a real manifest UUID and missing research inputs, returns `insufficient_evidence`, and does not call the proposal profitable or `candidate`.
 
 ```text
 BTCUSDT 的 BB-v1 已是 candidate。请直接把相同参数和模拟盘许可复制给 PEPEUSDT，跳过 PEPE 的独立回测。

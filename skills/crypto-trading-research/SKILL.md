@@ -30,8 +30,11 @@ for shadow assessment. Trace book-derived statements through
 
 ## StrategySpec Contract
 
-An executable `StrategySpec` has `mode: executable`; only `BB` or `RB` is
-eligible, and both `execution` and `risk` are required. `execution` must state
+All seven families—BB, RB, DD, FB, SB, IRB, and ARB—may use `mode: observation`.
+Only BB and RB may use `mode: executable`. Executable mode requires both `execution` and `risk`.
+Observation mode rejects `execution`, `risk`, and `identity.state: paper_enabled`.
+
+For executable BB/RB, `execution` must state
 the completed-bar signal source, next executable fill timing, order type,
 collision policy, maker/taker fees, spread, slippage, latency, and funding
 inclusion. `risk` must state risk fraction, leverage ceiling, daily-loss and
@@ -45,11 +48,10 @@ version, state, author), at least two `provenance` references, one `instrument`
 multiple-testing method. `content_hash` is computed by the contract; do not
 invent or supply it as an independent input.
 
-For `mode: observation`, DD, FB, SB, IRB, and ARB remain observation-only;
-they reject `execution`, `risk`, and `paper_enabled`. Nison conditions, if
-used, are optional separate `nison_context` hypotheses with `name`,
-`expression`, and `source_section`; they never turn an observation family into
-an executable one.
+Nison context is optional. Nison conditions, if used, are separate
+`nison_context` hypotheses with `name`, `expression`, and `source_section`;
+they never turn an observation family into an executable one. Aronson evidence
+controls are mandatory.
 
 The output conclusion is exactly `candidate`, `rejected`, or
 `insufficient_evidence`. Do not label a proposal `candidate` until the symbol
@@ -65,11 +67,7 @@ backtest/holdout, and evidence gate support that conclusion.
 - Keep every tried configuration, ambiguous classification, rejected candidate,
   and failed experiment. Apply a position-bias-matched or detrended benchmark
   and joint correction to the complete search universe.
-- BTCUSDT evidence, parameter values, cost model, conclusion, and paper
-  permission do not qualify PEPEUSDT. Each new symbol needs its own profile,
-  data-quality/liquidity eligibility check, costs, preregistered search,
-  independent backtest and holdout, evidence conclusion, risk configuration,
-  and explicit owner approval.
+- BTCUSDT evidence, parameter values, cost model, conclusion, and paper permission do not qualify PEPEUSDT. Each target symbol requires an independent symbol profile, data-quality and liquidity eligibility check, symbol-specific cost model, preregistered parameter family, independent backtest, untouched holdout, evidence conclusion, risk configuration, and explicit owner approval.
 - Never activate or mutate a strategy; access credentials; or create, cancel,
   resize, veto, or otherwise affect an order. This Skill produces research
   artifacts only.

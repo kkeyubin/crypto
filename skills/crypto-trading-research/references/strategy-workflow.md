@@ -1,5 +1,13 @@
 # Strategy Workflow
 
+## Mode Matrix
+
+All seven families—BB, RB, DD, FB, SB, IRB, and ARB—may use `mode: observation`.
+Only BB and RB may use `mode: executable`. Executable mode requires both `execution` and `risk`.
+Observation mode rejects `execution`, `risk`, and `identity.state: paper_enabled`.
+
+Nison context is optional. Aronson evidence controls are mandatory.
+
 ## Contract-First Specification
 
 Freeze one `InstrumentRef`: venue `BINANCE`, market `USD_M_PERPETUAL`, and one
@@ -45,8 +53,8 @@ Use the following order before any outcome is read:
 Cross-symbol work may compare normalized bps, local volatility, volume, or
 event measures as robustness evidence. It cannot transfer a BTCUSDT profile,
 costs, parameters, result, holdout, `candidate` conclusion, risk configuration,
-or paper-enabled approval to PEPEUSDT. Start the target symbol at step 1 and
-obtain explicit owner approval after its independent evidence gate.
+or paper-enabled approval to PEPEUSDT. Each target symbol requires an independent symbol profile, data-quality and liquidity eligibility check, symbol-specific cost model, preregistered parameter family, independent backtest, untouched holdout, evidence conclusion, risk configuration, and explicit owner approval.
+Start the target symbol at step 1.
 
 ## Source Discipline
 
