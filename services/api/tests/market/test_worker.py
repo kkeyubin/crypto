@@ -4,13 +4,15 @@ import signal
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy.exc import OperationalError
 from websockets.asyncio.client import connect
 
 from crypto_research.db.models import BackfillObjectRow
-from crypto_research.db.repositories import SymbolState
+from crypto_research.db.repositories import StreamState, SymbolState
 from crypto_research.market import __main__ as market_main
 from crypto_research.market.binance.archive_paths import DatasetKind, plan_archives
 from crypto_research.market.binance.streams import group_streams, streams_for_symbols
+from crypto_research.market.live_storage import LiveAcceptResult, LiveWriteResult
 from crypto_research.market.worker import (
     ConnectionMode,
     ConnectionPolicy,
@@ -36,6 +38,8 @@ class Repository:
         self.transitions = []
         self.checkpoints = 0
         self.stream_batches = []
+        self.live_batches = []
+        self.persisted_stream_states = ()
 
     async def list_active_symbols(self):
         return self.active
@@ -47,6 +51,13 @@ class Repository:
         batch = tuple(states)
         self.stream_batches.append(batch)
         self.streams.extend(batch)
+
+    async def list_stream_states(self):
+        return self.persisted_stream_states
+
+    async def commit_live_batch(self, result, states) -> None:
+        self.live_batches.append(result)
+        await self.update_streams(states)
 
     async def record_gap(self, gap):
         self.gaps.setdefault(gap.id, gap)
@@ -86,6 +97,10 @@ class Storage:
         self.events = []
         self.batches = []
         self.lease_closed = False
+        self.pending = []
+        self.published = None
+        self.publish_calls = 0
+        self.acknowledged = []
 
     def acquire_writer(self, owner):
         storage = self
@@ -99,11 +114,33 @@ class Storage:
 
         return Lease()
 
-    def persist_batch(self, lease, events) -> None:
+    def accept(self, lease, event):
         assert lease.active
-        batch = tuple(events)
+        self.events.append(event)
+        self.pending.append(event)
+        return LiveAcceptResult(True, False)
+
+    def publish_next_batch(self, lease, *, max_events):
+        assert lease.active
+        self.publish_calls += 1
+        if self.published is not None:
+            return self.published
+        if not self.pending:
+            return None
+        batch = tuple(self.pending[:max_events])
+        del self.pending[:max_events]
         self.batches.append(batch)
-        self.events.extend(batch)
+        self.published = LiveWriteResult(
+            (), (), batch_id=f"batch-{len(self.batches)}", events=batch
+        )
+        return self.published
+
+    def acknowledge_cataloged(self, lease, batch_id):
+        assert lease.active
+        assert self.published is not None
+        assert self.published.batch_id == batch_id
+        self.acknowledged.append(batch_id)
+        self.published = None
 
 
 class Backfill:
@@ -181,7 +218,7 @@ def test_cycle_refreshes_independent_active_symbols_and_schedules_backfill() -> 
     asyncio.run(scenario())
 
 
-def test_events_are_buffered_then_stored_and_committed_as_one_batch() -> None:
+def test_events_are_durably_spooled_then_cataloged_and_committed_as_one_batch() -> None:
     async def scenario() -> None:
         repository = Repository()
         storage = Storage()
@@ -213,13 +250,15 @@ def test_events_are_buffered_then_stored_and_committed_as_one_batch() -> None:
 
         await market_worker.handle_message(message)
         await market_worker.handle_message(message)
-        assert storage.events == []
+        assert len(storage.events) == 2
+        assert storage.batches == []
         assert repository.stream_batches == []
 
         await market_worker.flush_events(force=True)
 
         assert len(storage.batches) == 1
         assert len(storage.events) == 2
+        assert storage.acknowledged == ["batch-1"]
         assert len(repository.stream_batches) == 1
         assert repository.streams[-1].status == "connected"
         assert "disconnected_at" not in repository.streams[-1].details
@@ -305,6 +344,42 @@ def test_disconnect_window_becomes_idempotent_per_stream_gap_on_reconnect() -> N
         )
         assert repository.streams[-1].status == "connected"
         assert "disconnected_at" not in repository.streams[-1].details
+
+    asyncio.run(scenario())
+
+
+def test_gap_anchor_is_only_cleared_after_gap_commit_succeeds() -> None:
+    class FlakyGapRepository(Repository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_once = True
+
+        async def record_gap(self, gap):
+            if self.fail_once:
+                self.fail_once = False
+                raise OperationalError("INSERT data_gaps", {}, Exception("offline"))
+            return await super().record_gap(gap)
+
+    async def scenario() -> None:
+        repository = FlakyGapRepository()
+        market_worker = worker(repository, Supervisor(), Storage(), Backfill())
+        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
+        connection = ManagedConnection(
+            group,
+            Socket(),
+            ConnectionMode.DIRECT,
+            NOW,
+            timedelta(hours=23, minutes=55),
+        )
+        await market_worker.note_disconnect(connection, NOW + timedelta(minutes=1))
+
+        with pytest.raises(OperationalError):
+            await market_worker.note_reconnect(group, NOW + timedelta(minutes=2))
+        assert len(market_worker._disconnects) == len(group.streams)
+
+        await market_worker.note_reconnect(group, NOW + timedelta(minutes=2))
+        assert len(repository.gaps) == len(group.streams)
+        assert market_worker._disconnects == {}
 
     asyncio.run(scenario())
 
@@ -504,6 +579,48 @@ def test_initial_connection_failure_is_degraded_and_retried_with_backoff() -> No
     asyncio.run(scenario())
 
 
+def test_main_loop_retries_transient_sqlalchemy_failure_with_bound() -> None:
+    class FlakyDatabaseRepository(Repository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failures = 1
+
+        async def list_active_symbols(self):
+            if self.failures:
+                self.failures -= 1
+                raise OperationalError("SELECT symbols", {}, Exception("offline"))
+            return await super().list_active_symbols()
+
+    async def scenario() -> None:
+        repository = FlakyDatabaseRepository()
+        supervisor = Supervisor()
+        delays = []
+
+        async def sleep(delay: float) -> None:
+            delays.append(delay)
+
+        market_worker = worker(
+            repository,
+            supervisor,
+            Storage(),
+            Backfill(),
+            sleeper=sleep,
+            random_source=lambda: 0.5,
+        )
+        task = asyncio.create_task(market_worker.run())
+        for _ in range(100):
+            if supervisor.refreshes:
+                break
+            await asyncio.sleep(0)
+        market_worker.request_shutdown()
+        await task
+
+        assert delays == [1.0]
+        assert len(supervisor.refreshes) == 1
+
+    asyncio.run(scenario())
+
+
 def test_shutdown_interrupts_connection_backoff() -> None:
     class FailedSupervisor(Supervisor):
         async def refresh(self, groups, now) -> None:
@@ -533,7 +650,7 @@ def test_shutdown_interrupts_connection_backoff() -> None:
     asyncio.run(scenario())
 
 
-def test_bounded_event_buffer_applies_backpressure_until_a_batch_flushes() -> None:
+def test_handle_message_waits_for_durable_accept_not_batch_publish() -> None:
     async def scenario() -> None:
         repository = Repository()
         storage = Storage()
@@ -564,12 +681,12 @@ def test_bounded_event_buffer_applies_backpressure_until_a_batch_flushes() -> No
         )
 
         await market_worker.handle_message(message)
-        blocked = asyncio.create_task(market_worker.handle_message(message))
-        await asyncio.sleep(0)
-        assert not blocked.done()
+        second = asyncio.create_task(market_worker.handle_message(message))
+        await second
+        assert len(storage.events) == 2
+        assert storage.batches == []
 
         await market_worker.flush_events(force=True)
-        await blocked
         await market_worker.flush_events(force=True)
         assert [len(batch) for batch in storage.batches] == [1, 1]
 
@@ -677,6 +794,84 @@ def test_stream_message_details_preserve_source_mode_after_batch_flush() -> None
     asyncio.run(scenario())
 
 
+def test_connection_mode_change_is_persisted_while_stream_stays_connected() -> None:
+    class BlockingSocket(Socket):
+        async def recv(self):
+            await asyncio.Event().wait()
+
+    async def scenario() -> None:
+        repository = Repository()
+        supervisor = Supervisor()
+        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
+        supervisor.connections = (
+            ManagedConnection(
+                group,
+                BlockingSocket(),
+                ConnectionMode.DIRECT,
+                NOW,
+                timedelta(hours=23, minutes=55),
+            ),
+        )
+        market_worker = worker(repository, supervisor, Storage(), Backfill())
+        await market_worker.run_cycle()
+        supervisor.connections = (
+            ManagedConnection(
+                group,
+                BlockingSocket(),
+                ConnectionMode.PROXY,
+                NOW + timedelta(seconds=1),
+                timedelta(hours=23, minutes=55),
+            ),
+        )
+
+        await market_worker.run_cycle()
+
+        connected = [
+            state
+            for state in repository.streams
+            if state.status == "connected" and state.stream_name in {
+                stream.name for stream in group.streams
+            }
+        ]
+        assert connected[-1].details["source_mode"] == "proxy"
+        assert all(
+            market_worker._stream_details[(stream.symbol, stream.name)]["source_mode"]
+            == "proxy"
+            for stream in group.streams
+        )
+        await market_worker._stop_readers()
+        await market_worker._stop_backfill()
+
+    asyncio.run(scenario())
+
+
+def test_restart_restores_stream_anchor_and_records_worker_restart_gap() -> None:
+    async def scenario() -> None:
+        repository = Repository()
+        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
+        repository.persisted_stream_states = tuple(
+            StreamState(
+                stream.symbol,
+                stream.name,
+                None,
+                "connected",
+                {"source_mode": "direct"},
+                NOW,
+            )
+            for stream in group.streams
+        )
+        market_worker = worker(repository, Supervisor(), Storage(), Backfill())
+
+        await market_worker._restore_stream_states()
+        await market_worker.note_reconnect(group, NOW + timedelta(minutes=1))
+
+        assert len(repository.gaps) == len(group.streams)
+        assert {gap.reason for gap in repository.gaps.values()} == {"worker_restart"}
+        assert all(gap.start_at == NOW for gap in repository.gaps.values())
+
+    asyncio.run(scenario())
+
+
 def test_blocking_backfill_does_not_block_live_cycle_or_shutdown() -> None:
     class BlockingBackfill:
         def __init__(self) -> None:
@@ -710,11 +905,13 @@ def test_transient_batch_checkpoint_failure_retries_without_losing_buffer() -> N
             super().__init__()
             self.failures = 2
 
-        async def update_streams(self, states) -> None:
+        async def commit_live_batch(self, result, states) -> None:
             if self.failures:
                 self.failures -= 1
-                raise ConnectionError("database unavailable")
-            await super().update_streams(states)
+                raise OperationalError(
+                    "INSERT live_data_partitions", {}, Exception("database unavailable")
+                )
+            await super().commit_live_batch(result, states)
 
     async def scenario() -> None:
         repository = FlakyRepository()
@@ -765,7 +962,9 @@ def test_transient_batch_checkpoint_failure_retries_without_losing_buffer() -> N
 
         assert len(repository.stream_batches) == 1
         assert delays[:2] == [1.0, 2.0]
-        assert len(storage.batches) == 3
+        assert len(storage.batches) == 1
+        assert storage.publish_calls >= 3
+        assert storage.acknowledged == ["batch-1"]
 
     asyncio.run(scenario())
 

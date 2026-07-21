@@ -17,6 +17,16 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, uuid5
 
+from sqlalchemy.exc import (
+    InterfaceError as SqlAlchemyInterfaceError,
+)
+from sqlalchemy.exc import (
+    OperationalError as SqlAlchemyOperationalError,
+)
+from sqlalchemy.exc import (
+    TimeoutError as SqlAlchemyTimeoutError,
+)
+
 from crypto_research.contracts.manifest import DataType
 from crypto_research.db.repositories import (
     GapRecord,
@@ -31,6 +41,7 @@ from crypto_research.market.binance.streams import (
     parse_stream_message,
     streams_for_symbols,
 )
+from crypto_research.market.live_storage import LiveAcceptResult, LiveWriteResult
 
 
 class ConnectionMode(StrEnum):
@@ -431,7 +442,11 @@ class WorkerRepository(Protocol):
 
     async def update_stream(self, state: StreamState) -> None: ...
 
-    async def update_streams(self, states: Sequence[StreamState]) -> None: ...
+    async def list_stream_states(self) -> tuple[StreamState, ...]: ...
+
+    async def commit_live_batch(
+        self, result: LiveWriteResult, states: Sequence[StreamState]
+    ) -> None: ...
 
     async def record_gap(self, gap: GapRecord) -> object: ...
 
@@ -454,9 +469,15 @@ class WorkerSupervisor(Protocol):
 class LiveEventStorage(Protocol):
     def acquire_writer(self, owner: str) -> object: ...
 
-    def persist_batch(
-        self, lease: object, events: Sequence[ParsedStreamEvent]
-    ) -> object: ...
+    def accept(
+        self, lease: object, event: ParsedStreamEvent
+    ) -> LiveAcceptResult: ...
+
+    def publish_next_batch(
+        self, lease: object, *, max_events: int
+    ) -> LiveWriteResult | None: ...
+
+    def acknowledge_cataloged(self, lease: object, batch_id: str) -> None: ...
 
 
 class BackfillLeaseRunner(Protocol):
@@ -516,12 +537,11 @@ class MarketWorker:
         self._flush_interval = flush_interval
         self._database_retry_limit = database_retry_limit
         self._stop = asyncio.Event()
-        self._buffer: asyncio.Queue[ParsedStreamEvent] = asyncio.Queue(
-            maxsize=max_buffer_events
-        )
+        self._accept_semaphore = asyncio.Semaphore(max_buffer_events)
+        self._accepted_since_flush = 0
         self._buffer_changed = asyncio.Event()
         self._flush_lock = asyncio.Lock()
-        self._pending_flush: tuple[ParsedStreamEvent, ...] | None = None
+        self._lease_lock = asyncio.Lock()
         self._writer_lease: object | None = None
         self._flush_task: asyncio.Task[None] | None = None
         self._flush_failure: BaseException | None = None
@@ -541,9 +561,13 @@ class MarketWorker:
 
     async def run(self) -> None:
         connection_attempt = 0
+        database_attempt = 0
         primary_error: BaseException | None = None
         try:
             await self._ensure_writer_lease()
+            await self._retry_database(self._restore_stream_states)
+            while await self.flush_events(force=True):
+                pass
             self._flush_task = asyncio.create_task(self._flush_loop())
             while not self._stop.is_set():
                 if self._flush_failure is not None:
@@ -552,8 +576,20 @@ class MarketWorker:
                     await self.run_cycle()
                 except Exception as error:
                     failure_kind = classify_connection_failure(error)
-                    if failure_kind is None:
+                    database_failure = is_transient_database_error(error)
+                    if failure_kind is None and not database_failure:
                         raise
+                    if database_failure:
+                        if database_attempt >= self._database_retry_limit:
+                            raise
+                        delay = self._backoff_policy.delay(
+                            database_attempt,
+                            random_fraction=self._random_source(),
+                        )
+                        database_attempt += 1
+                        await self._sleep_until_retry_or_stop(delay)
+                        continue
+                    assert failure_kind is not None
                     now = self._clock()
                     await self._repository.update_worker_heartbeat(
                         WorkerHeartbeat(
@@ -576,6 +612,7 @@ class MarketWorker:
                     await self._sleep_until_retry_or_stop(delay)
                     continue
                 connection_attempt = 0
+                database_attempt = 0
                 with suppress(TimeoutError):
                     await asyncio.wait_for(
                         self._stop.wait(), timeout=self._refresh_interval
@@ -652,7 +689,11 @@ class MarketWorker:
             for stream in connection.group.streams:
                 key = (stream.symbol, stream.name)
                 self._connected_at.setdefault(key, connection.connected_at)
-                if self._stream_status.get(key) != "connected":
+                if (
+                    self._stream_status.get(key) != "connected"
+                    or self._stream_details.get(key, {}).get("source_mode")
+                    != connection.mode.value
+                ):
                     await self._set_stream(
                         stream.symbol,
                         stream.name,
@@ -741,32 +782,29 @@ class MarketWorker:
             raise ValueError("live stream message exceeds the configured byte bound")
         receive_time = self._clock()
         event = parse_stream_message(message, receive_time)
-        await self._buffer.put(event)
+        await self._ensure_writer_lease()
+        async with self._accept_semaphore:
+            result = await asyncio.to_thread(
+                self._storage.accept, self._writer_lease, event
+            )
+        if result.accepted:
+            self._accepted_since_flush += 1
         self._buffer_changed.set()
         return event
 
     async def flush_events(self, *, force: bool = False) -> bool:
-        """Publish one queued batch, then commit its stream states together."""
+        """Publish one durable spool batch, then atomically catalog/checkpoint it."""
         async with self._flush_lock:
             await self._ensure_writer_lease()
-            if self._pending_flush is None:
-                if self._buffer.empty():
-                    return False
-                events: list[ParsedStreamEvent] = []
-                limit = self._batch_size
-                while len(events) < limit:
-                    try:
-                        events.append(self._buffer.get_nowait())
-                    except asyncio.QueueEmpty:
-                        break
-                self._pending_flush = tuple(events)
-            batch = self._pending_flush
-            assert batch
-            await asyncio.to_thread(
-                self._storage.persist_batch, self._writer_lease, batch
+            result = await asyncio.to_thread(
+                self._storage.publish_next_batch,
+                self._writer_lease,
+                max_events=self._batch_size,
             )
+            if result is None:
+                return False
             latest: dict[tuple[str, str], ParsedStreamEvent] = {}
-            for event in batch:
+            for event in result.events:
                 latest[(event.symbol, event.stream.name)] = event
             states = []
             for key, event in latest.items():
@@ -782,7 +820,14 @@ class MarketWorker:
                         details,
                     )
                 )
-            await self._repository.update_streams(tuple(states))
+            await self._repository.commit_live_batch(result, tuple(states))
+            if result.batch_id is None:
+                raise RuntimeError("published live batch has no identity")
+            await asyncio.to_thread(
+                self._storage.acknowledge_cataloged,
+                self._writer_lease,
+                result.batch_id,
+            )
             for state in states:
                 key = (state.symbol, state.stream_name)
                 assert state.last_event_at is not None
@@ -790,37 +835,34 @@ class MarketWorker:
                 self._last_events[key] = state.last_event_at
                 self._stream_status[key] = state.status
                 self._stream_details[key] = dict(state.details or {})
-            for _ in batch:
-                self._buffer.task_done()
-            self._pending_flush = None
-            if self._buffer.empty():
+            self._accepted_since_flush = max(
+                0, self._accepted_since_flush - len(result.events)
+            )
+            if self._accepted_since_flush == 0:
                 self._buffer_changed.clear()
             return True
 
     async def _ensure_writer_lease(self) -> None:
-        if self._writer_lease is None:
-            self._writer_lease = await asyncio.to_thread(
-                self._storage.acquire_writer, self._worker_id
-            )
+        if self._writer_lease is not None:
+            return
+        async with self._lease_lock:
+            if self._writer_lease is None:
+                self._writer_lease = await asyncio.to_thread(
+                    self._storage.acquire_writer, self._worker_id
+                )
 
     async def _flush_loop(self) -> None:
         attempt = 0
-        while not self._stop.is_set() or not self._buffer.empty() or self._pending_flush:
-            if self._pending_flush is None and self._buffer.empty():
+        while True:
+            if self._accepted_since_flush == 0 and not self._stop.is_set():
                 self._buffer_changed.clear()
-                if self._stop.is_set():
-                    break
                 await self._buffer_changed.wait()
                 continue
-            if (
-                self._pending_flush is None
-                and self._buffer.qsize() < self._batch_size
-                and not self._stop.is_set()
-            ):
+            if 0 < self._accepted_since_flush < self._batch_size and not self._stop.is_set():
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + self._flush_interval
                 while (
-                    self._buffer.qsize() < self._batch_size
+                    self._accepted_since_flush < self._batch_size
                     and not self._stop.is_set()
                 ):
                     remaining = deadline - loop.time()
@@ -836,7 +878,10 @@ class MarketWorker:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                if attempt >= self._database_retry_limit:
+                if (
+                    not is_transient_database_error(error)
+                    or attempt >= self._database_retry_limit
+                ):
                     self._flush_failure = error
                     return
                 delay = self._backoff_policy.delay(
@@ -848,6 +893,9 @@ class MarketWorker:
             attempt = 0
             if not flushed:
                 self._buffer_changed.clear()
+                if self._stop.is_set():
+                    break
+                await self._buffer_changed.wait()
 
     async def _stop_flusher(self) -> None:
         self._buffer_changed.set()
@@ -889,6 +937,19 @@ class MarketWorker:
         )
         await self._repository.checkpoint()
 
+    async def _restore_stream_states(self) -> object:
+        for state in await self._repository.list_stream_states():
+            key = (state.symbol, state.stream_name)
+            self._stream_status[key] = state.status
+            self._stream_details[key] = dict(state.details or {})
+            if state.last_event_at is not None:
+                self._last_events[key] = state.last_event_at
+            anchor = state.last_event_at or state.updated_at
+            if anchor is not None:
+                self._disconnects[key] = anchor
+                self._disconnect_reasons[key] = "worker_restart"
+        return None
+
     async def _retry_database(
         self, operation: Callable[[], Awaitable[object]]
     ) -> object:
@@ -898,8 +959,11 @@ class MarketWorker:
                 return await operation()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                if attempt >= self._database_retry_limit:
+            except Exception as error:
+                if (
+                    not is_transient_database_error(error)
+                    or attempt >= self._database_retry_limit
+                ):
                     raise
                 delay = self._backoff_policy.delay(
                     attempt, random_fraction=self._random_source()
@@ -954,10 +1018,8 @@ class MarketWorker:
         for stream in group.streams:
             key = (stream.symbol, stream.name)
             self._connected_at[key] = reconnected_at
-            disconnected_at = self._disconnects.pop(key, None)
-            reason = self._disconnect_reasons.pop(
-                key, "source_unknown_disconnect"
-            )
+            disconnected_at = self._disconnects.get(key)
+            reason = self._disconnect_reasons.get(key, "source_unknown_disconnect")
             if disconnected_at is not None and reconnected_at > disconnected_at:
                 identity = "|".join(
                     (
@@ -979,6 +1041,8 @@ class MarketWorker:
                         details={"stream_name": stream.name},
                     )
                 )
+                self._disconnects.pop(key, None)
+                self._disconnect_reasons.pop(key, None)
             await self._set_stream(
                 stream.symbol,
                 stream.name,
@@ -1041,6 +1105,29 @@ def classify_connection_failure(error: Exception) -> ConnectionFailureKind | Non
     if isinstance(error, (ConnectionError, OSError)):
         return ConnectionFailureKind.CONNECT
     return None
+
+
+def is_transient_database_error(error: Exception) -> bool:
+    if isinstance(
+        error,
+        (
+            SqlAlchemyOperationalError,
+            SqlAlchemyInterfaceError,
+            SqlAlchemyTimeoutError,
+        ),
+    ):
+        return True
+    error_type = type(error)
+    module = error_type.__module__
+    name = error_type.__name__
+    return module.startswith("asyncpg") and name in {
+        "CannotConnectNowError",
+        "ConnectionDoesNotExistError",
+        "ConnectionFailureError",
+        "InterfaceError",
+        "PostgresConnectionError",
+        "TooManyConnectionsError",
+    }
 
 
 def install_sigterm_handler(

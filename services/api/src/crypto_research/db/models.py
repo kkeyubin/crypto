@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -314,6 +315,84 @@ class DataManifestRow(Base):
     source_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class LiveDataPartitionRow(Base):
+    """Approved live artifacts, independent of archive source-object evidence."""
+
+    __tablename__ = "live_data_partitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "layer",
+            "relative_path",
+            name="uq_live_data_partitions_batch_layer_path",
+        ),
+        UniqueConstraint(
+            "relative_path", name="uq_live_data_partitions_relative_path"
+        ),
+        CheckConstraint(
+            "layer IN ('raw', 'normalized')",
+            name="ck_live_data_partitions_layer",
+        ),
+        CheckConstraint(
+            "approval_status IN ('approved', 'rejected')",
+            name="ck_live_data_partitions_approval_status",
+        ),
+        CheckConstraint(
+            "checksum_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_live_data_partitions_checksum_sha256",
+        ),
+        CheckConstraint(
+            "row_count > 0", name="ck_live_data_partitions_row_count_positive"
+        ),
+        CheckConstraint(
+            "max_source_event_time >= min_source_event_time",
+            name="ck_live_data_partitions_event_time_order",
+        ),
+        CheckConstraint(
+            "relative_path !~ '(^/|(^|/)\\.\\.(/|$))'",
+            name="ck_live_data_partitions_relative_path",
+        ),
+        CheckConstraint(
+            "(layer = 'raw' AND relative_path LIKE 'raw/%.ndjson.gz') OR "
+            "(layer = 'normalized' AND relative_path LIKE 'normalized/%.parquet')",
+            name="ck_live_data_partitions_layer_path",
+        ),
+        Index(
+            "ix_live_data_partitions_approved_query",
+            "symbol",
+            "dataset",
+            "layer",
+            "approval_status",
+            "min_source_event_time",
+            "max_source_event_time",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    layer: Mapped[str] = mapped_column(String(16), nullable=False)
+    symbol: Mapped[str] = mapped_column(
+        ForeignKey("symbols.symbol"), nullable=False, index=True
+    )
+    dataset: Mapped[str] = mapped_column(String(64), nullable=False)
+    partition_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    sort_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    unique_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    min_source_event_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    max_source_event_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    approval_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    approved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
 

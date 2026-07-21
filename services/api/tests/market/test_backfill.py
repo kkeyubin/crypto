@@ -259,14 +259,11 @@ def test_runner_persists_every_stage_before_catalog_approval() -> None:
 
 
 def test_runner_renews_lease_while_publish_is_still_running() -> None:
-    class Repository(InMemoryBackfillRepository):
-        renewals = 0
-
-        async def renew(self, *args, **kwargs):
-            self.renewals += 1
-            return await super().renew(*args, **kwargs)
-
     class SlowStages:
+        def __init__(self) -> None:
+            self.publishing = False
+            self.release_publish = asyncio.Event()
+
         async def download(self, _work: BackfillObject) -> DownloadEvidence:
             return DownloadEvidence("a" * 64, "raw/a.zip")
 
@@ -279,19 +276,37 @@ def test_runner_renews_lease_while_publish_is_still_running() -> None:
             )}
 
         async def publish(self, _work: BackfillObject) -> PublishEvidence:
-            await asyncio.sleep(0.08)
-            return PublishEvidence("partition-1", "manifest-1")
+            self.publishing = True
+            try:
+                await self.release_publish.wait()
+                return PublishEvidence("partition-1", "manifest-1")
+            finally:
+                self.publishing = False
+
+    class Repository(InMemoryBackfillRepository):
+        def __init__(self, stages: SlowStages) -> None:
+            super().__init__()
+            self.stages = stages
+            self.publish_renewals = 0
+
+        async def renew(self, *args, **kwargs):
+            renewed = await super().renew(*args, **kwargs)
+            if self.stages.publishing:
+                self.publish_renewals += 1
+                self.stages.release_publish.set()
+            return renewed
 
     async def scenario() -> None:
-        repository = Repository()
+        stages = SlowStages()
+        repository = Repository(stages)
         await repository.plan(object_for())
         completed = await BackfillRunner(
-            repository, SlowStages(), clock=lambda: datetime.now(UTC)
+            repository, stages, clock=lambda: NOW
         ).run_once("worker-a", timedelta(milliseconds=60))
 
         assert completed is not None
         assert completed.state is BackfillState.CATALOG_APPROVED
-        assert repository.renewals >= 1
+        assert repository.publish_renewals == 1
 
     asyncio.run(scenario())
 

@@ -9,6 +9,7 @@ from crypto_research.db.models import (
     BackfillObjectRow,
     DataManifestRow,
     DataPartitionRow,
+    LiveDataPartitionRow,
     SourceObjectRow,
     SymbolRow,
     is_legal_job_transition,
@@ -80,6 +81,32 @@ def test_manifest_table_persists_full_versioned_manifest_by_partition() -> None:
 
     assert DataManifestRow.__table__.columns["manifest"].nullable is False
     assert any({column.name for column in item.columns} == {"partition_id"} for item in uniques)
+
+
+def test_live_catalog_is_independent_and_records_query_contract() -> None:
+    checks = _constraints(LiveDataPartitionRow.__table__, CheckConstraint)
+    uniques = _constraints(LiveDataPartitionRow.__table__, UniqueConstraint)
+
+    assert "source_object_id" not in LiveDataPartitionRow.__table__.columns
+    assert {
+        "batch_id",
+        "layer",
+        "relative_path",
+        "checksum_sha256",
+        "schema_name",
+        "sort_keys",
+        "unique_keys",
+        "min_source_event_time",
+        "max_source_event_time",
+        "row_count",
+        "approval_status",
+    }.issubset(LiveDataPartitionRow.__table__.columns.keys())
+    assert any("normalized" in str(item.sqltext) for item in checks)
+    assert any("row_count > 0" in str(item.sqltext) for item in checks)
+    assert any(
+        {column.name for column in item.columns} == {"relative_path"}
+        for item in uniques
+    )
 
 
 def test_catalog_evidence_uses_composite_relations_and_sha256_checks() -> None:

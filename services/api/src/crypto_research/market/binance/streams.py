@@ -8,7 +8,11 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 
-from crypto_research.contracts.manifest import BinanceStream, BinanceWebSocketSource
+from crypto_research.contracts.manifest import (
+    MAX_INT64,
+    BinanceStream,
+    BinanceWebSocketSource,
+)
 from crypto_research.market.validation import normalize_symbol
 
 MAX_STREAMS_PER_CONNECTION = 1024
@@ -213,7 +217,7 @@ def _base(
         market="USD_M_PERPETUAL",
         symbol=symbol,
         dataset=dataset,
-        source_event_time=_integer(event, "E"),
+        source_event_time=_unsigned_int64(event, "E"),
         receive_time=receive_time,
         source_id=source_id,
         values=values,
@@ -231,25 +235,37 @@ def _parse_kline(
     symbol = _symbol(event.get("s"))
     if _symbol(raw_kline.get("s")) != symbol or _text(raw_kline, "i") != "1m":
         raise StreamMessageError("kline identity or interval is invalid")
-    open_time = _integer(raw_kline, "t")
-    close_time = _integer(raw_kline, "T")
+    open_time = _unsigned_int64(raw_kline, "t")
+    close_time = _unsigned_int64(raw_kline, "T")
     if open_time % 60_000 or close_time != open_time + 59_999:
         raise StreamMessageError("kline timestamps must describe one complete minute")
     is_final = raw_kline.get("x")
     if not isinstance(is_final, bool):
         raise StreamMessageError("kline close state must be boolean")
+    open_text, open_price = _decimal(raw_kline, "o", positive=True)
+    high_text, high_price = _decimal(raw_kline, "h", positive=True)
+    low_text, low_price = _decimal(raw_kline, "l", positive=True)
+    close_text, close_price = _decimal(raw_kline, "c", positive=True)
+    if low_price > min(open_price, close_price) or high_price < max(
+        open_price, close_price
+    ):
+        raise StreamMessageError("kline OHLC values are inconsistent")
     values = {
         "open_time": open_time,
-        "open": _decimal_text(raw_kline, "o"),
-        "high": _decimal_text(raw_kline, "h"),
-        "low": _decimal_text(raw_kline, "l"),
-        "close": _decimal_text(raw_kline, "c"),
-        "volume": _decimal_text(raw_kline, "v"),
+        "open": open_text,
+        "high": high_text,
+        "low": low_text,
+        "close": close_text,
+        "volume": _decimal_text(raw_kline, "v", nonnegative=True),
         "close_time": close_time,
-        "quote_asset_volume": _decimal_text(raw_kline, "q"),
-        "number_of_trades": _integer(raw_kline, "n"),
-        "taker_buy_base_asset_volume": _decimal_text(raw_kline, "V"),
-        "taker_buy_quote_asset_volume": _decimal_text(raw_kline, "Q"),
+        "quote_asset_volume": _decimal_text(raw_kline, "q", nonnegative=True),
+        "number_of_trades": _unsigned_int64(raw_kline, "n"),
+        "taker_buy_base_asset_volume": _decimal_text(
+            raw_kline, "V", nonnegative=True
+        ),
+        "taker_buy_quote_asset_volume": _decimal_text(
+            raw_kline, "Q", nonnegative=True
+        ),
     }
     return _base(
         event,
@@ -266,11 +282,11 @@ def _parse_mark_price(
     event: Mapping[str, object], receive_time: datetime
 ) -> ParsedStreamEvent:
     values = {
-        "mark_price": _decimal_text(event, "p"),
-        "index_price": _decimal_text(event, "i"),
-        "estimated_settle_price": _decimal_text(event, "P"),
+        "mark_price": _decimal_text(event, "p", positive=True),
+        "index_price": _decimal_text(event, "i", positive=True),
+        "estimated_settle_price": _decimal_text(event, "P", positive=True),
         "provisional_funding_rate": _decimal_text(event, "r"),
-        "next_funding_time": _integer(event, "T"),
+        "next_funding_time": _unsigned_int64(event, "T"),
     }
     return _base(
         event,
@@ -285,17 +301,21 @@ def _parse_mark_price(
 def _parse_aggregate_trade(
     event: Mapping[str, object], receive_time: datetime
 ) -> ParsedStreamEvent:
-    aggregate_trade_id = _integer(event, "a")
+    aggregate_trade_id = _unsigned_int64(event, "a")
     buyer_maker = event.get("m")
     if not isinstance(buyer_maker, bool):
         raise StreamMessageError("aggregate trade maker flag must be boolean")
+    first_trade_id = _unsigned_int64(event, "f")
+    last_trade_id = _unsigned_int64(event, "l")
+    if first_trade_id > last_trade_id:
+        raise StreamMessageError("aggregate trade ID range is invalid")
     values = {
         "aggregate_trade_id": aggregate_trade_id,
-        "price": _decimal_text(event, "p"),
-        "quantity": _decimal_text(event, "q"),
-        "first_trade_id": _integer(event, "f"),
-        "last_trade_id": _integer(event, "l"),
-        "transact_time": _integer(event, "T"),
+        "price": _decimal_text(event, "p", positive=True),
+        "quantity": _decimal_text(event, "q", positive=True),
+        "first_trade_id": first_trade_id,
+        "last_trade_id": last_trade_id,
+        "transact_time": _unsigned_int64(event, "T"),
         "is_buyer_maker": buyer_maker,
     }
     return _base(
@@ -311,14 +331,18 @@ def _parse_aggregate_trade(
 def _parse_book_ticker(
     event: Mapping[str, object], receive_time: datetime
 ) -> ParsedStreamEvent:
-    update_id = _integer(event, "u")
+    update_id = _unsigned_int64(event, "u")
+    bid_text, bid_price = _decimal(event, "b", positive=True)
+    ask_text, ask_price = _decimal(event, "a", positive=True)
+    if bid_price > ask_price:
+        raise StreamMessageError("book ticker bid exceeds ask")
     values = {
         "update_id": update_id,
-        "transact_time": _integer(event, "T"),
-        "bid_price": _decimal_text(event, "b"),
-        "bid_quantity": _decimal_text(event, "B"),
-        "ask_price": _decimal_text(event, "a"),
-        "ask_quantity": _decimal_text(event, "A"),
+        "transact_time": _unsigned_int64(event, "T"),
+        "bid_price": bid_text,
+        "bid_quantity": _decimal_text(event, "B", nonnegative=True),
+        "ask_price": ask_text,
+        "ask_quantity": _decimal_text(event, "A", nonnegative=True),
     }
     return _base(
         event,
@@ -349,14 +373,36 @@ def _text(values: Mapping[str, Any], field: str) -> str:
     return value
 
 
-def _integer(values: Mapping[str, Any], field: str) -> int:
+def _unsigned_int64(values: Mapping[str, Any], field: str) -> int:
     value = values.get(field)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise StreamMessageError(f"{field} must be an integer")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= MAX_INT64
+    ):
+        raise StreamMessageError(f"{field} must be an unsigned int64")
     return value
 
 
-def _decimal_text(values: Mapping[str, Any], field: str) -> str:
+def _decimal_text(
+    values: Mapping[str, Any],
+    field: str,
+    *,
+    positive: bool = False,
+    nonnegative: bool = False,
+) -> str:
+    return _decimal(
+        values, field, positive=positive, nonnegative=nonnegative
+    )[0]
+
+
+def _decimal(
+    values: Mapping[str, Any],
+    field: str,
+    *,
+    positive: bool = False,
+    nonnegative: bool = False,
+) -> tuple[str, Decimal]:
     value = values.get(field)
     if not isinstance(value, str):
         raise StreamMessageError(f"{field} must be a decimal string")
@@ -366,4 +412,8 @@ def _decimal_text(values: Mapping[str, Any], field: str) -> str:
         raise StreamMessageError(f"{field} must be a decimal string") from error
     if not parsed.is_finite():
         raise StreamMessageError(f"{field} must be a finite decimal string")
-    return value
+    if positive and parsed <= 0:
+        raise StreamMessageError(f"{field} must be a positive decimal string")
+    if nonnegative and parsed < 0:
+        raise StreamMessageError(f"{field} must be a nonnegative decimal string")
+    return value, parsed

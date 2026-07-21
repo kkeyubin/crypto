@@ -39,7 +39,8 @@ from crypto_research.market.binance.archive_paths import (
     plan_archives,
 )
 from crypto_research.market.catalog import SqlAlchemyCatalogRepository
-from crypto_research.market.live_storage import LiveStorage
+from crypto_research.market.live_catalog import SqlAlchemyLiveCatalogRepository
+from crypto_research.market.live_storage import LiveStorage, LiveWriteResult
 from crypto_research.market.worker import (
     ConnectionModeTransition,
     ConnectionPolicy,
@@ -81,9 +82,23 @@ class SessionWorkerRepository:
         async with self._session_factory() as session, session.begin():
             await SqlAlchemyDataStateRepository(session).update_stream(state)
 
+    async def list_stream_states(self) -> tuple[StreamState, ...]:
+        async with self._session_factory() as session, session.begin():
+            return await SqlAlchemyDataStateRepository(session).list_stream_states()
+
     async def update_streams(self, states: tuple[StreamState, ...]) -> None:
         """Commit one durable stream-state checkpoint for an entire live batch."""
         async with self._session_factory() as session, session.begin():
+            repository = SqlAlchemyDataStateRepository(session)
+            for state in states:
+                await repository.update_stream(state)
+
+    async def commit_live_batch(
+        self, result: LiveWriteResult, states: tuple[StreamState, ...]
+    ) -> None:
+        """Atomically approve a live manifest and checkpoint its stream states."""
+        async with self._session_factory() as session, session.begin():
+            await SqlAlchemyLiveCatalogRepository(session).register_batch(result)
             repository = SqlAlchemyDataStateRepository(session)
             for state in states:
                 await repository.update_stream(state)

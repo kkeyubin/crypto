@@ -39,7 +39,7 @@ Every ZIP is downloaded to a temporary file, checked against the sibling `.CHECK
 
 The live worker subscribes per active symbol to completed and in-progress 1-minute klines, mark-price updates, aggregate trades, and `bookTicker` best bid/ask. Binance's `markPrice@1s` fields `r` and `T` are retained explicitly as a **provisional next-funding observation**; they are not a realized funding payment, do not enter `FUNDING_SCHEMA` or `DataType.FUNDING`, and do not replace archive/REST funding history. Likewise, mark-price ticks are not synthesized into archive-compatible OHLC bars; official `markPriceKlines` remain the source for that schema.
 
-The worker applies bounded queue backpressure and rolls batches into immutable gzip NDJSON raw shards plus compressed normalized Parquet shards. A descriptor-backed cross-process writer lock enforces one authoritative writer for the shared data root, while a partition event index makes replay identity independent of local receive time and rejects the same source identity with different payload bytes. Raw shards are retained before normalized shards become indexed. After an unknown disconnect, planned rotation, or subscription regroup, the worker records the exact observed interval with the authoritative `DataType`; archives reconcile closed periods later. REST repair may fill an interval only when the adapter is reachable and its returned range passes the same validators.
+The worker acknowledges a message only after a day-partitioned SQLite WAL spool durably commits it. SQLite indexes source identity/payload hash, reserves closed-kline `open_time` and aggregate-trade ID as normalized primary keys across batch shards, and journals deterministic `prepared -> published -> cataloged` batches. A descriptor-backed cross-process writer lock enforces one authoritative writer for the shared data root. Prepared manifests make immutable gzip NDJSON raw shards and compressed normalized Parquet shards recoverable across process failure; in-progress klines remain raw-only. After an unknown disconnect, planned rotation, subscription regroup, or worker restart, the worker records the exact observed interval with the authoritative `DataType`; a gap anchor is cleared only after its database transaction commits. REST repair may fill an interval only when the adapter is reachable and its returned range passes the same validators.
 
 ## 4. Storage, Catalog, and Integrity
 
@@ -48,11 +48,12 @@ Large data stays outside Git under `CRYPTO_DATA_ROOT`:
 ```text
 raw/binance/usdm/<SYMBOL>/<dataset>/date=YYYY-MM-DD/
 normalized/binance/usdm/<SYMBOL>/<dataset>/date=YYYY-MM-DD/
+spool/binance/usdm/<SYMBOL>/<dataset>/date=YYYY-MM-DD/journal.sqlite3
 ```
 
 Closed partitions are immutable Parquet files written through a same-filesystem temporary path. Decimal values remain decimal/string-derived values, never binary floating-point inputs. UTC millisecond timestamps, source event IDs where present, schema version, normalization version, and ingestion time are retained. Duplicate primary keys are rejected or deterministically deduplicated and counted.
 
-PostgreSQL stores symbol configuration, metadata state, ingestion jobs, partition manifests, source objects/checksums, gaps, stream state, worker heartbeats, and audit events. It does not store high-volume ticks. DuckDB reads only catalog-approved Parquet paths. A partition is queryable only after checksum, schema, ordering, uniqueness, range, and row-count validation succeeds.
+PostgreSQL stores symbol configuration, metadata state, ingestion jobs, archive partition manifests, the independent `live_data_partitions` registry, source objects/checksums, gaps, stream state, worker heartbeats, and audit events. It does not store high-volume ticks. For each live batch, catalog registration and stream-state checkpoints commit in one transaction; only then is the SQLite batch acknowledged. DuckDB receives only approved normalized Parquet paths from a fixed-root catalog query boundary. Raw, rejected, missing, or merely present-but-unregistered shards are not queryable. Approval records checksum, schema, ordering, uniqueness, range, and row-count evidence.
 
 ## 5. Symbol-Independent State
 

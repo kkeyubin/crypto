@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sqlalchemy import func, inspect, update
+from sqlalchemy import func, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -25,6 +25,7 @@ from crypto_research.db.models import (
     BackfillObjectRow,
     DataPartitionRow,
     IngestionJobRow,
+    LiveDataPartitionRow,
     SourceObjectRow,
     SymbolRow,
 )
@@ -46,6 +47,11 @@ from crypto_research.market.catalog import (
     CatalogCandidate,
     SqlAlchemyCatalogRepository,
 )
+from crypto_research.market.live_catalog import (
+    LiveCatalogError,
+    SqlAlchemyLiveCatalogRepository,
+)
+from crypto_research.market.live_storage import LiveWriteResult, StoredLivePartition
 
 TEST_DATABASE_URL = os.environ.get("CRYPTO_TEST_DATABASE_URL")
 if TEST_DATABASE_URL is None:
@@ -83,6 +89,7 @@ def test_postgres_persistence_invariants() -> None:
                 "source_objects",
                 "data_partitions",
                 "data_manifests",
+                "live_data_partitions",
                 "backfill_objects",
                 "ingestion_jobs",
                 "stream_states",
@@ -139,6 +146,53 @@ def test_postgres_persistence_invariants() -> None:
                 )
                 with pytest.raises(IntegrityError):
                     await session.flush()
+                await session.rollback()
+
+                live_result = LiveWriteResult(
+                    raw=(
+                        _live_part(
+                            "raw",
+                            "a" * 64,
+                            "ndjson/binance-stream-event-v1",
+                            ("source_event_time", "source_id", "event_key"),
+                            ("event_key",),
+                        ),
+                    ),
+                    normalized=(
+                        _live_part(
+                            "normalized",
+                            "b" * 64,
+                            "parquet/binance-aggregate-trade-v1",
+                            ("aggregate_trade_id",),
+                            ("aggregate_trade_id",),
+                        ),
+                    ),
+                    batch_id="live-batch-1",
+                )
+                live_catalog = SqlAlchemyLiveCatalogRepository(session)
+                first_live = await live_catalog.register_batch(live_result)
+                retried_live = await live_catalog.register_batch(live_result)
+                await session.commit()
+                assert [row.id for row in retried_live] == [
+                    row.id for row in first_live
+                ]
+                assert await session.scalar(
+                    select(func.count()).select_from(LiveDataPartitionRow)
+                ) == 2
+                conflicting_live = LiveWriteResult(
+                    raw=live_result.raw,
+                    normalized=(
+                        StoredLivePartition(
+                            **{
+                                **live_result.normalized[0].__dict__,
+                                "sha256": "c" * 64,
+                            }
+                        ),
+                    ),
+                    batch_id=live_result.batch_id,
+                )
+                with pytest.raises(LiveCatalogError, match="immutable"):
+                    await live_catalog.register_batch(conflicting_live)
                 await session.rollback()
 
                 session.add(
@@ -411,6 +465,35 @@ def _validations() -> dict[str, bool]:
         "range": True,
         "row_count": True,
     }
+
+
+def _live_part(
+    layer: str,
+    checksum: str,
+    schema_name: str,
+    sort_keys: tuple[str, ...],
+    unique_keys: tuple[str, ...],
+) -> StoredLivePartition:
+    suffix = ".parquet" if layer == "normalized" else ".ndjson.gz"
+    relative = (
+        f"{layer}/binance/usdm/BTCUSDT/agg_trades/date=2026-01-01/"
+        f"part-{checksum[:24]}{suffix}"
+    )
+    return StoredLivePartition(
+        path=Path("/tmp") / relative,
+        sha256=checksum,
+        row_count=1,
+        layer=layer,
+        symbol="BTCUSDT",
+        dataset="agg_trades",
+        partition_date="2026-01-01",
+        schema_name=schema_name,
+        sort_keys=sort_keys,
+        unique_keys=unique_keys,
+        min_source_event_time=1,
+        max_source_event_time=2,
+        relative_path=relative,
+    )
 
 
 def _manifest(

@@ -8,8 +8,7 @@ import json
 import os
 import stat
 import threading
-from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +24,17 @@ from crypto_research.market.binance.normalization import (
     DECIMAL,
     KLINE_SCHEMA,
 )
-from crypto_research.market.binance.streams import LiveDataset, ParsedStreamEvent
+from crypto_research.market.binance.streams import (
+    LiveDataset,
+    ParsedStreamEvent,
+    parse_stream_message,
+)
+from crypto_research.market.live_journal import (
+    JournalBatch,
+    JournalEvent,
+    LiveJournalError,
+    LivePartitionJournal,
+)
 from crypto_research.market.storage import (
     _hash_fd,
     _open_existing_regular,
@@ -60,7 +69,6 @@ BOOK_TICKER_SCHEMA = pa.schema(
 )
 
 _LOCK_NAME = ".live-writer.lock"
-_INDEX_NAME = "events-index.json"
 
 
 class LiveStorageError(ValueError):
@@ -76,6 +84,16 @@ class StoredLivePartition:
     path: Path
     sha256: str
     row_count: int
+    layer: str = ""
+    symbol: str = ""
+    dataset: str = ""
+    partition_date: str = ""
+    schema_name: str = ""
+    sort_keys: tuple[str, ...] = ()
+    unique_keys: tuple[str, ...] = ()
+    min_source_event_time: int | None = None
+    max_source_event_time: int | None = None
+    relative_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,6 +101,14 @@ class LiveWriteResult:
     raw: tuple[StoredLivePartition, ...]
     normalized: tuple[StoredLivePartition, ...]
     replayed_count: int = 0
+    batch_id: str | None = None
+    events: tuple[ParsedStreamEvent, ...] = ()
+
+
+@dataclass(frozen=True)
+class LiveAcceptResult:
+    accepted: bool
+    replayed: bool
 
 
 @dataclass(frozen=True)
@@ -123,16 +149,11 @@ class LiveWriterLease:
 
     @property
     def active(self) -> bool:
-        return not self._closed
+        with self._storage._write_lock:
+            return not self._closed
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            fcntl.flock(self._descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(self._descriptor)
+        self._storage._close_lease(self)
 
     def __enter__(self) -> LiveWriterLease:
         return self
@@ -142,179 +163,494 @@ class LiveWriterLease:
 
 
 class LiveStorage:
-    """Publish bounded batches as immutable raw and normalized shards."""
+    """Durably spool events, then publish recoverable immutable live shards."""
 
     def __init__(self, data_root: Path) -> None:
         self.data_root = data_root
-        self._write_lock = threading.Lock()
+        self._write_lock = threading.RLock()
 
     def acquire_writer(self, owner: str) -> LiveWriterLease:
         if not owner:
             raise ValueError("live writer owner must not be empty")
-        root_fd = _open_secure_root(self.data_root)
-        try:
-            flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
-            lock_fd = os.open(_LOCK_NAME, flags, 0o600, dir_fd=root_fd)
-        except Exception:
-            os.close(root_fd)
-            raise
-        os.close(root_fd)
-        try:
-            lock_stat = os.fstat(lock_fd)
-            if not stat.S_ISREG(lock_stat.st_mode) or stat.S_IMODE(lock_stat.st_mode) & 0o077:
-                raise LiveStorageError("live writer lock must be a private regular file")
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                raise LiveWriterUnavailable(
-                    "another authoritative live writer is already active"
-                ) from error
-            os.ftruncate(lock_fd, 0)
-            _write_all(lock_fd, owner.encode("utf-8"))
-            os.fsync(lock_fd)
-            return LiveWriterLease(self, lock_fd, owner)
-        except Exception:
-            os.close(lock_fd)
-            raise
-
-    def persist_batch(
-        self, lease: LiveWriterLease, events: Iterable[ParsedStreamEvent]
-    ) -> LiveWriteResult:
-        if lease._storage is not self or not lease.active:
-            raise LiveWriterUnavailable("authoritative live writer lease is not active")
-        batch = tuple(events)
-        if not batch:
-            return LiveWriteResult((), ())
-        by_identity: dict[str, _IndexedEvent] = {}
-        repeated = 0
-        for event in batch:
-            item = _index_event(event)
-            previous = by_identity.get(item.identity)
-            if previous is None:
-                by_identity[item.identity] = item
-            elif previous.payload_hash != item.payload_hash:
-                raise LiveStorageError(
-                    "live replay conflicts with published source identity"
-                )
-            else:
-                repeated += 1
         with self._write_lock:
-            result = self._persist_batch_locked(tuple(by_identity.values()))
+            root_fd = _open_secure_root(self.data_root)
+            try:
+                flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+                lock_fd = os.open(_LOCK_NAME, flags, 0o600, dir_fd=root_fd)
+            except Exception:
+                os.close(root_fd)
+                raise
+            os.close(root_fd)
+            try:
+                lock_stat = os.fstat(lock_fd)
+                if not stat.S_ISREG(lock_stat.st_mode) or (
+                    stat.S_IMODE(lock_stat.st_mode) & 0o077
+                ):
+                    raise LiveStorageError(
+                        "live writer lock must be a private regular file"
+                    )
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as error:
+                    raise LiveWriterUnavailable(
+                        "another authoritative live writer is already active"
+                    ) from error
+                os.ftruncate(lock_fd, 0)
+                _write_all(lock_fd, owner.encode("utf-8"))
+                os.fsync(lock_fd)
+                return LiveWriterLease(self, lock_fd, owner)
+            except Exception:
+                os.close(lock_fd)
+                raise
+
+    def _close_lease(self, lease: LiveWriterLease) -> None:
+        with self._write_lock:
+            if lease._storage is not self or lease._closed:
+                return
+            lease._closed = True
+            try:
+                fcntl.flock(lease._descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(lease._descriptor)
+
+    def accept(
+        self, lease: LiveWriterLease, event: ParsedStreamEvent
+    ) -> LiveAcceptResult:
+        """Commit one event to its WAL spool before acknowledging the caller."""
+        with self._write_lock:
+            self._require_lease_locked(lease)
+            indexed = _index_event(event)
+            normalized_key = _normalized_key(event)
+            try:
+                result = self._journal_for_event(event).accept(
+                    identity=indexed.identity,
+                    payload_hash=indexed.payload_hash,
+                    event_json=_serialize_event(event),
+                    source_event_time=event.source_event_time,
+                    normalized_key=normalized_key,
+                    normalized_hash=(
+                        _normalized_payload_hash(event)
+                        if normalized_key is not None
+                        else None
+                    ),
+                )
+            except LiveJournalError as error:
+                raise LiveStorageError(str(error)) from error
+            return LiveAcceptResult(result.accepted, not result.accepted)
+
+    def publish_next_batch(
+        self, lease: LiveWriterLease, *, max_events: int
+    ) -> LiveWriteResult | None:
+        """Publish or recover one journaled batch; catalog acknowledgement is separate."""
+        if max_events <= 0:
+            raise ValueError("max_events must be positive")
+        with self._write_lock:
+            self._require_lease_locked(lease)
+            journals = self._journals()
+            for journal in journals:
+                batch = journal.next_open_batch()
+                if batch is not None:
+                    return self._publish_journal_batch(journal, batch)
+            for journal in journals:
+                queued = journal.queued(max_events)
+                if not queued:
+                    continue
+                batch = self._prepare_journal_batch(journal, queued)
+                return self._publish_journal_batch(journal, batch)
+            return None
+
+    def acknowledge_cataloged(
+        self, lease: LiveWriterLease, batch_id: str
+    ) -> None:
+        if not batch_id:
+            raise ValueError("batch_id must not be empty")
+        with self._write_lock:
+            self._require_lease_locked(lease)
+            for journal in self._journals():
+                try:
+                    if journal.acknowledge_cataloged(batch_id):
+                        return
+                except LiveJournalError as error:
+                    raise LiveStorageError(str(error)) from error
+            raise LiveStorageError("live batch is not present in the durable spool")
+
+    def _require_lease_locked(self, lease: LiveWriterLease) -> None:
+        if lease._storage is not self or lease._closed:
+            raise LiveWriterUnavailable("authoritative live writer lease is not active")
+
+    def _journal_for_event(self, event: ParsedStreamEvent) -> LivePartitionJournal:
+        descriptor = _PartitionDescriptor(
+            "spool",
+            event.symbol,
+            event.dataset,
+            _event_date(event.source_event_time),
+        )
+        with _open_partition(self.data_root, descriptor):
+            pass
+        return LivePartitionJournal(
+            self.data_root.joinpath(*descriptor.components, "journal.sqlite3")
+        )
+
+    def _journals(self) -> tuple[LivePartitionJournal, ...]:
+        spool = self.data_root / "spool" / "binance" / "usdm"
+        if not spool.exists():
+            return ()
+        return tuple(
+            LivePartitionJournal(path)
+            for path in sorted(spool.glob("*/*/date=*/journal.sqlite3"))
+        )
+
+    def _prepare_journal_batch(
+        self, journal: LivePartitionJournal, events: tuple[JournalEvent, ...]
+    ) -> JournalBatch:
+        batch_id = hashlib.sha256(
+            _json_bytes(
+                {
+                    "journal": journal.path.relative_to(self.data_root).as_posix(),
+                    "events": [
+                        [event.identity, event.payload_hash] for event in events
+                    ],
+                }
+            )
+        ).hexdigest()[:32]
+        artifacts = _planned_artifacts(self.data_root, events)
+        manifest = {
+            "version": 1,
+            "batch_id": batch_id,
+            "artifacts": [artifact[2] for artifact in artifacts],
+        }
+        try:
+            return journal.prepare(batch_id, events, _json_bytes(manifest).decode("ascii"))
+        except LiveJournalError as error:
+            raise LiveStorageError(str(error)) from error
+
+    def _publish_journal_batch(
+        self, journal: LivePartitionJournal, batch: JournalBatch
+    ) -> LiveWriteResult:
+        try:
+            events = journal.batch_events(batch.batch_id)
+            artifacts = _planned_artifacts(self.data_root, events)
+            manifest = _manifest_object(batch.manifest_json)
+            planned_records = [artifact[2] for artifact in artifacts]
+            if (
+                manifest.get("batch_id") != batch.batch_id
+                or manifest.get("artifacts") != planned_records
+            ):
+                raise LiveStorageError("prepared live batch manifest is inconsistent")
+            for descriptor, payload, record in artifacts:
+                _publish_immutable_bytes(
+                    self.data_root,
+                    descriptor,
+                    Path(str(record["path"])).name,
+                    payload,
+                    int(record["row_count"]),
+                )
+            journal.mark_published(batch.batch_id)
+        except LiveJournalError as error:
+            raise LiveStorageError(str(error)) from error
+        result = _result_from_manifest(self.data_root, batch.manifest_json)
         return LiveWriteResult(
             result.raw,
             result.normalized,
-            result.replayed_count + repeated,
+            result.replayed_count,
+            result.batch_id,
+            tuple(_deserialize_event(event.event_json) for event in events),
         )
 
-    def _persist_batch_locked(
-        self, indexed: tuple[_IndexedEvent, ...]
-    ) -> LiveWriteResult:
-        groups: dict[_PartitionDescriptor, list[_IndexedEvent]] = defaultdict(list)
-        for item in indexed:
-            event = item.event
-            groups[
-                _PartitionDescriptor(
-                    "raw", event.symbol, event.dataset, _event_date(event.source_event_time)
-                )
-            ].append(item)
 
-        plans: list[
-            tuple[_PartitionDescriptor, dict[str, object], list[_IndexedEvent], list[_IndexedEvent]]
-        ] = []
-        replayed = 0
-        replay_parts: dict[str, StoredLivePartition] = {}
-        # Preflight every partition before publishing any bytes.
-        for descriptor, items in groups.items():
-            ledger = _read_index(self.data_root, descriptor)
-            new_items: list[_IndexedEvent] = []
-            existing_items: list[_IndexedEvent] = []
-            entries = ledger["events"]
-            if not isinstance(entries, dict):
-                raise LiveStorageError("live event index has an invalid shape")
-            for item in items:
-                previous = entries.get(item.identity)
-                if previous is None:
-                    new_items.append(item)
-                    continue
-                if (
-                    not isinstance(previous, dict)
-                    or previous.get("payload_hash") != item.payload_hash
-                ):
-                    raise LiveStorageError(
-                        "live replay conflicts with published source identity"
-                    )
-                existing_items.append(item)
-                replayed += 1
-                for part in _entry_partitions(self.data_root, previous):
-                    replay_parts[str(part.path)] = part
-            plans.append((descriptor, ledger, new_items, existing_items))
+def _serialize_event(event: ParsedStreamEvent) -> str:
+    return _json_bytes(
+        {
+            "stream": event.stream.name,
+            "receive_time": event.receive_time.isoformat(),
+            "payload": dict(event.raw),
+        }
+    ).decode("ascii")
 
-        raw_parts: dict[str, StoredLivePartition] = dict(replay_parts)
-        normalized_parts: dict[str, StoredLivePartition] = {}
-        for descriptor, ledger, new_items, _existing_items in plans:
-            if not new_items:
-                continue
-            ordered = sorted(new_items, key=_event_order)
-            raw_bytes = _raw_ndjson(ordered)
-            raw_name = f"part-{hashlib.sha256(raw_bytes).hexdigest()[:24]}.ndjson.gz"
-            raw_part = _publish_immutable_bytes(
-                self.data_root, descriptor, raw_name, raw_bytes, len(ordered)
-            )
-            raw_parts[str(raw_part.path)] = raw_part
 
-            normalized_by_descriptor: dict[
-                _PartitionDescriptor, list[ParsedStreamEvent]
-            ] = defaultdict(list)
-            for item in ordered:
-                if _normalizes(item.event):
-                    normalized_by_descriptor[
-                        _PartitionDescriptor(
-                            "normalized",
-                            item.event.symbol,
-                            item.event.dataset,
-                            _event_date(item.event.source_event_time),
-                        )
-                    ].append(item.event)
-            published_normalized: list[StoredLivePartition] = []
-            for normalized_descriptor, normalized_events in normalized_by_descriptor.items():
-                table = _normalized_table(normalized_events)
-                parquet_bytes = _parquet_bytes(table)
-                normalized_name = (
-                    f"part-{hashlib.sha256(parquet_bytes).hexdigest()[:24]}.parquet"
-                )
-                part = _publish_immutable_bytes(
-                    self.data_root,
+def _deserialize_event(payload: str) -> ParsedStreamEvent:
+    try:
+        stored = json.loads(payload)
+        stream = stored["stream"]
+        receive_time = datetime.fromisoformat(stored["receive_time"])
+        raw = stored["payload"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise LiveStorageError("journaled live event is invalid") from error
+    if not isinstance(stream, str) or not isinstance(raw, dict):
+        raise LiveStorageError("journaled live event is invalid")
+    try:
+        return parse_stream_message(
+            {"stream": stream, "data": raw}, receive_time
+        )
+    except ValueError as error:
+        raise LiveStorageError("journaled live event cannot be reparsed") from error
+
+
+def _normalized_key(event: ParsedStreamEvent) -> str | None:
+    if not _normalizes(event):
+        return None
+    if event.dataset is LiveDataset.KLINES:
+        value = event.values["open_time"]
+    elif event.dataset is LiveDataset.AGG_TRADES:
+        value = event.values["aggregate_trade_id"]
+    elif event.dataset is LiveDataset.MARK_PRICE:
+        value = event.source_event_time
+    elif event.dataset is LiveDataset.BOOK_TICKER:
+        value = event.values["update_id"]
+    else:
+        raise LiveStorageError(f"unsupported live dataset: {event.dataset}")
+    return f"{event.symbol}|{event.dataset.value}|{value}"
+
+
+def _normalized_payload_hash(event: ParsedStreamEvent) -> str:
+    return hashlib.sha256(
+        _json_bytes(
+            {
+                "symbol": event.symbol,
+                "dataset": event.dataset.value,
+                "values": dict(event.values),
+            }
+        )
+    ).hexdigest()
+
+
+def _planned_artifacts(
+    data_root: Path, journal_events: tuple[JournalEvent, ...]
+) -> tuple[tuple[_PartitionDescriptor, bytes, dict[str, object]], ...]:
+    if not journal_events:
+        raise LiveStorageError("prepared live batch cannot be empty")
+    indexed = [
+        _IndexedEvent(
+            journal_event.identity,
+            journal_event.payload_hash,
+            _deserialize_event(journal_event.event_json),
+        )
+        for journal_event in journal_events
+    ]
+    indexed.sort(key=_event_order)
+    first = indexed[0].event
+    partition_date = _event_date(first.source_event_time)
+    if any(
+        item.event.symbol != first.symbol
+        or item.event.dataset is not first.dataset
+        or _event_date(item.event.source_event_time) != partition_date
+        for item in indexed
+    ):
+        raise LiveStorageError("journal batch crosses its source partition")
+
+    raw_descriptor = _PartitionDescriptor(
+        "raw", first.symbol, first.dataset, partition_date
+    )
+    raw_payload = _raw_ndjson(indexed)
+    artifacts = [
+        (
+            raw_descriptor,
+            raw_payload,
+            _artifact_record(
+                data_root,
+                raw_descriptor,
+                raw_payload,
+                len(indexed),
+                "ndjson/binance-stream-event-v1",
+                ("source_event_time", "source_id", "event_key"),
+                ("event_key",),
+                min(item.event.source_event_time for item in indexed),
+                max(item.event.source_event_time for item in indexed),
+                ".ndjson.gz",
+            ),
+        )
+    ]
+    normalize_identities = {
+        item.identity for item in journal_events if item.normalize
+    }
+    normalized_events = [
+        item.event for item in indexed if item.identity in normalize_identities
+    ]
+    if normalized_events:
+        normalized_events.sort(key=_normalized_order)
+        table = _normalized_table(normalized_events)
+        normalized_payload = _parquet_bytes(table)
+        normalized_descriptor = _PartitionDescriptor(
+            "normalized", first.symbol, first.dataset, partition_date
+        )
+        schema_name, sort_keys, unique_keys = _normalized_contract(first.dataset)
+        artifacts.append(
+            (
+                normalized_descriptor,
+                normalized_payload,
+                _artifact_record(
+                    data_root,
                     normalized_descriptor,
-                    normalized_name,
-                    parquet_bytes,
+                    normalized_payload,
                     table.num_rows,
-                )
-                normalized_parts[str(part.path)] = part
-                published_normalized.append(part)
-
-            entries = ledger["events"]
-            assert isinstance(entries, dict)
-            raw_record = _partition_record(self.data_root, raw_part)
-            normalized_records = [
-                _partition_record(self.data_root, part) for part in published_normalized
-            ]
-            for item in ordered:
-                entries[item.identity] = {
-                    "payload_hash": item.payload_hash,
-                    "raw": raw_record,
-                    "normalized": normalized_records if _normalizes(item.event) else [],
-                }
-            _write_index(self.data_root, descriptor, ledger)
-
-        for part in replay_parts.values():
-            if part.path.relative_to(self.data_root).parts[0] == "normalized":
-                normalized_parts[str(part.path)] = part
-                raw_parts.pop(str(part.path), None)
-        return LiveWriteResult(
-            tuple(sorted(raw_parts.values(), key=lambda part: str(part.path))),
-            tuple(sorted(normalized_parts.values(), key=lambda part: str(part.path))),
-            replayed,
+                    schema_name,
+                    sort_keys,
+                    unique_keys,
+                    min(event.source_event_time for event in normalized_events),
+                    max(event.source_event_time for event in normalized_events),
+                    ".parquet",
+                ),
+            )
         )
+    return tuple(artifacts)
+
+
+def _artifact_record(
+    data_root: Path,
+    descriptor: _PartitionDescriptor,
+    payload: bytes,
+    row_count: int,
+    schema_name: str,
+    sort_keys: tuple[str, ...],
+    unique_keys: tuple[str, ...],
+    minimum: int,
+    maximum: int,
+    suffix: str,
+) -> dict[str, object]:
+    checksum = hashlib.sha256(payload).hexdigest()
+    filename = f"part-{checksum[:24]}{suffix}"
+    relative = Path(*descriptor.components, filename).as_posix()
+    destination = data_root / relative
+    if destination.relative_to(data_root).as_posix() != relative:
+        raise LiveStorageError("live artifact path escapes the data root")
+    return {
+        "layer": descriptor.layer,
+        "symbol": descriptor.symbol,
+        "dataset": descriptor.dataset.value,
+        "partition_date": descriptor.partition_date,
+        "path": relative,
+        "sha256": checksum,
+        "row_count": row_count,
+        "schema_name": schema_name,
+        "sort_keys": list(sort_keys),
+        "unique_keys": list(unique_keys),
+        "min_source_event_time": minimum,
+        "max_source_event_time": maximum,
+    }
+
+
+def _normalized_order(event: ParsedStreamEvent) -> tuple[int, int]:
+    if event.dataset is LiveDataset.KLINES:
+        primary = int(event.values["open_time"])
+    elif event.dataset is LiveDataset.AGG_TRADES:
+        primary = int(event.values["aggregate_trade_id"])
+    elif event.dataset is LiveDataset.MARK_PRICE:
+        primary = event.source_event_time
+    elif event.dataset is LiveDataset.BOOK_TICKER:
+        primary = int(event.values["update_id"])
+    else:
+        raise LiveStorageError(f"unsupported live dataset: {event.dataset}")
+    return primary, event.source_event_time
+
+
+def _normalized_contract(
+    dataset: LiveDataset,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    if dataset is LiveDataset.KLINES:
+        return "parquet/binance-kline-1m-v1", ("open_time",), ("open_time",)
+    if dataset is LiveDataset.AGG_TRADES:
+        return (
+            "parquet/binance-aggregate-trade-v1",
+            ("aggregate_trade_id",),
+            ("aggregate_trade_id",),
+        )
+    if dataset is LiveDataset.MARK_PRICE:
+        return "parquet/binance-mark-price-v1", ("event_time",), ("event_time",)
+    if dataset is LiveDataset.BOOK_TICKER:
+        return "parquet/binance-book-ticker-v1", ("update_id",), ("update_id",)
+    raise LiveStorageError(f"unsupported live dataset: {dataset}")
+
+
+def _manifest_object(manifest_json: str) -> dict[str, object]:
+    try:
+        manifest = json.loads(manifest_json)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise LiveStorageError("live batch manifest is unreadable") from error
+    if not isinstance(manifest, dict) or manifest.get("version") != 1:
+        raise LiveStorageError("live batch manifest has an invalid version")
+    if not isinstance(manifest.get("artifacts"), list):
+        raise LiveStorageError("live batch manifest has an invalid shape")
+    return manifest
+
+
+def _result_from_manifest(data_root: Path, manifest_json: str) -> LiveWriteResult:
+    manifest = _manifest_object(manifest_json)
+    batch_id = manifest.get("batch_id")
+    if not isinstance(batch_id, str) or not batch_id:
+        raise LiveStorageError("live batch manifest has no batch identity")
+    raw: list[StoredLivePartition] = []
+    normalized: list[StoredLivePartition] = []
+    artifacts = manifest["artifacts"]
+    assert isinstance(artifacts, list)
+    for record in artifacts:
+        part = _stored_partition(data_root, record)
+        if part.layer == "raw":
+            raw.append(part)
+        elif part.layer == "normalized":
+            normalized.append(part)
+        else:
+            raise LiveStorageError("live batch manifest layer is invalid")
+    return LiveWriteResult(tuple(raw), tuple(normalized), batch_id=batch_id)
+
+
+def _stored_partition(data_root: Path, record: object) -> StoredLivePartition:
+    if not isinstance(record, dict):
+        raise LiveStorageError("live batch artifact record is invalid")
+    relative = record.get("path")
+    checksum = record.get("sha256")
+    row_count = record.get("row_count")
+    layer = record.get("layer")
+    symbol = record.get("symbol")
+    dataset = record.get("dataset")
+    partition_date = record.get("partition_date")
+    schema_name = record.get("schema_name")
+    sort_keys = record.get("sort_keys")
+    unique_keys = record.get("unique_keys")
+    minimum = record.get("min_source_event_time")
+    maximum = record.get("max_source_event_time")
+    if (
+        not isinstance(relative, str)
+        or relative.startswith("/")
+        or ".." in Path(relative).parts
+        or not isinstance(checksum, str)
+        or len(checksum) != 64
+        or not isinstance(row_count, int)
+        or row_count <= 0
+        or layer not in {"raw", "normalized"}
+        or not isinstance(symbol, str)
+        or not isinstance(dataset, str)
+        or not isinstance(partition_date, str)
+        or not isinstance(schema_name, str)
+        or not isinstance(sort_keys, list)
+        or not all(isinstance(item, str) for item in sort_keys)
+        or not isinstance(unique_keys, list)
+        or not all(isinstance(item, str) for item in unique_keys)
+        or not isinstance(minimum, int)
+        or not isinstance(maximum, int)
+        or minimum > maximum
+    ):
+        raise LiveStorageError("live batch artifact record is invalid")
+    try:
+        with open_secure_relative_file(data_root, relative) as descriptor:
+            if _hash_fd(descriptor) != checksum:
+                raise LiveStorageError("live batch artifact checksum conflicts")
+    except ValueError as error:
+        raise LiveStorageError("live batch artifact is missing or unsafe") from error
+    return StoredLivePartition(
+        data_root / relative,
+        checksum,
+        row_count,
+        layer,
+        symbol,
+        dataset,
+        partition_date,
+        schema_name,
+        tuple(sort_keys),
+        tuple(unique_keys),
+        minimum,
+        maximum,
+        relative,
+    )
 
 
 def _index_event(event: ParsedStreamEvent) -> _IndexedEvent:
@@ -434,45 +770,6 @@ def _parquet_bytes(table: pa.Table) -> bytes:
     return payload
 
 
-def _read_index(data_root: Path, descriptor: _PartitionDescriptor) -> dict[str, object]:
-    with _open_partition(data_root, descriptor) as partition_fd:
-        existing = _open_existing_regular(partition_fd, _INDEX_NAME, "live event index")
-        if existing is None:
-            return {"version": 1, "events": {}}
-        try:
-            with os.fdopen(os.dup(existing), "rb") as source:
-                payload = json.load(source)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise LiveStorageError("live event index is unreadable") from error
-        finally:
-            os.close(existing)
-    if not isinstance(payload, dict) or payload.get("version") != 1:
-        raise LiveStorageError("live event index has an invalid version")
-    return payload
-
-
-def _write_index(
-    data_root: Path, descriptor: _PartitionDescriptor, ledger: dict[str, object]
-) -> None:
-    payload = _json_bytes(ledger) + b"\n"
-    with _open_partition(data_root, descriptor) as partition_fd:
-        temp_name, temp_fd = _open_unique_partial(partition_fd, _INDEX_NAME)
-        try:
-            _write_all(temp_fd, payload)
-            os.fsync(temp_fd)
-            _reject_destination_symlink(partition_fd, _INDEX_NAME)
-            os.replace(
-                temp_name,
-                _INDEX_NAME,
-                src_dir_fd=partition_fd,
-                dst_dir_fd=partition_fd,
-            )
-            os.fsync(partition_fd)
-        finally:
-            os.close(temp_fd)
-            _unlink_at(partition_fd, temp_name)
-
-
 def _publish_immutable_bytes(
     data_root: Path,
     descriptor: _PartitionDescriptor,
@@ -519,47 +816,6 @@ def _publish_immutable_bytes(
             os.close(temp_fd)
             _unlink_at(partition_fd, temp_name)
     return StoredLivePartition(destination, checksum, row_count)
-
-
-def _partition_record(data_root: Path, part: StoredLivePartition) -> dict[str, object]:
-    return {
-        "path": part.path.relative_to(data_root).as_posix(),
-        "sha256": part.sha256,
-        "row_count": part.row_count,
-    }
-
-
-def _entry_partitions(
-    data_root: Path, entry: dict[str, object]
-) -> tuple[StoredLivePartition, ...]:
-    normalized = entry.get("normalized", [])
-    if not isinstance(normalized, list):
-        raise LiveStorageError("live event index partition is invalid")
-    records = [entry.get("raw"), *normalized]
-    result: list[StoredLivePartition] = []
-    for record in records:
-        if not isinstance(record, dict):
-            raise LiveStorageError("live event index partition is invalid")
-        relative = record.get("path")
-        checksum = record.get("sha256")
-        row_count = record.get("row_count")
-        if (
-            not isinstance(relative, str)
-            or relative.startswith("/")
-            or ".." in Path(relative).parts
-            or not isinstance(checksum, str)
-            or not isinstance(row_count, int)
-        ):
-            raise LiveStorageError("live event index partition is invalid")
-        path = data_root / relative
-        try:
-            with open_secure_relative_file(data_root, relative) as descriptor:
-                if _hash_fd(descriptor) != checksum:
-                    raise LiveStorageError("indexed live shard checksum conflicts")
-        except ValueError as error:
-            raise LiveStorageError("indexed live shard is missing or unsafe") from error
-        result.append(StoredLivePartition(path, checksum, row_count))
-    return tuple(result)
 
 
 def _json_bytes(value: object) -> bytes:

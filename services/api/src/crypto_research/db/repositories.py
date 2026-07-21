@@ -85,6 +85,7 @@ class StreamState:
     last_event_at: datetime | None
     status: str
     details: dict[str, Any] | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,8 @@ class DataStateRepository(Protocol):
     ) -> DataGap: ...
 
     async def update_stream(self, state: StreamState) -> None: ...
+
+    async def list_stream_states(self) -> tuple[StreamState, ...]: ...
 
     async def update_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None: ...
 
@@ -442,6 +445,23 @@ class SqlAlchemyDataStateRepository:
             row.last_event_at = last_event_at
             row.details = state.details or {}
         await self._session.flush()
+
+    async def list_stream_states(self) -> tuple[StreamState, ...]:
+        statement = select(StreamStateRow).order_by(
+            StreamStateRow.symbol, StreamStateRow.stream_name
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return tuple(
+            StreamState(
+                row.symbol,
+                row.stream_name,
+                row.last_event_at,
+                row.status,
+                dict(row.details),
+                row.updated_at,
+            )
+            for row in rows
+        )
 
     async def update_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
         heartbeat_at = _require_utc(heartbeat.heartbeat_at)

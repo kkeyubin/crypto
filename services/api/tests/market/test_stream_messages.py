@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
 
 import pytest
@@ -10,10 +11,77 @@ from crypto_research.market.binance.streams import (
 )
 
 RECEIVED_AT = datetime(2026, 7, 21, 12, 0, 1, tzinfo=UTC)
+MAX_INT64 = 9_223_372_036_854_775_807
 
 
 def combined(stream: str, data: dict[str, object]) -> str:
     return json.dumps({"stream": stream, "data": data})
+
+
+def valid_aggregate() -> dict[str, object]:
+    return {
+        "e": "aggTrade",
+        "E": 1_753_099_200_010,
+        "s": "BTCUSDT",
+        "a": 42,
+        "p": "1.25",
+        "q": "2",
+        "f": 100,
+        "l": 102,
+        "T": 1_753_099_200_009,
+        "m": False,
+    }
+
+
+def valid_book() -> dict[str, object]:
+    return {
+        "e": "bookTicker",
+        "E": 1_753_099_200_011,
+        "T": 1_753_099_200_010,
+        "s": "BTCUSDT",
+        "u": 99,
+        "b": "1.24",
+        "B": "1",
+        "a": "1.25",
+        "A": "2",
+    }
+
+
+def valid_kline() -> dict[str, object]:
+    return {
+        "e": "kline",
+        "E": 1_753_099_200_999,
+        "s": "BTCUSDT",
+        "k": {
+            "t": 1_753_099_200_000,
+            "T": 1_753_099_259_999,
+            "s": "BTCUSDT",
+            "i": "1m",
+            "o": "1.23",
+            "c": "1.25",
+            "h": "1.26",
+            "l": "1.22",
+            "v": "10",
+            "n": 4,
+            "x": True,
+            "q": "12.5",
+            "V": "4",
+            "Q": "5",
+        },
+    }
+
+
+def valid_mark() -> dict[str, object]:
+    return {
+        "e": "markPriceUpdate",
+        "E": 1_753_099_200_999,
+        "s": "BTCUSDT",
+        "p": "117415.5",
+        "i": "117400.1",
+        "P": "117390",
+        "r": "-0.0001",
+        "T": 1_753_128_000_000,
+    }
 
 
 @pytest.mark.parametrize("closed", [False, True])
@@ -180,3 +248,83 @@ def test_receive_time_must_be_utc_aware() -> None:
             ),
             datetime(2026, 7, 21),
         )
+
+
+@pytest.mark.parametrize(
+    ("stream", "event", "field", "invalid"),
+    [
+        ("btcusdt@aggtrade", valid_aggregate(), "E", -1),
+        ("btcusdt@aggtrade", valid_aggregate(), "a", MAX_INT64 + 1),
+        ("btcusdt@aggtrade", valid_aggregate(), "f", -1),
+        ("btcusdt@aggtrade", valid_aggregate(), "T", MAX_INT64 + 1),
+        ("btcusdt@bookticker", valid_book(), "u", -1),
+        ("btcusdt@bookticker", valid_book(), "T", MAX_INT64 + 1),
+        ("btcusdt@markprice@1s", valid_mark(), "T", -1),
+    ],
+)
+def test_all_source_integer_fields_are_unsigned_int64(
+    stream: str, event: dict[str, object], field: str, invalid: int
+) -> None:
+    payload = deepcopy(event)
+    payload[field] = invalid
+
+    with pytest.raises(StreamMessageError, match="unsigned int64"):
+        parse_stream_message(combined(stream, payload), RECEIVED_AT)
+
+
+@pytest.mark.parametrize(
+    ("stream", "event", "field", "invalid"),
+    [
+        ("btcusdt@aggtrade", valid_aggregate(), "p", "0"),
+        ("btcusdt@aggtrade", valid_aggregate(), "q", "0"),
+        ("btcusdt@bookticker", valid_book(), "b", "-1"),
+        ("btcusdt@bookticker", valid_book(), "B", "-1"),
+        ("btcusdt@markprice@1s", valid_mark(), "p", "0"),
+        ("btcusdt@markprice@1s", valid_mark(), "i", "-1"),
+    ],
+)
+def test_price_and_quantity_fields_enforce_market_semantics(
+    stream: str, event: dict[str, object], field: str, invalid: str
+) -> None:
+    payload = deepcopy(event)
+    payload[field] = invalid
+
+    with pytest.raises(StreamMessageError):
+        parse_stream_message(combined(stream, payload), RECEIVED_AT)
+
+
+def test_kline_integer_decimal_and_ohlc_relationships_fail_closed() -> None:
+    invalid_events = []
+    for field, value in (("t", -60_000), ("n", -1), ("v", "-1"), ("o", "0")):
+        event = valid_kline()
+        event["k"][field] = value  # type: ignore[index]
+        invalid_events.append(event)
+    inverted = valid_kline()
+    inverted["k"]["h"] = "1.24"  # type: ignore[index]
+    invalid_events.append(inverted)
+
+    for event in invalid_events:
+        with pytest.raises(StreamMessageError):
+            parse_stream_message(combined("btcusdt@kline_1m", event), RECEIVED_AT)
+
+
+def test_trade_id_order_and_uncrossed_book_are_required() -> None:
+    trade = valid_aggregate()
+    trade["f"] = 103
+    trade["l"] = 102
+    crossed = valid_book()
+    crossed["b"] = "1.26"
+    crossed["a"] = "1.25"
+
+    with pytest.raises(StreamMessageError, match="trade ID"):
+        parse_stream_message(combined("btcusdt@aggtrade", trade), RECEIVED_AT)
+    with pytest.raises(StreamMessageError, match="bid"):
+        parse_stream_message(combined("btcusdt@bookticker", crossed), RECEIVED_AT)
+
+
+def test_negative_provisional_funding_rate_remains_valid() -> None:
+    parsed = parse_stream_message(
+        combined("btcusdt@markprice@1s", valid_mark()), RECEIVED_AT
+    )
+
+    assert parsed.values["provisional_funding_rate"] == "-0.0001"

@@ -1,8 +1,11 @@
 import gzip
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -18,6 +21,7 @@ from crypto_research.market.live_storage import (
     MARK_PRICE_SCHEMA,
     LiveStorage,
     LiveStorageError,
+    LiveWriteResult,
     LiveWriterUnavailable,
 )
 
@@ -75,13 +79,27 @@ def aggregate_trade(identity: int = 42):
     )
 
 
+def publish_all(storage: LiveStorage, lease, events) -> LiveWriteResult:
+    replayed = 0
+    for parsed in events:
+        replayed += int(storage.accept(lease, parsed).replayed)
+    raw = []
+    normalized = []
+    while result := storage.publish_next_batch(lease, max_events=256):
+        raw.extend(result.raw)
+        normalized.extend(result.normalized)
+        assert result.batch_id is not None
+        storage.acknowledge_cataloged(lease, result.batch_id)
+    return LiveWriteResult(tuple(raw), tuple(normalized), replayed)
+
+
 def test_batch_publishes_immutable_raw_ndjson_and_normalized_parquet_shards(
     tmp_path: Path,
 ) -> None:
     storage = LiveStorage(tmp_path / "market-data")
     lease = storage.acquire_writer("worker-a")
 
-    result = storage.persist_batch(lease, (kline(closed=True), aggregate_trade()))
+    result = publish_all(storage, lease, (kline(closed=True), aggregate_trade()))
 
     assert len(result.raw) == 2
     assert all(part.path.name.startswith("part-") for part in result.raw)
@@ -104,7 +122,7 @@ def test_batch_keeps_in_progress_kline_raw_without_normalizing(tmp_path: Path) -
     storage = LiveStorage(tmp_path / "market-data")
     lease = storage.acquire_writer("worker-a")
 
-    result = storage.persist_batch(lease, (kline(closed=False),))
+    result = publish_all(storage, lease, (kline(closed=False),))
 
     assert result.raw[0].row_count == 1
     assert result.normalized == ()
@@ -117,17 +135,18 @@ def test_replay_identity_ignores_receive_time_but_conflicting_payload_fails(
     storage = LiveStorage(tmp_path / "market-data")
     lease = storage.acquire_writer("worker-a")
     parsed = aggregate_trade()
-    first = storage.persist_batch(lease, (parsed,))
+    first = publish_all(storage, lease, (parsed,))
     replay = replace(parsed, receive_time=parsed.receive_time + timedelta(seconds=30))
 
-    second = storage.persist_batch(lease, (replay,))
+    second = storage.accept(lease, replay)
 
-    assert second.replayed_count == 1
-    assert second.raw == first.raw
+    assert second.replayed is True
+    assert storage.publish_next_batch(lease, max_events=10) is None
+    assert all(part.path.exists() for part in (*first.raw, *first.normalized))
     conflicting_raw = {**parsed.raw, "p": "0.000099990000000000"}
     conflicting = replace(parsed, raw=conflicting_raw)
     with pytest.raises(LiveStorageError, match="conflicts"):
-        storage.persist_batch(lease, (conflicting,))
+        storage.accept(lease, conflicting)
     lease.close()
 
 
@@ -137,7 +156,7 @@ def test_same_identity_repeated_inside_one_batch_is_written_once(tmp_path: Path)
     parsed = aggregate_trade()
     replay = replace(parsed, receive_time=parsed.receive_time + timedelta(seconds=1))
 
-    result = storage.persist_batch(lease, (parsed, replay))
+    result = publish_all(storage, lease, (parsed, replay))
 
     assert result.replayed_count == 1
     assert result.raw[0].row_count == 1
@@ -194,7 +213,7 @@ def test_batch_rolls_one_shard_per_partition_without_lost_rows(tmp_path: Path) -
     lease = storage.acquire_writer("worker-a")
     events = tuple(aggregate_trade(index) for index in range(24))
 
-    result = storage.persist_batch(lease, events)
+    result = publish_all(storage, lease, events)
 
     assert len(result.raw) == 1
     assert len(result.normalized) == 1
@@ -239,7 +258,7 @@ def test_mark_and_book_ticker_remain_decimal_exact_in_separate_schemas(
         },
     )
 
-    result = storage.persist_batch(lease, (mark, ticker))
+    result = publish_all(storage, lease, (mark, ticker))
 
     mark_part = next(part for part in result.normalized if "/mark_price/" in str(part.path))
     ticker_part = next(part for part in result.normalized if "/book_ticker/" in str(part.path))
@@ -262,7 +281,7 @@ def test_mark_and_book_ticker_remain_decimal_exact_in_separate_schemas(
 def test_storage_api_accepts_no_caller_path_and_rejects_symlink_root(tmp_path: Path) -> None:
     storage = LiveStorage(tmp_path / "market-data")
     with pytest.raises(TypeError):
-        storage.persist_batch(None, (kline(closed=True),), path="../../escape")  # type: ignore[call-arg]
+        storage.accept(None, kline(closed=True), path="../../escape")  # type: ignore[call-arg]
 
     real = tmp_path / "real"
     real.mkdir(mode=0o700)
@@ -271,3 +290,178 @@ def test_storage_api_accepts_no_caller_path_and_rejects_symlink_root(tmp_path: P
     with pytest.raises(ValueError, match="root"):
         LiveStorage(symlink).acquire_writer("worker-a")
     assert not (tmp_path / "escape").exists()
+
+
+def test_accept_is_durable_in_partitioned_sqlite_wal_before_publish(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "market-data"
+    storage = LiveStorage(root)
+    lease = storage.acquire_writer("worker-a")
+
+    accepted = storage.accept(lease, aggregate_trade())
+
+    assert accepted.accepted is True
+    journals = list(root.glob("spool/binance/usdm/PEPEUSDT/agg_trades/date=*/journal.sqlite3"))
+    assert len(journals) == 1
+    with sqlite3.connect(journals[0]) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        assert connection.execute(
+            "SELECT state, COUNT(*) FROM events GROUP BY state"
+        ).fetchall() == [("queued", 1)]
+    lease.close()
+
+    restarted = LiveStorage(root)
+    restarted_lease = restarted.acquire_writer("worker-b")
+    result = restarted.publish_next_batch(restarted_lease, max_events=10)
+
+    assert result is not None
+    assert result.raw[0].row_count == 1
+    assert result.normalized[0].row_count == 1
+    restarted_lease.close()
+
+
+def test_normalized_primary_key_is_unique_across_raw_shards(tmp_path: Path) -> None:
+    storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
+    first = kline(closed=True)
+    equivalent = replace(
+        first,
+        source_event_time=first.source_event_time + 1,
+        raw={**first.raw, "E": first.source_event_time + 1},
+    )
+
+    storage.accept(lease, first)
+    first_result = storage.publish_next_batch(lease, max_events=10)
+    assert first_result is not None and first_result.batch_id is not None
+    storage.acknowledge_cataloged(lease, first_result.batch_id)
+
+    storage.accept(lease, equivalent)
+    second_result = storage.publish_next_batch(lease, max_events=10)
+
+    assert second_result is not None
+    assert first_result.raw[0].path != second_result.raw[0].path
+    assert first_result.normalized[0].row_count == 1
+    assert second_result.raw[0].row_count == 1
+    assert second_result.normalized == ()
+
+    conflict = replace(
+        first,
+        source_event_time=first.source_event_time + 2,
+        values={**first.values, "close": "1.240000000000000000"},
+        raw={
+            **first.raw,
+            "E": first.source_event_time + 2,
+            "k": {**first.raw["k"], "c": "1.240000000000000000"},  # type: ignore[dict-item]
+        },
+    )
+    with pytest.raises(LiveStorageError, match="normalized primary key"):
+        storage.accept(lease, conflict)
+    lease.close()
+
+
+@pytest.mark.parametrize("crash_on_publish", [1, 2])
+def test_prepared_batch_recovers_with_deterministic_artifacts_after_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_on_publish: int,
+) -> None:
+    import crypto_research.market.live_storage as live_storage_module
+
+    root = tmp_path / "market-data"
+    storage = LiveStorage(root)
+    lease = storage.acquire_writer("worker-a")
+    storage.accept(lease, aggregate_trade())
+    real_publish = live_storage_module._publish_immutable_bytes
+    publish_calls = 0
+
+    def crash_once(*args, **kwargs):
+        nonlocal publish_calls
+        publish_calls += 1
+        if publish_calls == crash_on_publish:
+            raise OSError("simulated process crash")
+        return real_publish(*args, **kwargs)
+
+    monkeypatch.setattr(live_storage_module, "_publish_immutable_bytes", crash_once)
+    with pytest.raises(OSError, match="simulated process crash"):
+        storage.publish_next_batch(lease, max_events=10)
+    lease.close()
+    monkeypatch.setattr(live_storage_module, "_publish_immutable_bytes", real_publish)
+
+    restarted = LiveStorage(root)
+    restarted_lease = restarted.acquire_writer("worker-b")
+    recovered = restarted.publish_next_batch(restarted_lease, max_events=10)
+
+    assert recovered is not None
+    assert recovered.batch_id
+    assert recovered.raw[0].path.name.startswith("part-")
+    assert recovered.normalized[0].path.name.startswith("part-")
+    assert restarted.publish_next_batch(restarted_lease, max_events=10) == recovered
+    restarted.acknowledge_cataloged(restarted_lease, recovered.batch_id)
+    assert restarted.publish_next_batch(restarted_lease, max_events=10) is None
+    restarted_lease.close()
+
+
+def test_prepared_batch_recovers_when_both_artifacts_precede_state_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crypto_research.market.live_journal import LivePartitionJournal
+
+    root = tmp_path / "market-data"
+    storage = LiveStorage(root)
+    lease = storage.acquire_writer("worker-a")
+    storage.accept(lease, aggregate_trade())
+    real_mark_published = LivePartitionJournal.mark_published
+    failed = False
+
+    def crash_before_state_commit(self, batch_id):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("simulated state-commit crash")
+        return real_mark_published(self, batch_id)
+
+    monkeypatch.setattr(
+        LivePartitionJournal, "mark_published", crash_before_state_commit
+    )
+    with pytest.raises(OSError, match="state-commit crash"):
+        storage.publish_next_batch(lease, max_events=10)
+    assert len(list(root.rglob("part-*.ndjson.gz"))) == 1
+    assert len(list(root.rglob("part-*.parquet"))) == 1
+    lease.close()
+    monkeypatch.setattr(
+        LivePartitionJournal, "mark_published", real_mark_published
+    )
+
+    restarted = LiveStorage(root)
+    restarted_lease = restarted.acquire_writer("worker-b")
+    recovered = restarted.publish_next_batch(restarted_lease, max_events=10)
+
+    assert recovered is not None and recovered.batch_id is not None
+    assert len(list(root.rglob("part-*.ndjson.gz"))) == 1
+    assert len(list(root.rglob("part-*.parquet"))) == 1
+    restarted.acknowledge_cataloged(restarted_lease, recovered.batch_id)
+    restarted_lease.close()
+
+
+def test_lease_close_and_storage_mutation_share_one_fence(tmp_path: Path) -> None:
+    storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
+    storage._write_lock.acquire()
+    closed = threading.Event()
+
+    def close_lease() -> None:
+        lease.close()
+        closed.set()
+
+    closer = threading.Thread(target=close_lease)
+    closer.start()
+    time.sleep(0.05)
+    assert closed.is_set() is False
+    assert lease.active is True
+    storage._write_lock.release()
+    closer.join(timeout=1)
+
+    assert closed.is_set() is True
+    with pytest.raises(LiveWriterUnavailable, match="not active"):
+        storage.accept(lease, aggregate_trade())
