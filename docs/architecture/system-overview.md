@@ -1,48 +1,47 @@
 # System Overview
 
-## Deployment
+## Phase 1 Deployment
 
-The system runs through Docker Compose on `192.168.1.4`. A systemd unit supervises the Compose application. The operator accesses the LAN Web console from a Mac.
+Docker Compose runs on `192.168.1.4` under a systemd unit. The `server` profile starts four services:
 
-## Components
+| Component | Network boundary | Responsibility |
+|---|---|---|
+| `postgres` | private Compose network plus `127.0.0.1:55432` | operational state, manifests, gaps, leases, and audit history |
+| `api` | private Compose network only | typed symbol, backfill, profile, eligibility, and health APIs; migrations |
+| `market-worker` | host network, no listening port | archive backfill and routed WebSocket capture |
+| `web` | `127.0.0.1:8088` only | Chinese-first personal data console and API proxy |
 
-| Component | Responsibility |
-|---|---|
-| `api` | Authentication, commands, queries, schemas, and audit events |
-| `market-worker` | Binance REST/WebSocket adapters, normalization, manifests, and gap repair |
-| `research-worker` | Backtests, replay, walk-forward procedures, and statistical reports |
-| `paper-worker` | Deterministic signals, risk controls, PaperBroker, and portfolio projections |
-| `ai-worker` | Frozen snapshots and non-authoritative AI assessments |
-| `notify-worker` | Idempotent PostgreSQL Outbox delivery through Hermes |
-| `web` | Personal monitoring and research console |
-| `postgres` | Operational, versioning, ledger, and audit state |
+The host network is required only because the server's proxy listens on `127.0.0.1:17891`. It also prevents the worker from resolving Compose DNS, so its validated database endpoint is `127.0.0.1:55432`; API uses `postgres:5432`. Both processes mount the same `/srv/crypto-research/data`. No process-wide proxy or exchange credential is accepted.
 
-## Storage
-
-PostgreSQL stores small structured state. Partitioned Parquet under `/srv/crypto-research/data` stores historical bulk data and generated feature/report artifacts. Each artifact is referenced by a manifest, checksum, and version rather than copied into Git.
-
-## Main Data Flow
+## Data and Trust Flow
 
 ```text
-Binance REST/WebSocket
-→ raw data + manifest
-→ normalization and quality checks
-→ empirical per-symbol profile and eligibility
-→ historical or live MarketEvent
-→ frozen StrategySpec
-→ Signal → RiskEngine → PaperBroker
-→ portfolio/ledger + outbox
-→ Web console and Hermes/Feishu
+official archive + sibling .CHECKSUM       routed Binance WebSocket
+             |                                      |
+       raw checksum object                    durable SQLite spool
+             |                                      |
+       normalized Parquet                    raw + normalized shards
+             +------------------+-------------------+
+                                |
+                  PostgreSQL manifest/catalog approval
+                                |
+             gaps + freshness + per-symbol empirical profile
+                                |
+                    fail-closed eligibility + Web API
 ```
 
-The AI path receives a copy of a frozen market snapshot after deterministic processing. It cannot call broker or risk-control mutations.
+PostgreSQL stores bounded structured state. Immutable raw objects and partitioned Parquet live under `/srv/crypto-research/data`. DuckDB may open only descriptor-safe paths from approved catalog rows and rechecks bytes before query. A file on disk is not trusted without matching catalog, manifest, checksum, and validation evidence.
 
-Strategy families are reusable, but an executable MVP `StrategySpec` is bound to one venue, market, and contract symbol. Profiles, evidence conclusions, paper accounts, and risk limits are independently keyed; no symbol inherits another symbol's approval.
+BTCUSDT and PEPEUSDT have independent configuration, partitions, gaps, stream freshness, profile sample counts, and eligibility reasons. A healthy proxy-fed stream is not itself degraded; REST metadata failure is reported separately as `metadata_unverified`.
 
-## Failure Semantics
+## Failure and Recovery Semantics
 
-- Market-data uncertainty blocks new entries.
-- Notification failure queues retries but does not block trading state.
-- AI failure is informational and does not block deterministic processing.
-- Paper-ledger inconsistency blocks orders until reconciled.
-- Every automatic recovery emits an audit event.
+- Recent archive 404s become `source_pending`; older missing objects fail and open a gap.
+- Disconnects and restarts create explicit gap evidence; stale or incomplete required streams fail closed.
+- The worker durably accepts live events before acknowledgement and recovers uncataloged batches after restart.
+- Source checksum changes create immutable versions; they never overwrite prior evidence.
+- API migration failure stops API startup, and the worker waits for both PostgreSQL and API health.
+
+## Later-Phase Boundary
+
+Research replay/backtests are Phase 2. Paper orders and Feishu signals are Phase 3. AI shadow assessment is Phase 4. None runs in the Phase 1 deployment, and the market worker cannot place orders or access account APIs.

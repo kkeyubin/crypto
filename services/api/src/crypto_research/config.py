@@ -64,7 +64,11 @@ class Settings(BaseSettings):
             if any(_has_userinfo(value) for value in source_urls):
                 raise ValueError("production source URLs must not include credentials")
             if self.http_proxy_url is not None and not _is_loopback_proxy(self.http_proxy_url):
-                raise ValueError("production proxy URL must use a loopback hostname or IP")
+                raise ValueError(
+                    "production proxy URL must be a credential-free loopback HTTP proxy"
+                )
+        if self.proxy_mode == "proxy" and self.http_proxy_url is None:
+            raise ValueError("proxy mode requires an explicit proxy URL")
         return self
 
 
@@ -79,8 +83,23 @@ def _has_userinfo(value: str) -> bool:
 
 
 def _is_loopback_proxy(value: str) -> bool:
-    hostname = urlparse(value).hostname
-    if hostname is None:
+    parsed = urlparse(value)
+    hostname = parsed.hostname
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or hostname is None
+        or port is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
         return False
     if hostname.lower() == "localhost":
         return True

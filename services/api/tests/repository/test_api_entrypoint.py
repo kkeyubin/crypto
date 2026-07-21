@@ -27,6 +27,9 @@ def test_entrypoint_percent_encodes_postgres_password_without_leaking_raw_enviro
     launched: list[tuple[str, list[str]]] = []
 
     monkeypatch.setenv("POSTGRES_PASSWORD", password)
+    monkeypatch.setenv("CRYPTO_DATABASE_HOST", "postgres")
+    monkeypatch.setenv("CRYPTO_DATABASE_PORT", "5432")
+    monkeypatch.setenv("CRYPTO_RUN_MIGRATIONS", "true")
     monkeypatch.setattr(module, "run_migrations", lambda: None)
     monkeypatch.setattr(
         module.os,
@@ -42,7 +45,75 @@ def test_entrypoint_percent_encodes_postgres_password_without_leaking_raw_enviro
     assert os.environ.get("POSTGRES_PASSWORD") is None
     assert database_url.password == password
     assert database_url.host == "postgres"
+    assert database_url.port == 5432
     assert launched == [("uvicorn", ["uvicorn", "crypto_research.api:app"])]
+
+
+def test_worker_uses_loopback_host_database_without_running_migrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_entrypoint_module()
+    launched: list[tuple[str, list[str]]] = []
+    migrations: list[bool] = []
+    monkeypatch.setenv("POSTGRES_PASSWORD", "worker-password")
+    monkeypatch.setenv("CRYPTO_DATABASE_HOST", "127.0.0.1")
+    monkeypatch.setenv("CRYPTO_DATABASE_PORT", "55432")
+    monkeypatch.setenv("CRYPTO_RUN_MIGRATIONS", "false")
+    monkeypatch.setattr(module, "run_migrations", lambda: migrations.append(True))
+    monkeypatch.setattr(
+        module.os,
+        "execvp",
+        lambda program, command: launched.append((program, command)),
+    )
+
+    module.main(["python", "-m", "crypto_research.market"])
+
+    from sqlalchemy.engine import make_url
+
+    database_url = make_url(os.environ["CRYPTO_DATABASE_URL"])
+    assert database_url.host == "127.0.0.1"
+    assert database_url.port == 55432
+    assert migrations == []
+    assert launched == [
+        ("python", ["python", "-m", "crypto_research.market"]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("host", "port", "run_migrations"),
+    [
+        ("database.example", "5432", "true"),
+        ("postgres", "55432", "true"),
+        ("postgres", "5432", "false"),
+        ("127.0.0.1", "5432", "false"),
+        ("127.0.0.1", "55432", "true"),
+        ("127.0.0.1", "55432", "sometimes"),
+    ],
+)
+def test_entrypoint_rejects_unapproved_database_or_migration_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    port: str,
+    run_migrations: str,
+) -> None:
+    module = load_entrypoint_module()
+    monkeypatch.setenv("POSTGRES_PASSWORD", "must-not-appear")
+    monkeypatch.setenv("CRYPTO_DATABASE_HOST", host)
+    monkeypatch.setenv("CRYPTO_DATABASE_PORT", port)
+    monkeypatch.setenv("CRYPTO_RUN_MIGRATIONS", run_migrations)
+    monkeypatch.setattr(
+        module.os,
+        "execvp",
+        lambda _program, _command: (_ for _ in ()).throw(
+            AssertionError("invalid deployment configuration executed a command")
+        ),
+    )
+    monkeypatch.setattr(module, "run_migrations", lambda: None)
+
+    with pytest.raises(SystemExit) as error:
+        module.main(["true"])
+
+    assert error.value.code == 2
 
 
 def test_entrypoint_fails_explicitly_without_password_or_command() -> None:

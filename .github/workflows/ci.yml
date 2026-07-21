@@ -17,6 +17,10 @@ jobs:
         working-directory: services/api
       - run: ruff check src tests
         working-directory: services/api
+      - run: alembic -c alembic.ini heads
+        working-directory: services/api
+      - run: python -c "import crypto_research.api; import crypto_research.market.__main__"
+        working-directory: services/api
       - run: python scripts/export_schemas.py --check
         working-directory: services/api
 
@@ -44,6 +48,10 @@ jobs:
       CRYPTO_SESSION_SECRET: ci-session-secret-that-is-at-least-32-characters
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose -f deploy/compose.yaml config --quiet
+      - run: docker compose --profile server -f deploy/compose.yaml config --quiet
+      - run: docker compose --profile server -f deploy/compose.yaml up -d postgres
+      - run: docker compose --profile server -f deploy/compose.yaml run --rm api true
       - run: docker build --no-cache -f deploy/api.Dockerfile .
       - run: docker build --no-cache -f deploy/web.Dockerfile .
+      - if: always()
+        run: docker compose --profile server -f deploy/compose.yaml down -v

@@ -9,6 +9,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:55432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U crypto -d crypto_research"]
       interval: 10s
@@ -23,6 +25,9 @@ services:
     environment:
       CRYPTO_ENVIRONMENT: production
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      CRYPTO_DATABASE_HOST: postgres
+      CRYPTO_DATABASE_PORT: "5432"
+      CRYPTO_RUN_MIGRATIONS: "true"
       CRYPTO_DATA_ROOT: /srv/crypto-research/data
       CRYPTO_INTERNAL_TIMEZONE: UTC
       CRYPTO_DEFAULT_LOCALE: zh-CN
@@ -38,6 +43,44 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  market-worker:
+    profiles: ["server"]
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    network_mode: host
+    init: true
+    command: ["python", "-m", "crypto_research.market"]
+    environment:
+      CRYPTO_ENVIRONMENT: production
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      CRYPTO_DATABASE_HOST: 127.0.0.1
+      CRYPTO_DATABASE_PORT: "55432"
+      CRYPTO_RUN_MIGRATIONS: "false"
+      CRYPTO_DATA_ROOT: /srv/crypto-research/data
+      CRYPTO_INTERNAL_TIMEZONE: UTC
+      CRYPTO_DEFAULT_LOCALE: zh-CN
+      CRYPTO_ALLOWED_HOSTS: '["127.0.0.1","localhost"]'
+      CRYPTO_SESSION_SECRET: ${CRYPTO_SESSION_SECRET:?set CRYPTO_SESSION_SECRET}
+      CRYPTO_HTTP_PROXY_URL: http://127.0.0.1:17891
+      CRYPTO_PROXY_MODE: auto
+      CRYPTO_MARKET_WORKER_ID: market-worker
+    volumes:
+      - ${CRYPTO_DATA_ROOT:-/srv/crypto-research/data}:/srv/crypto-research/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "/app/deploy/market-worker-healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    stop_grace_period: 30s
     restart: unless-stopped
 
   web:

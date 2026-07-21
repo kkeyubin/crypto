@@ -11,14 +11,14 @@ def read_repository_file(relative_path: str) -> str:
     return (REPOSITORY_ROOT / relative_path).read_text()
 
 
-def test_compose_uses_exact_phase_zero_services_and_safe_database_password_handoff() -> None:
+def test_compose_uses_exact_phase_one_services_and_safe_database_password_handoff() -> None:
     compose = yaml.safe_load(read_repository_file("deploy/compose.yaml"))
     services = compose["services"]
 
     assert compose["name"] == "crypto-research"
-    assert set(services) == {"postgres", "api", "web"}
+    assert set(services) == {"postgres", "api", "market-worker", "web"}
     assert services["web"]["ports"] == ["127.0.0.1:8088:80"]
-    assert "ports" not in services["postgres"]
+    assert services["postgres"]["ports"] == ["127.0.0.1:55432:5432"]
     assert "ports" not in services["api"]
     assert services["api"]["environment"]["POSTGRES_PASSWORD"] == (
         "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
@@ -29,6 +29,8 @@ def test_compose_uses_exact_phase_zero_services_and_safe_database_password_hando
     assert "healthcheck" in services["postgres"]
     assert "healthcheck" in services["api"]
     assert "healthcheck" in services["web"]
+    assert services["market-worker"]["network_mode"] == "host"
+    assert services["market-worker"]["profiles"] == ["server"]
 
 
 def test_container_files_use_entrypoint_and_exact_systemd_runtime_arguments() -> None:
@@ -39,11 +41,11 @@ def test_container_files_use_entrypoint_and_exact_systemd_runtime_arguments() ->
     assert 'ENTRYPOINT ["python", "/app/deploy/api-entrypoint.py"]' in dockerfile
     assert (
         "ExecStart=/usr/bin/docker compose "
-        f"--env-file {RUNTIME_ENV_FILE} -f {COMPOSE_FILE} up -d --build"
+        f"--env-file {RUNTIME_ENV_FILE} -f {COMPOSE_FILE} --profile server up -d --build"
     ) in systemd_lines
     assert (
         "ExecStop=/usr/bin/docker compose "
-        f"--env-file {RUNTIME_ENV_FILE} -f {COMPOSE_FILE} down"
+        f"--env-file {RUNTIME_ENV_FILE} -f {COMPOSE_FILE} --profile server down"
     ) in systemd_lines
 
 
@@ -73,13 +75,16 @@ def test_ci_has_backend_web_and_clean_container_safety_gates() -> None:
         "CRYPTO_SESSION_SECRET": "ci-session-secret-that-is-at-least-32-characters",
     }
     assert container_commands == [
-        "docker compose -f deploy/compose.yaml config --quiet",
+        "docker compose --profile server -f deploy/compose.yaml config --quiet",
+        "docker compose --profile server -f deploy/compose.yaml up -d postgres",
+        "docker compose --profile server -f deploy/compose.yaml run --rm api true",
         "docker build --no-cache -f deploy/api.Dockerfile .",
         "docker build --no-cache -f deploy/web.Dockerfile .",
+        "docker compose --profile server -f deploy/compose.yaml down -v",
     ]
 
 
-def test_operator_docs_and_agent_policy_preserve_phase_zero_boundaries() -> None:
+def test_operator_docs_and_agent_policy_preserve_phase_one_boundaries() -> None:
     gitignore = read_repository_file(".gitignore")
     dockerignore = read_repository_file(".dockerignore")
     readme = read_repository_file("README.md")
@@ -92,12 +97,9 @@ def test_operator_docs_and_agent_policy_preserve_phase_zero_boundaries() -> None
     assert "git clone" in readme
     assert "cp /srv/crypto-research/repo/.env.example" in readme
     assert "openssl rand -hex" in readme
-    assert (
-        "No market ingestion, backtest execution, paper order service, or signal notifications"
-        in readme
-    )
-    assert "runtime outputs" in readme
-    assert "Committed contracts and reviewed SDD reports are exceptions" in readme
+    assert "Phase 1 does **not** include strategies, backtests, paper orders" in readme
+    assert "market/runtime data" in readme
+    assert "Committed contracts and reviewed SDD reports" in readme
     assert "runtime data, reports, and artifacts" in agents
     assert "reviewed `.superpowers/sdd/*-report.md`" in agents.lower()
     assert "no numeric coverage threshold" in agents

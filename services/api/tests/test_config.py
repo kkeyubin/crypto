@@ -77,3 +77,32 @@ def test_production_accepts_loopback_proxy(proxy_url: str) -> None:
     )
 
     assert settings.http_proxy_url == proxy_url
+
+
+@pytest.mark.parametrize(
+    "proxy_url",
+    [
+        "ftp://127.0.0.1:17891",
+        "http://user:secret@127.0.0.1:17891",
+        "http://127.0.0.1",
+        "http://127.0.0.1:70000",
+    ],
+)
+def test_production_rejects_unsafe_loopback_proxy_shapes(proxy_url: str) -> None:
+    with pytest.raises(ValidationError, match="loopback HTTP proxy"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            session_secret="x" * 32,
+            http_proxy_url=proxy_url,
+        )
+
+
+def test_proxy_only_mode_requires_an_explicit_proxy_url() -> None:
+    with pytest.raises(ValidationError, match="proxy URL"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            session_secret="x" * 32,
+            proxy_mode="proxy",
+        )

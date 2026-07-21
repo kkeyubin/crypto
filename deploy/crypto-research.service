@@ -8,8 +8,9 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/srv/crypto-research/repo/deploy
 EnvironmentFile=/srv/crypto-research/config/runtime.env
-ExecStart=/usr/bin/docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml up -d --build
-ExecStop=/usr/bin/docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml down
+ExecStartPre=/usr/bin/docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml --profile server config --quiet
+ExecStart=/usr/bin/docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml --profile server up -d --build
+ExecStop=/usr/bin/docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml --profile server down
 TimeoutStartSec=600
 
 [Install]

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-The Phase 0 API is `services/api/src/crypto_research/`, with tests and schema tooling under `services/api/`. The React console is `apps/web/`; committed generated schemas and declarations are `contracts/`. Skills live in `skills/`, documentation in `docs/`, and deployment assets in `deploy/`. Do not commit source books, runtime data, reports, and artifacts; also exclude dependencies, secrets, and temporary `.superpowers/` sessions. Reviewed `.superpowers/sdd/*-report.md` files may be committed.
+The API and Binance market-data worker are in `services/api/src/crypto_research/`; tests, migrations, and schema tooling are under `services/api/`. The React console is `apps/web/`, generated contracts are `contracts/`, Skills are `skills/`, documentation is `docs/`, and deployment assets are `deploy/`. Do not commit source books, runtime data, reports, and artifacts; also exclude dependencies, secrets, and temporary `.superpowers/` sessions. Reviewed `.superpowers/sdd/*-report.md` files may be committed.
 
 ## Build, Test, and Development Commands
 
@@ -15,7 +15,7 @@ Node.js is managed by NVM. Before npm commands, run `source /Users/kyle/.nvm/nvm
 - `npm run contracts:types && git diff --exit-code contracts` regenerates and rejects uncommitted contract drift.
 - `npm run web:test -- --run` runs Web tests once; `npm run web:build` type-checks and builds the console.
 
-When a Pydantic contract changes, regenerate and commit both `contracts/jsonschema/` and `contracts/types/`. Validate server configuration with `docker compose --env-file /srv/crypto-research/config/runtime.env -f deploy/compose.yaml config --quiet` first.
+When a Pydantic contract changes, regenerate and commit both `contracts/jsonschema/` and `contracts/types/`. Validate server configuration with `docker compose --env-file /srv/crypto-research/config/runtime.env -f deploy/compose.yaml --profile server config --quiet` first.
 
 ## Commit and Pull Request Guidelines
 
@@ -25,6 +25,6 @@ Use concise imperative Conventional Commits, for example `feat: add price feed a
 
 Follow committed formatters and two-space indentation for JSON, YAML, JavaScript, and TypeScript. Use `camelCase`, `PascalCase`, and `kebab-case` appropriately. Every behavior change needs focused tests plus the relevant full suite. Pytest and Vitest have no numeric coverage threshold. Network, exchange, wallet, and market-data tests use mocks or sandbox endpoints, never live funds or mutable production data.
 
-Never commit seed phrases, private keys, wallet files, exchange/API secrets, or populated `.env` files. Keep runtime secrets in `/srv/crypto-research/config/runtime.env`, validate at startup, and redact logs and fixtures. Phase 0 authorizes no trading, simulated order service, exchange credential, or public port exposure.
+Never commit seed phrases, private keys, wallet files, exchange/API secrets, or populated `.env` files. Keep runtime secrets in `/srv/crypto-research/config/runtime.env`, validate at startup, and redact logs and fixtures. Use no generic process-wide proxy. Phase 1 authorizes public market-data ingestion only; Phase 2 research/backtesting and all simulated trading, notifications, AI, exchange credentials, and public ports remain out of scope.
 
 Do not use Claude for this project. Codex handles book analysis, skill generation, strategy formalization, and backtesting. Analyze each book and create its separate Skill before considering a combined cross-book Skill. Keep copyrighted source books out of published commits.

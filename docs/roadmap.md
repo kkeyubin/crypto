@@ -13,7 +13,7 @@ This file preserves both committed and deferred work. A deferred item is not per
 
 ## Phase 1 — Binance Data Foundation
 
-**Status:** in progress (2026-07-21)
+**Status:** in progress (2026-07-22; local implementation complete, server acceptance pending)
 
 - Dynamic USDⓈ-M symbol watchlist.
 - Independent symbol onboarding, empirical volatility/liquidity/cost profile, and eligibility state.
@@ -21,6 +21,8 @@ This file preserves both committed and deferred work. A deferred item is not per
 - Live WebSocket klines, aggTrades, and best bid/ask.
 - Parquet partitioning, checksums, data catalog, gap detection, and REST repair.
 - Liquidity eligibility and stale-data gate.
+
+Remaining server acceptance gate: verify bounded BTCUSDT/PEPEUSDT archive checksums and required live stream types, restart idempotency, explicit metadata degradation, and no non-loopback listener. Phase 1 stays in progress until the sanitized acceptance record passes and is committed.
 
 ## Phase 2 — Research and Backtesting
 

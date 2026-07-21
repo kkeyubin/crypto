@@ -1,19 +1,19 @@
 # Crypto Research
 
-Personal, auditable cryptocurrency research system. Phase 0 establishes contracts, the unified research Skill, API health, and the Chinese-first Web shell.
+Personal, auditable cryptocurrency research system. Phase 1 adds a Binance USDⓈ-M public-data foundation: a dynamic watchlist, verified historical archives, routed live streams, independent symbol profiles, gaps, checksums, and fail-closed eligibility. The default console language is Chinese.
 
-No market ingestion, backtest execution, paper order service, or signal notifications exists in Phase 0. There are no exchange credentials, real or simulated order services, or AI trading authority in this release. Planned work is documented in [docs/roadmap.md](docs/roadmap.md).
+Phase 1 does **not** include strategies, backtests, paper orders, signal notifications, exchange credentials, or AI trading authority. Those remain separate later-phase work in [docs/roadmap.md](docs/roadmap.md).
 
-## Local checks
+## Local verification
 
-From the repository root in a clean checkout, use the repository's Node version and install dependencies locally:
+Node.js is managed by NVM. From a clean checkout:
 
 ```bash
 cd services/api
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/pytest -q
-.venv/bin/ruff check src tests
+.venv/bin/ruff check src tests migrations ../../deploy/api-entrypoint.py ../../deploy/market-worker-healthcheck.py
 .venv/bin/python scripts/export_schemas.py --check
 
 cd ../..
@@ -29,57 +29,54 @@ npm run web:build
 git diff --check
 ```
 
-## Server deployment prerequisites
+## Server installation
 
-The commands below are the formal installation procedure. A server administrator needs Docker Engine with the Compose plugin, `sudo`, a reviewed repository checkout, and two new random secrets. First clone or copy the reviewed repository to `/srv/crypto-research/repo`; do this before creating the runtime env file:
+An administrator needs Docker Engine with Compose, `sudo`, and a reviewed checkout. Runtime data and secrets stay outside Git:
 
 ```bash
 sudo install -d -m 0755 /srv/crypto-research
 sudo git clone <REPOSITORY_URL> /srv/crypto-research/repo
-# Alternatively, copy an already-reviewed checkout to /srv/crypto-research/repo.
 sudo install -d -m 0750 /srv/crypto-research/config /srv/crypto-research/data
 sudo cp /srv/crypto-research/repo/.env.example /srv/crypto-research/config/runtime.env
 sudo chmod 0600 /srv/crypto-research/config/runtime.env
+openssl rand -hex 32  # POSTGRES_PASSWORD; copy once into runtime.env
+openssl rand -hex 32  # CRYPTO_SESSION_SECRET; copy once into runtime.env
 sudoedit /srv/crypto-research/config/runtime.env
 ```
 
-Generate distinct values before editing `runtime.env`:
+Do not paste secret values into commands or logs. The entrypoint reads `POSTGRES_PASSWORD`, constructs a percent-encoded DSN in-process, removes the raw variable from the application process, and runs migrations only in the API container.
+
+Validate and start the server profile:
 
 ```bash
-openssl rand -hex 32  # POSTGRES_PASSWORD
-openssl rand -hex 32  # CRYPTO_SESSION_SECRET
+docker compose --env-file /srv/crypto-research/config/runtime.env \
+  -f /srv/crypto-research/repo/deploy/compose.yaml \
+  --profile server config --quiet
+docker compose --env-file /srv/crypto-research/config/runtime.env \
+  -f /srv/crypto-research/repo/deploy/compose.yaml \
+  --profile server up -d --build
+docker compose --env-file /srv/crypto-research/config/runtime.env \
+  -f /srv/crypto-research/repo/deploy/compose.yaml \
+  --profile server ps
+curl --fail http://127.0.0.1:8088/api/health/ready
 ```
 
-Use each output once. Hex is recommended for easy operator handling; the API entrypoint safely percent-encodes any PostgreSQL password before constructing its DSN. Keep both values out of shell history, logs, and the repository.
+The server profile runs PostgreSQL, API, Web, and the separately supervised `market-worker`. PostgreSQL is reachable by the host-network worker only at `127.0.0.1:55432`; Web is reachable only at `127.0.0.1:8088`. API has no host port. The worker tries direct WebSocket access first and uses the scoped `http://127.0.0.1:17891` proxy only after a classified direct failure. Generic `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` variables are not configured.
 
-## Server smoke run
+To supervise Compose with systemd, install `deploy/crypto-research.service`, then run `sudo systemctl daemon-reload && sudo systemctl enable --now crypto-research.service`.
 
-After the prerequisites are complete, an administrator may run:
+From a client machine, open the console through SSH rather than exposing a LAN/public port:
 
 ```bash
-cd /srv/crypto-research/repo/deploy
-docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml config --quiet
-docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml up -d --build
-docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml ps
-curl --fail http://127.0.0.1:8088/api/health/live
+ssh -N -L 8088:127.0.0.1:8088 keyubin@192.168.1.4
 ```
 
-The expected live-health JSON shape is `{"status":"ok","service":"api","version":"0.1.0"}`. The Web service is deliberately bound only to `127.0.0.1:8088`; configure any LAN access only after separate approval.
+Then browse to `http://127.0.0.1:8088`. Operational onboarding, checksum verification, gap triage, backups, and rollback are in [Binance Data Operations](docs/runbooks/binance-data-operations.md) and [Market Data Recovery](docs/runbooks/market-data-recovery.md).
 
-To run the service through systemd after copying `deploy/crypto-research.service` to `/etc/systemd/system/crypto-research.service`:
+## Existing Phase 0 smoke environment
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now crypto-research.service
-sudo systemctl status crypto-research.service
-```
+The isolated `/home/keyubin/crypto-research-phase0-smoke` stack was verified at source SHA `0226feba8bbefec207c7eee5b40c93c68a22e922`. It is not the formal `/srv/crypto-research` deployment and must be inventoried and backed up before replacement. Phase 1 server acceptance is still a completion gate; see the roadmap.
 
-## Verified smoke record
+## Repository safety
 
-On 2026-07-21, the reviewed Phase 0 runtime source at `0226feba8bbefec207c7eee5b40c93c68a22e922` was smoke-tested on `keyubin@192.168.1.4` in the isolated user-owned path `/home/keyubin/crypto-research-phase0-smoke`. PostgreSQL, API, and Web were healthy with `unless-stopped`; live/readiness endpoints and the Web root passed; only `127.0.0.1:8088` was bound. The raw database password was absent from the API process after DSN construction.
-
-Docker's first API build could not resolve PyPI. In accordance with the repository rule, the existing loopback proxy on port `17891` was used only for the restricted image-build step; it is not part of Compose, the image runtime environment, or the service configuration. The isolated smoke stack remains running. The formal `/srv/crypto-research` checkout and systemd unit were not installed because that requires administrator privileges.
-
-## Safety boundaries
-
-Do not commit source books, runtime data, reports, runtime outputs, wallet files, exchange credentials, populated `.env` files, or other secrets. Committed contracts and reviewed SDD reports are exceptions; they are repository records, not runtime outputs. See [docs/roadmap.md](docs/roadmap.md) for the approved later phases.
+Do not commit source books, market/runtime data, reports, wallet files, exchange credentials, populated `.env` files, proxy logs, or secrets. Committed contracts and reviewed SDD reports are the documented exceptions.

@@ -19,6 +19,43 @@ For each symbol and stream, track exchange event time, receive time, sequence/tr
 
 Only rows in PostgreSQL `live_data_partitions` with `layer=normalized` and `approval_status=approved` may enter the DuckDB live query boundary. A Parquet file existing on disk is not approval evidence by itself.
 
+## Consistent Backup Order
+
+Use a timestamped directory on a filesystem with enough free space. Do not back up live Parquet files while the worker is writing. The required order is: stop `market-worker`, dump the PostgreSQL catalog, copy the complete data tree, create a checksum inventory, then restart the worker.
+
+```bash
+backup_root=/srv/crypto-research/backups/$(date -u +%Y%m%dT%H%M%SZ)
+sudo install -d -m 0700 "$backup_root"
+cd /srv/crypto-research/repo
+docker compose --env-file /srv/crypto-research/config/runtime.env \
+  -f deploy/compose.yaml --profile server stop market-worker
+docker compose --env-file /srv/crypto-research/config/runtime.env \
+  -f deploy/compose.yaml --profile server exec -T postgres \
+  pg_dump -U crypto -d crypto_research -Fc \
+  | sudo tee "$backup_root/catalog.dump" >/dev/null
+sudo tar --acls --xattrs -cpf "$backup_root/data.tar" \
+  -C /srv/crypto-research data
+sudo sha256sum "$backup_root/data.tar" \
+  | sudo tee "$backup_root/data.tar.sha256" >/dev/null
+docker compose --env-file /srv/crypto-research/config/runtime.env \
+  -f deploy/compose.yaml --profile server start market-worker
+```
+
+Record the reviewed application commit alongside the backup, but never copy `runtime.env` into a report. Verify `catalog.dump`, `data.tar`, and `data.tar.sha256` are nonempty before declaring the backup usable.
+
+## Rollback and Restore
+
+An application-only rollback is allowed only when the previous reviewed commit supports the already-applied database revision. Never guess an Alembic downgrade. Stop the server profile, restore the reviewed checkout, validate Compose, and start it again. If migrations or catalog schemas are incompatible, restore a matched catalog/data backup instead:
+
+1. stop Web, worker, and API so nothing reads or writes partial state;
+2. verify `sha256sum --check data.tar.sha256`, then extract the backed-up data tree first to a new/quarantined path;
+3. restore `catalog.dump` into an empty matched PostgreSQL database;
+4. point the deployment at the restored data only after the files and catalog agree;
+5. start API so its forward migration check passes, then start the worker and Web;
+6. verify manifests, approved Parquet checksums, stream heartbeat, gaps, and loopback listeners.
+
+If any evidence differs, keep the worker stopped and preserve both current and backup copies. Do not delete the newer database, spool, raw archives, or Parquet files during rollback.
+
 ## Legacy Spool and Migration 0004
 
 The reviewed `20260721_0003` catalog migration and intermediate Task 5 commits were never deployed to the server. Migration `20260721_0004` therefore expects `live_data_partitions` to be empty. It deliberately aborts if rows exist because source event `E` cannot be used to infer the canonical query range.

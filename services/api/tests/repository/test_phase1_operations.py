@@ -1,0 +1,141 @@
+from pathlib import Path
+
+import yaml
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+FORBIDDEN_PROXY_KEYS = {
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+}
+FORBIDDEN_EXCHANGE_KEY_FRAGMENTS = ("API_KEY", "API_SECRET", "BINANCE_KEY", "BINANCE_SECRET")
+
+
+def read_text(relative_path: str) -> str:
+    return (REPOSITORY_ROOT / relative_path).read_text()
+
+
+def read_compose() -> dict:
+    return yaml.safe_load(read_text("deploy/compose.yaml"))
+
+
+def test_server_profile_supervises_worker_with_loopback_ports_and_shared_data() -> None:
+    services = read_compose()["services"]
+
+    assert set(services) == {"postgres", "api", "market-worker", "web"}
+    assert services["postgres"]["ports"] == ["127.0.0.1:55432:5432"]
+    assert services["web"]["ports"] == ["127.0.0.1:8088:80"]
+    assert "ports" not in services["api"]
+
+    worker = services["market-worker"]
+    assert worker["profiles"] == ["server"]
+    assert worker["network_mode"] == "host"
+    assert worker["command"] == ["python", "-m", "crypto_research.market"]
+    assert worker["restart"] == "unless-stopped"
+    assert worker["depends_on"] == {
+        "postgres": {"condition": "service_healthy"},
+        "api": {"condition": "service_healthy"},
+    }
+    assert "healthcheck" in worker
+
+    expected_mount = (
+        "${CRYPTO_DATA_ROOT:-/srv/crypto-research/data}:/srv/crypto-research/data"
+    )
+    assert services["api"]["volumes"] == [expected_mount]
+    assert worker["volumes"] == [expected_mount]
+
+
+def test_api_and_host_worker_use_only_validated_database_endpoints() -> None:
+    services = read_compose()["services"]
+    api_environment = services["api"]["environment"]
+    worker_environment = services["market-worker"]["environment"]
+
+    assert api_environment["CRYPTO_DATABASE_HOST"] == "postgres"
+    assert api_environment["CRYPTO_DATABASE_PORT"] == "5432"
+    assert api_environment["CRYPTO_RUN_MIGRATIONS"] == "true"
+    assert worker_environment["CRYPTO_DATABASE_HOST"] == "127.0.0.1"
+    assert worker_environment["CRYPTO_DATABASE_PORT"] == "55432"
+    assert worker_environment["CRYPTO_RUN_MIGRATIONS"] == "false"
+    assert "CRYPTO_DATABASE_URL" not in api_environment
+    assert "CRYPTO_DATABASE_URL" not in worker_environment
+
+    assert api_environment["POSTGRES_PASSWORD"] == "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
+    assert worker_environment["POSTGRES_PASSWORD"] == (
+        "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
+    )
+
+
+def test_worker_has_scoped_validated_proxy_and_no_exchange_credentials() -> None:
+    services = read_compose()["services"]
+    worker_environment = services["market-worker"]["environment"]
+
+    assert worker_environment["CRYPTO_HTTP_PROXY_URL"] == "http://127.0.0.1:17891"
+    assert worker_environment["CRYPTO_PROXY_MODE"] == "auto"
+
+    for service in services.values():
+        environment = service.get("environment", {})
+        assert FORBIDDEN_PROXY_KEYS.isdisjoint(environment)
+        assert not any(
+            fragment in key.upper()
+            for key in environment
+            for fragment in FORBIDDEN_EXCHANGE_KEY_FRAGMENTS
+        )
+
+
+def test_image_ci_and_systemd_include_phase1_runtime_gates() -> None:
+    dockerfile = read_text("deploy/api.Dockerfile")
+    unit = read_text("deploy/crypto-research.service")
+    workflow = yaml.safe_load(read_text(".github/workflows/ci.yml"))
+
+    assert "COPY services/api/src ./src" in dockerfile
+    assert "COPY deploy/market-worker-healthcheck.py" in dockerfile
+    assert "--profile server" in unit
+
+    backend_commands = [
+        step["run"] for step in workflow["jobs"]["backend"]["steps"] if "run" in step
+    ]
+    container_commands = [
+        step["run"] for step in workflow["jobs"]["containers"]["steps"] if "run" in step
+    ]
+    assert "alembic -c alembic.ini heads" in backend_commands
+    assert any("import crypto_research.market.__main__" in command for command in backend_commands)
+    assert any(
+        "docker compose --profile server" in command and "config --quiet" in command
+        for command in container_commands
+    )
+    assert any("run --rm api true" in command for command in container_commands)
+
+
+def test_operations_docs_cover_phase1_recovery_and_keep_later_phases_closed() -> None:
+    operations = read_text("docs/runbooks/binance-data-operations.md")
+    recovery = read_text("docs/runbooks/market-data-recovery.md")
+    readme = read_text("README.md")
+    architecture = read_text("docs/architecture/system-overview.md")
+    roadmap = read_text("docs/roadmap.md")
+    agents = read_text("AGENTS.md")
+
+    required_operations_terms = (
+        "UTC",
+        "366",
+        ".CHECKSUM",
+        "source_pending",
+        "source replacement",
+        "disconnect gap",
+        "metadata_unverified",
+        "127.0.0.1:55432",
+        "127.0.0.1:8088",
+        "ssh -N -L 8088:127.0.0.1:8088",
+    )
+    for term in required_operations_terms:
+        assert term in operations
+    assert "PostgreSQL catalog" in recovery
+    assert "Parquet" in recovery
+    assert "rollback" in recovery.lower()
+    assert "--profile server" in readme
+    assert "host network" in architecture.lower()
+    assert "server acceptance" in roadmap.lower()
+    assert "Do not use Claude for this project." in agents
+    assert "Phase 2" in agents
