@@ -30,25 +30,25 @@
 - Produces: `ArchiveBackfillStages.validate()` evidence containing serialized detected gaps; `DataManifest.missing_intervals` populated from that evidence; `SqlAlchemyApprovedCoverageResolver.resolve()` returning only continuous subranges outside manifest holes.
 - Consumes: existing `DetectedGap`, `MissingInterval`, `DataManifest`, `ApprovedCoverage`, and catalog approval APIs.
 
-- [ ] **Step 1: Write failing archive-manifest tests**
+- [x] **Step 1: Write failing archive-manifest tests**
 
 Create a minute archive fixture with one interior day/minute missing. Assert validation records the gap and publish emits `missing_intervals=(MissingInterval(start=..., end=..., reason="missing_minute_open_time"),)` while complete archives emit `()`.
 
-- [ ] **Step 2: Run the focused tests and observe RED**
+- [x] **Step 2: Run the focused tests and observe RED**
 
 Run: `cd services/api && .venv/bin/pytest -q tests/market/test_backfill_stages.py -k 'missing_interval or content_gap'`
 
 Expected: the approved manifest currently has an empty `missing_intervals` tuple.
 
-- [ ] **Step 3: Persist immutable missing-interval evidence**
+- [x] **Step 3: Persist immutable missing-interval evidence**
 
 Return detected gap boundaries from `validate()` as JSON-safe evidence, reconstruct only validated `MissingInterval` values in `publish()`, and pass them to `DataManifest`. Reject malformed, overlapping, or out-of-range evidence through the existing Pydantic contract.
 
-- [ ] **Step 4: Write the PostgreSQL fail-open regression**
+- [x] **Step 4: Write the PostgreSQL fail-open regression**
 
 Store an approved manifest covering `[00:00, 03:00)` with `missing_intervals=[01:00,02:00)`. Assert the resolver emits `[00:00,01:00)` plus `[02:00,03:00)`, and `reconcile_gap()` leaves the interior gap open with a `partial` history entry.
 
-- [ ] **Step 5: Implement coverage subtraction and run GREEN**
+- [x] **Step 5: Implement coverage subtraction and run GREEN**
 
 Split the manifest outer range by every declared missing interval before constructing `ApprovedCoverage`. Run:
 
@@ -98,43 +98,43 @@ cd services/api
 .venv/bin/ruff check src tests
 ```
 
-### Task 3: REST Capability Probe, Metadata Snapshot, and Validated Repair
+### Task 3: Executable Catalog Reconciliation and Honest REST Boundary
 
 **Files:**
-- Modify: `services/api/src/crypto_research/market/rest.py`
-- Modify: `services/api/src/crypto_research/market/__main__.py`
+- Modify: `services/api/src/crypto_research/contracts/data.py`
 - Modify: `services/api/src/crypto_research/market/control.py`
 - Modify: `services/api/src/crypto_research/db/repositories.py`
 - Modify: `services/api/src/crypto_research/routes/data.py`
-- Test: `services/api/tests/market/test_rest_adapter.py`
-- Test: `services/api/tests/routes/test_operations.py`
+- Modify: `docs/roadmap.md`
+- Modify: `docs/runbooks/binance-data-operations.md`
+- Test: `services/api/tests/routes/test_data.py`
 - Test: `services/api/tests/db/test_postgres_integration.py`
 
 **Interfaces:**
-- Produces: durable per-capability health; validated exchange-info snapshots; bounded `POST /api/gaps/{gap_id}/repair` that only closes a gap after catalog-approved replacement evidence excludes all missing intervals.
-- Consumes: `PublicBinanceRestAdapter`, structured `BinanceRestSource`, metadata snapshot repository, Task 1 safe coverage resolver, and the existing gap repair history.
+- Produces: bounded `POST /api/gaps/{gap_id}/reconcile` that only closes a gap after catalog-approved partition evidence excludes all missing intervals; documentation that the unreachable REST adapter is inactive and `rest_healthy=false` is intentional.
+- Consumes: Task 1 safe coverage resolver, immutable Task 2 replacement partitions, and the existing gap repair history.
 
-- [ ] **Step 1: Write RED capability/repair tests**
+- [ ] **Step 1: Write RED reconciliation route tests**
 
-Use a fake REST client to prove independent metadata/repair health, durable 451/timeout degradation, validated metadata persistence, successful approved repair, and partial repair that retains an open gap. Assert no arbitrary URL, credentials, or unbounded range is accepted.
+Submit one existing gap ID with a bounded tuple of approved partition UUIDs. Prove matching complete evidence repairs it, a manifest hole records `partial` and leaves it open, foreign-symbol/data-type evidence cannot repair it, unknown gaps/partitions fail, and arbitrary URLs/ranges are not accepted by the contract.
 
-- [ ] **Step 2: Instantiate and probe the adapter**
+- [ ] **Step 2: Add the typed bounded command**
 
-Construct `PublicBinanceRestAdapter` in the worker with the existing `httpx2.AsyncClient`, validated proxy policy, UTC clock, repository health sink, and structured endpoint sources. Probe metadata on symbol onboarding/refresh with bounded backoff; a failed probe changes only REST/metadata capability.
+Add `GapReconcileRequest(partition_ids: tuple[UUID, ...])` with 1–100 unique IDs and no extra fields. Add the control method and route; lock/read the existing gap, call `reconcile_gap()` with source `catalog_reconcile`, commit its immutable history, and return `DataGapView`.
 
-- [ ] **Step 3: Persist metadata and capability health**
+- [ ] **Step 3: Keep the REST capability fail-closed**
 
-Store validated symbol metadata snapshots and capability failure/checked timestamps. Derive `rest_healthy` from durable capability evidence instead of a constant; keep archive/live health separate.
+Do not instantiate repeated REST probes while both measured server paths return timeout/451. Retain the validated `PublicBinanceRestAdapter` as an inactive adapter boundary, keep `rest_healthy=false` and `metadata_unverified`, and document that activation requires a reachable public endpoint plus a new acceptance gate.
 
-- [ ] **Step 4: Wire bounded repair**
+- [ ] **Step 4: Correct roadmap and runbook scope**
 
-The repair route resolves one existing gap and maps its `DataType` exactly to `BinanceRestEndpoint.KLINES`, `MARK_PRICE_KLINES`, `FUNDING_RATE`, or `AGG_TRADES`. It validates returned rows with the same normalizers, publishes immutable evidence, then calls `reconcile_gap()`. A 451, timeout, incomplete range, or manifest hole records a partial/failed attempt and leaves eligibility false.
+Replace the inaccurate “REST repair complete” claim with “catalog-approved repair/reconcile; REST adapter inactive while endpoint is unreachable.” Explain that Task 2 retry/recheck produces repair evidence and this route evaluates it; neither operation invents data or closes a manifest hole.
 
 - [ ] **Step 5: Run focused GREEN**
 
 ```bash
 cd services/api
-.venv/bin/pytest -q tests/market/test_rest_adapter.py tests/routes/test_operations.py tests/db/test_postgres_integration.py -k 'metadata or capability or repair'
+.venv/bin/pytest -q tests/routes/test_data.py tests/db/test_postgres_integration.py -k 'reconcile or repair or gap'
 .venv/bin/ruff check src tests
 ```
 

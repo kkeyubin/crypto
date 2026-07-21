@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -18,6 +19,7 @@ from crypto_research.contracts.manifest import (
     DataManifest,
     DataType,
     DeduplicationMethod,
+    MissingInterval,
     ValidationState,
 )
 from crypto_research.contracts.strategy import InstrumentRef
@@ -171,7 +173,7 @@ class BackfillStages(Protocol):
 
     async def normalize(self, work: BackfillObject) -> NormalizeEvidence: ...
 
-    async def validate(self, work: BackfillObject) -> Mapping[str, bool]: ...
+    async def validate(self, work: BackfillObject) -> Mapping[str, object]: ...
 
     async def publish(self, work: BackfillObject) -> PublishEvidence: ...
 
@@ -462,7 +464,7 @@ class ArchiveBackfillStages:
             row_count=stored.row_count,
         )
 
-    async def validate(self, work: BackfillObject) -> Mapping[str, bool]:
+    async def validate(self, work: BackfillObject) -> Mapping[str, object]:
         obj = self._object(work)
         if (
             not work.normalized_path
@@ -480,7 +482,7 @@ class ArchiveBackfillStages:
         range_values = table.column(range_key).to_pylist()
         start_ms = _epoch_milliseconds(obj.start)
         end_ms = _epoch_milliseconds(obj.end)
-        result = {
+        result: dict[str, object] = {
             "checksum": actual_checksum == work.normalized_checksum,
             "schema": table.schema.equals(expected_schema, check_metadata=True),
             "ordering": ordering_values == sorted(ordering_values),
@@ -488,8 +490,10 @@ class ArchiveBackfillStages:
             "range": all(start_ms <= value < end_ms for value in range_values),
             "row_count": table.num_rows == work.row_count and table.num_rows > 0,
         }
-        if all(result.values()):
-            for gap in _content_gaps(obj, table):
+        if all(result.get(name) is True for name in _VALIDATION_NAMES):
+            gaps = _content_gaps(obj, table)
+            result["missing_intervals"] = _serialize_content_gaps(gaps)
+            for gap in gaps:
                 await self._gap_sink.record_gap(gap)
         return result
 
@@ -505,6 +509,18 @@ class ArchiveBackfillStages:
             )
         ):
             raise ValueError("validated work requires complete durable evidence")
+        table, actual_checksum = await asyncio.to_thread(
+            _read_normalized_table,
+            self._data_root,
+            work.normalized_path,
+        )
+        if actual_checksum != work.normalized_checksum:
+            raise ValueError("normalized bytes changed after validation")
+        validation_evidence = _catalog_validation_evidence(obj, table)
+        missing_intervals = _missing_intervals_from_evidence(
+            validation_evidence,
+            TimeRange(obj.start, obj.end),
+        )
         now = _require_utc(self._clock(), "clock")
         manifest = DataManifest(
             manifest_id=uuid5(NAMESPACE_URL, f"manifest|{work.object_id}|{work.source_checksum}"),
@@ -527,18 +543,12 @@ class ArchiveBackfillStages:
             primary_key_fields=(_dataset_validation(obj.dataset)[1],),
             deduplication_method=DeduplicationMethod.REJECT_DUPLICATES,
             duplicates_removed=0,
+            missing_intervals=missing_intervals,
         )
-        table, actual_checksum = await asyncio.to_thread(
-            _read_normalized_table,
-            self._data_root,
-            work.normalized_path,
-        )
-        if actual_checksum != work.normalized_checksum:
-            raise ValueError("normalized bytes changed after validation")
         approved = await self._catalog.approve(
             CatalogCandidate(
                 manifest,
-                _catalog_validation_evidence(obj, table),
+                validation_evidence,
             )
         )
         return PublishEvidence(approved.partition_id, approved.manifest_id)
@@ -828,6 +838,7 @@ def _catalog_validation_evidence(
         "uniqueness": True,
         "range": True,
         "row_count": True,
+        "missing_intervals": _serialize_content_gaps(_content_gaps(obj, table)),
     }
     if obj.dataset is DatasetKind.AGG_TRADES:
         aggregate_ids = table["aggregate_trade_id"].to_pylist()
@@ -841,6 +852,59 @@ def _catalog_validation_evidence(
         recovered_ranges.append([range_start, previous])
         evidence["recovered_id_ranges"] = recovered_ranges
     return evidence
+
+
+_VALIDATION_NAMES = (
+    "checksum",
+    "schema",
+    "ordering",
+    "uniqueness",
+    "range",
+    "row_count",
+)
+_CONTENT_GAP_REASONS = frozenset(
+    {"missing_minute_open_time", "aggregate_trade_id_discontinuity"}
+)
+
+
+def _serialize_content_gaps(gaps: tuple[DetectedGap, ...]) -> list[dict[str, str]]:
+    return [
+        {
+            "start": gap.start.isoformat(),
+            "end": gap.end.isoformat(),
+            "reason": gap.reason.value,
+        }
+        for gap in gaps
+    ]
+
+
+def _missing_intervals_from_evidence(
+    evidence: Mapping[str, object],
+    coverage: TimeRange,
+) -> tuple[MissingInterval, ...]:
+    serialized = evidence.get("missing_intervals")
+    if not isinstance(serialized, list):
+        raise ValueError("missing interval evidence must be a JSON array")
+    intervals: list[MissingInterval] = []
+    for item in serialized:
+        if not isinstance(item, dict) or set(item) != {"start", "end", "reason"}:
+            raise ValueError("missing interval evidence is malformed")
+        reason = item["reason"]
+        if not isinstance(reason, str) or reason not in _CONTENT_GAP_REASONS:
+            raise ValueError("missing interval evidence has an unsupported reason")
+        interval = MissingInterval.model_validate_json(
+            json.dumps({"start": item["start"], "end": item["end"]})
+        )
+        if interval.start < coverage.start or interval.end > coverage.end:
+            raise ValueError("missing interval evidence is outside archive coverage")
+        intervals.append(interval)
+    intervals.sort(key=lambda interval: (interval.start, interval.end))
+    if any(
+        current.start < previous.end
+        for previous, current in zip(intervals, intervals[1:], strict=False)
+    ):
+        raise ValueError("missing interval evidence cannot overlap")
+    return tuple(intervals)
 
 
 def _dataset_validation(dataset: DatasetKind) -> tuple[pa.Schema, str, str]:

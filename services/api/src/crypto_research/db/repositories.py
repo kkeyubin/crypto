@@ -297,32 +297,39 @@ class SqlAlchemyApprovedCoverageResolver:
             ):
                 continue
             manifest = DataManifest.model_validate_json(json.dumps(stored.manifest))
-            base = {
-                "symbol": partition.symbol,
-                "data_type": DataType(partition.dataset),
-                "time_range": TimeRange(manifest.start, manifest.end),
-                "partition_id": partition.id,
-            }
+            coverage_ranges = _manifest_coverage_intervals(manifest)
             recovered_ranges = validation.get("recovered_id_ranges")
             if isinstance(recovered_ranges, list):
-                for recovered in recovered_ranges:
-                    if (
-                        isinstance(recovered, list)
-                        and len(recovered) == 2
-                        and all(
-                            isinstance(value, int) and not isinstance(value, bool)
-                            for value in recovered
-                        )
-                    ):
-                        coverage.append(
-                            ApprovedCoverage(
-                                **base,
-                                recovered_id_start=recovered[0],
-                                recovered_id_end=recovered[1],
+                for start, end in coverage_ranges:
+                    for recovered in recovered_ranges:
+                        if (
+                            isinstance(recovered, list)
+                            and len(recovered) == 2
+                            and all(
+                                isinstance(value, int) and not isinstance(value, bool)
+                                for value in recovered
                             )
-                        )
+                        ):
+                            coverage.append(
+                                ApprovedCoverage(
+                                    symbol=partition.symbol,
+                                    data_type=DataType(partition.dataset),
+                                    time_range=TimeRange(start, end),
+                                    partition_id=partition.id,
+                                    recovered_id_start=recovered[0],
+                                    recovered_id_end=recovered[1],
+                                )
+                            )
                 continue
-            coverage.append(ApprovedCoverage(**base))
+            coverage.extend(
+                ApprovedCoverage(
+                    symbol=partition.symbol,
+                    data_type=DataType(partition.dataset),
+                    time_range=TimeRange(start, end),
+                    partition_id=partition.id,
+                )
+                for start, end in coverage_ranges
+            )
         return tuple(coverage)
 
 

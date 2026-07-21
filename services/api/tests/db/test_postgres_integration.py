@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import json
 import os
+import runpy
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -8,7 +10,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, inspect, select, update
+from sqlalchemy import func, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -18,15 +20,19 @@ from crypto_research.contracts.manifest import (
     ArchiveCadence,
     ArchiveDataset,
     BinanceArchiveSource,
+    BinanceRestEndpoint,
+    BinanceRestSource,
     DataManifest,
     DataType,
     DeduplicationMethod,
+    MissingInterval,
     ValidationState,
 )
 from crypto_research.contracts.strategy import InstrumentRef
 from crypto_research.db.models import (
     AuditEventRow,
     BackfillObjectRow,
+    DataManifestRow,
     DataPartitionRow,
     IngestionJobRow,
     LiveDataPartitionRow,
@@ -38,6 +44,7 @@ from crypto_research.db.repositories import (
     BackfillCommand,
     GapRecord,
     MutationIdentityConflict,
+    SqlAlchemyApprovedCoverageResolver,
     SqlAlchemyDataStateRepository,
     StreamState,
 )
@@ -865,6 +872,197 @@ def test_postgres_task6_control_invariants() -> None:
     asyncio.run(scenario())
 
 
+def test_postgres_manifest_gap_migration_and_safe_repair_coverage() -> None:
+    _upgrade_test_database()
+
+    async def scenario() -> None:
+        engine = create_async_engine(TEST_DATABASE_URL)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        suffix = uuid4().hex[:8].upper()
+        symbol = f"MG{suffix}USDT"
+        migration_symbol = f"MA{suffix}USDT"
+        start = datetime(2026, 2, 1, tzinfo=UTC)
+        end = start + timedelta(hours=3)
+        try:
+            async with session_factory() as session:
+                repository = SqlAlchemyDataStateRepository(session)
+                await repository.add_symbol(AddSymbolCommand(symbol, start, end))
+                await repository.add_symbol(
+                    AddSymbolCommand(
+                        migration_symbol,
+                        start,
+                        start + timedelta(days=1),
+                        include_agg_trades=True,
+                    )
+                )
+                catalog = SqlAlchemyCatalogRepository(session)
+                repair_interval = MissingInterval(
+                    start=start + timedelta(hours=1),
+                    end=start + timedelta(hours=2),
+                )
+                manifest = _rest_manifest(
+                    symbol,
+                    DataType.KLINE_1M,
+                    start,
+                    end,
+                    missing_intervals=(repair_interval,),
+                )
+                approved = await catalog.approve(
+                    CatalogCandidate(manifest, _validations())
+                )
+                repair_gap = await repository.record_gap(
+                    GapRecord(
+                        id=str(uuid4()),
+                        symbol=symbol,
+                        dataset=DataType.KLINE_1M.value,
+                        start_at=repair_interval.start,
+                        end_at=repair_interval.end,
+                        reason="missing_minute_open_time",
+                    )
+                )
+                migration_manifest = _migration_archive_manifest(
+                    migration_symbol,
+                    DataType.KLINE_1M,
+                    start,
+                )
+                await catalog.approve(
+                    CatalogCandidate(migration_manifest, _validations())
+                )
+                for reason, gap_start, gap_end in (
+                    (
+                        "missing_minute_open_time",
+                        start + timedelta(hours=4),
+                        start + timedelta(hours=5),
+                    ),
+                    (
+                        "worker_restart",
+                        start + timedelta(minutes=5),
+                        start + timedelta(minutes=10),
+                    ),
+                    (
+                        "source_unknown_disconnect",
+                        start + timedelta(minutes=10),
+                        start + timedelta(minutes=15),
+                    ),
+                    (
+                        "missing_minute_open_time",
+                        start - timedelta(hours=1),
+                        start,
+                    ),
+                ):
+                    await repository.record_gap(
+                        GapRecord(
+                            id=str(uuid4()),
+                            symbol=migration_symbol,
+                            dataset=DataType.KLINE_1M.value,
+                            start_at=gap_start,
+                            end_at=gap_end,
+                            reason=reason,
+                        )
+                    )
+
+                aggregate_manifest = _migration_archive_manifest(
+                    migration_symbol,
+                    DataType.AGG_TRADE,
+                    start,
+                )
+                aggregate_partition = await catalog.approve(
+                    CatalogCandidate(aggregate_manifest, _validations())
+                )
+                aggregate_gap = MissingInterval(
+                    start=start + timedelta(minutes=20),
+                    end=start + timedelta(minutes=25),
+                )
+                await repository.record_gap(
+                    GapRecord(
+                        id=str(uuid4()),
+                        symbol=migration_symbol,
+                        dataset=DataType.AGG_TRADE.value,
+                        start_at=aggregate_gap.start,
+                        end_at=aggregate_gap.end,
+                        reason="aggregate_trade_id_discontinuity",
+                    )
+                )
+                await session.flush()
+
+                stored_before = await session.get(
+                    DataManifestRow, str(migration_manifest.manifest_id)
+                )
+                assert stored_before is not None
+                identity_before = (
+                    stored_before.partition_id,
+                    stored_before.source_object_id,
+                    stored_before.source_url,
+                    stored_before.source_checksum,
+                )
+                migration = runpy.run_path(
+                    API_ROOT
+                    / "migrations/versions/20260722_0005_manifest_missing_intervals.py"
+                )
+                await session.execute(text(migration["BACKFILL_SQL"]))
+                session.expire_all()
+
+                stored_after = await session.get(
+                    DataManifestRow, str(migration_manifest.manifest_id)
+                )
+                assert stored_after is not None
+                assert (
+                    stored_after.partition_id,
+                    stored_after.source_object_id,
+                    stored_after.source_url,
+                    stored_after.source_checksum,
+                ) == identity_before
+                migrated = DataManifest.model_validate_json(
+                    json.dumps(stored_after.manifest)
+                )
+                assert migrated.missing_intervals == (
+                    MissingInterval(
+                        start=start + timedelta(hours=4),
+                        end=start + timedelta(hours=5),
+                    ),
+                )
+
+                stored_aggregate = await session.get(
+                    DataManifestRow, str(aggregate_manifest.manifest_id)
+                )
+                assert stored_aggregate is not None
+                assert (
+                    DataManifest.model_validate_json(
+                        json.dumps(stored_aggregate.manifest)
+                    ).missing_intervals
+                    == (aggregate_gap,)
+                )
+
+                coverage = await SqlAlchemyApprovedCoverageResolver(session).resolve(
+                    (approved.partition_id,)
+                )
+                assert [
+                    (item.time_range.start, item.time_range.end) for item in coverage
+                ] == [
+                    (start, start + timedelta(hours=1)),
+                    (start + timedelta(hours=2), end),
+                ]
+
+                still_open = await repository.reconcile_gap(
+                    repair_gap.id,
+                    (approved.partition_id,),
+                    end + timedelta(hours=1),
+                    "catalog",
+                )
+                assert still_open.status == "open"
+                assert still_open.repair_details is not None
+                assert still_open.repair_details["history"][-1]["result"] == "partial"
+                assert aggregate_partition.partition_id != approved.partition_id
+
+                with pytest.raises(RuntimeError, match="fail-closed"):
+                    migration["downgrade"]()
+                await session.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
 async def _audit_count(session, action: str, subject_id: str) -> int:
     return int(
         (
@@ -878,6 +1076,110 @@ async def _audit_count(session, action: str, subject_id: str) -> int:
             )
         )
         or 0
+    )
+
+
+def _rest_manifest(
+    symbol: str,
+    data_type: DataType,
+    start: datetime,
+    end: datetime,
+    *,
+    missing_intervals: tuple[MissingInterval, ...] = (),
+) -> DataManifest:
+    endpoint = {
+        DataType.KLINE_1M: BinanceRestEndpoint.KLINES,
+        DataType.AGG_TRADE: BinanceRestEndpoint.AGG_TRADES,
+    }[data_type]
+    identity = f"{symbol}|{data_type.value}|{start.isoformat()}|{end.isoformat()}"
+    source_checksum = hashlib.sha256(f"source|{identity}".encode()).hexdigest()
+    normalized_checksum = hashlib.sha256(
+        f"normalized|{identity}".encode()
+    ).hexdigest()
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+    return DataManifest(
+        manifest_id=uuid4(),
+        instrument=InstrumentRef(
+            venue="BINANCE", market="USD_M_PERPETUAL", symbol=symbol
+        ),
+        data_type=data_type,
+        start=start,
+        end=end,
+        retrieved_at=end + timedelta(days=1),
+        schema_version="2.0.0",
+        normalization_version="1.0.0",
+        source=BinanceRestSource(
+            kind="binance_rest",
+            endpoint=endpoint,
+            symbol=symbol,
+            interval="1m" if data_type is DataType.KLINE_1M else None,
+            start_time=start_ms,
+            end_time=end_ms - 1,
+            limit=180 if data_type is DataType.KLINE_1M else 1000,
+        ),
+        raw_path=f"raw/{symbol}/{data_type.value}/{source_checksum}.json",
+        normalized_path=(
+            f"normalized/{symbol}/{data_type.value}/{normalized_checksum}.parquet"
+        ),
+        source_checksum=source_checksum,
+        normalized_checksum=normalized_checksum,
+        row_count=2,
+        validation_state=ValidationState.VALIDATED,
+        primary_key_fields=("open_time",),
+        deduplication_method=DeduplicationMethod.REJECT_DUPLICATES,
+        duplicates_removed=0,
+        missing_intervals=missing_intervals,
+    )
+
+
+def _migration_archive_manifest(
+    symbol: str,
+    data_type: DataType,
+    start: datetime,
+) -> DataManifest:
+    archive_dataset = {
+        DataType.KLINE_1M: ArchiveDataset.KLINES,
+        DataType.AGG_TRADE: ArchiveDataset.AGG_TRADES,
+    }[data_type]
+    identity = f"migration|{symbol}|{data_type.value}|{start.isoformat()}"
+    source_checksum = hashlib.sha256(f"source|{identity}".encode()).hexdigest()
+    normalized_checksum = hashlib.sha256(
+        f"normalized|{identity}".encode()
+    ).hexdigest()
+    end = start + timedelta(days=1)
+    return DataManifest(
+        manifest_id=uuid4(),
+        instrument=InstrumentRef(
+            venue="BINANCE", market="USD_M_PERPETUAL", symbol=symbol
+        ),
+        data_type=data_type,
+        start=start,
+        end=end,
+        retrieved_at=end + timedelta(days=1),
+        schema_version="2.0.0",
+        normalization_version="1.0.0",
+        source=BinanceArchiveSource(
+            kind="binance_archive",
+            cadence=ArchiveCadence.DAILY,
+            dataset=archive_dataset,
+            symbol=symbol,
+            interval="1m" if data_type is DataType.KLINE_1M else None,
+            period_start=start,
+        ),
+        raw_path=f"raw/{symbol}/{data_type.value}/{source_checksum}.zip",
+        normalized_path=(
+            f"normalized/{symbol}/{data_type.value}/{normalized_checksum}.parquet"
+        ),
+        source_checksum=source_checksum,
+        normalized_checksum=normalized_checksum,
+        row_count=2,
+        validation_state=ValidationState.VALIDATED,
+        primary_key_fields=(
+            "open_time" if data_type is DataType.KLINE_1M else "aggregate_trade_id",
+        ),
+        deduplication_method=DeduplicationMethod.REJECT_DUPLICATES,
+        duplicates_removed=0,
     )
 
 
