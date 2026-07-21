@@ -17,12 +17,24 @@ from crypto_research.market.live_catalog import (
     SecureLiveDuckDBCatalog,
     SqlAlchemyLiveCatalogRepository,
 )
-from crypto_research.market.live_storage import LiveStorage
+from crypto_research.market.live_storage import LiveStorage, StoredLivePartition
+
+
+class FakeResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self) -> list[object]:
+        return self._rows
 
 
 class FakeSession:
     def __init__(self) -> None:
         self.rows: list[object] = []
+        self.statements: list[object] = []
 
     async def get(self, model, identity):
         return next(
@@ -37,8 +49,58 @@ class FakeSession:
     def add(self, row: object) -> None:
         self.rows.append(row)
 
+    async def execute(self, statement) -> FakeResult:
+        self.statements.append(statement)
+        sql = str(statement)
+        if "live_data_partitions.batch_id" not in sql:
+            return FakeResult([])
+        parameters = statement.compile().params
+        batch_id = next(
+            value
+            for key, value in parameters.items()
+            if key.startswith("batch_id")
+        )
+        return FakeResult(
+            [
+                row
+                for row in self.rows
+                if isinstance(row, LiveDataPartitionRow)
+                and row.batch_id == batch_id
+            ]
+        )
+
     async def flush(self) -> None:
         return None
+
+
+def valid_artifact_variant(
+    part: StoredLivePartition,
+    *,
+    checksum: str | None = None,
+    **changes: object,
+) -> StoredLivePartition:
+    changed = replace(part, **changes)
+    selected_checksum = checksum or changed.sha256
+    suffix = ".parquet" if changed.layer == "normalized" else ".ndjson.gz"
+    filename = f"part-{selected_checksum[:24]}{suffix}"
+    relative_path = Path(
+        changed.layer,
+        "binance",
+        "usdm",
+        changed.symbol,
+        changed.dataset,
+        f"date={changed.partition_date}",
+        filename,
+    ).as_posix()
+    data_root = part.path
+    for _ in Path(part.relative_path).parts:
+        data_root = data_root.parent
+    return replace(
+        changed,
+        path=data_root / relative_path,
+        sha256=selected_checksum,
+        relative_path=relative_path,
+    )
 
 
 def aggregate_trade(identity: int = 42):
@@ -117,6 +179,10 @@ def test_live_write_result_registers_complete_approved_manifest_rows(
 
         assert registered == replayed
         assert len(session.rows) == 2
+        assert sum(
+            "pg_advisory_xact_lock" in str(statement)
+            for statement in session.statements
+        ) == 2
         normalized = next(
             row
             for row in session.rows
@@ -156,6 +222,95 @@ def test_catalog_identity_is_immutable(tmp_path: Path) -> None:
 
         with pytest.raises(LiveCatalogError, match="immutable"):
             await repository.register_batch(result)
+        lease.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "replace-checksum-path",
+        "add-artifact",
+        "delete-artifact",
+        "change-row-count",
+        "change-range",
+        "change-layer",
+        "change-schema-contract",
+    ],
+)
+def test_batch_artifact_set_is_immutable(tmp_path: Path, mutation: str) -> None:
+    async def scenario() -> None:
+        storage = LiveStorage(tmp_path / "market-data")
+        lease = storage.acquire_writer("worker-a")
+        storage.accept(lease, aggregate_trade())
+        result = storage.publish_next_batch(lease, max_events=10)
+        assert result is not None
+        original = result.normalized[0]
+        replacement = valid_artifact_variant(original, checksum="c" * 64)
+        if mutation == "replace-checksum-path":
+            conflicting = replace(result, normalized=(replacement,))
+        elif mutation == "add-artifact":
+            conflicting = replace(
+                result, normalized=(*result.normalized, replacement)
+            )
+        elif mutation == "delete-artifact":
+            conflicting = replace(result, normalized=())
+        elif mutation == "change-row-count":
+            conflicting = replace(
+                result,
+                normalized=(replace(original, row_count=original.row_count + 1),),
+            )
+        elif mutation == "change-range":
+            conflicting = replace(
+                result,
+                normalized=(
+                    replace(
+                        original,
+                        max_canonical_time=original.max_canonical_time + 1,
+                    ),
+                ),
+            )
+        elif mutation == "change-layer":
+            conflicting = replace(
+                result,
+                normalized=(
+                    valid_artifact_variant(
+                        original,
+                        checksum="d" * 64,
+                        layer="raw",
+                        schema_name="ndjson/binance-stream-event-v1",
+                        sort_keys=(
+                            "source_event_time",
+                            "source_id",
+                            "event_key",
+                        ),
+                        unique_keys=("event_key",),
+                    ),
+                ),
+            )
+        else:
+            conflicting = replace(
+                result,
+                normalized=(
+                    valid_artifact_variant(
+                        original,
+                        checksum="e" * 64,
+                        dataset="mark_price",
+                        schema_name="parquet/binance-mark-price-v1",
+                        sort_keys=("event_time",),
+                        unique_keys=("event_time",),
+                    ),
+                ),
+            )
+        session = FakeSession()
+        repository = SqlAlchemyLiveCatalogRepository(session)  # type: ignore[arg-type]
+        registered = await repository.register_batch(result)
+
+        with pytest.raises(LiveCatalogError, match="immutable"):
+            await repository.register_batch(conflicting)
+
+        assert session.rows == list(registered)
         lease.close()
 
     asyncio.run(scenario())

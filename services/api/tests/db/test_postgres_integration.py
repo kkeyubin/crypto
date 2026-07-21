@@ -238,6 +238,89 @@ def test_postgres_persistence_invariants() -> None:
                     await session.flush()
                 await session.rollback()
 
+            concurrent_first = LiveWriteResult(
+                raw=(
+                    _live_part(
+                        "raw",
+                        "d" * 64,
+                        "ndjson/binance-stream-event-v1",
+                        ("source_event_time", "source_id", "event_key"),
+                        ("event_key",),
+                    ),
+                ),
+                normalized=(
+                    _live_part(
+                        "normalized",
+                        "e" * 64,
+                        "parquet/binance-aggregate-trade-v1",
+                        ("aggregate_trade_id",),
+                        ("aggregate_trade_id",),
+                    ),
+                ),
+                batch_id="live-batch-concurrent",
+            )
+            concurrent_conflict = LiveWriteResult(
+                raw=(
+                    _live_part(
+                        "raw",
+                        "f" * 64,
+                        "ndjson/binance-stream-event-v1",
+                        ("source_event_time", "source_id", "event_key"),
+                        ("event_key",),
+                    ),
+                ),
+                normalized=(
+                    _live_part(
+                        "normalized",
+                        "0" * 64,
+                        "parquet/binance-aggregate-trade-v1",
+                        ("aggregate_trade_id",),
+                        ("aggregate_trade_id",),
+                    ),
+                ),
+                batch_id=concurrent_first.batch_id,
+            )
+            first_live_session = session_factory()
+            second_live_session = session_factory()
+            conflicting_task = None
+            try:
+                await SqlAlchemyLiveCatalogRepository(
+                    first_live_session
+                ).register_batch(concurrent_first)
+                conflicting_task = asyncio.create_task(
+                    SqlAlchemyLiveCatalogRepository(
+                        second_live_session
+                    ).register_batch(concurrent_conflict)
+                )
+                await asyncio.sleep(0.05)
+                assert not conflicting_task.done()
+
+                await first_live_session.commit()
+                with pytest.raises(LiveCatalogError, match="immutable"):
+                    await asyncio.wait_for(conflicting_task, timeout=5)
+                await second_live_session.rollback()
+            finally:
+                if conflicting_task is not None:
+                    if not conflicting_task.done():
+                        conflicting_task.cancel()
+                    await asyncio.gather(conflicting_task, return_exceptions=True)
+                await first_live_session.close()
+                await second_live_session.close()
+
+            async with session_factory() as verification_session:
+                concurrent_rows = (
+                    await verification_session.execute(
+                        select(LiveDataPartitionRow).where(
+                            LiveDataPartitionRow.batch_id
+                            == concurrent_first.batch_id
+                        )
+                    )
+                ).scalars().all()
+                assert {row.checksum_sha256 for row in concurrent_rows} == {
+                    "d" * 64,
+                    "e" * 64,
+                }
+
             lease_start = datetime(2026, 1, 3, tzinfo=UTC)
             async with session_factory() as setup_session:
                 repository = SqlAlchemyDataStateRepository(setup_session)

@@ -11,7 +11,7 @@ from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 import duckdb
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from crypto_research.db.models import LiveDataPartitionRow, normalize_symbol, utc_now
@@ -86,21 +86,47 @@ class SqlAlchemyLiveCatalogRepository:
         parts = (*result.raw, *result.normalized)
         if not parts:
             raise LiveCatalogError("live write result has no artifacts")
+        incoming_identities = tuple(
+            _part_identity(result.batch_id, part) for part in parts
+        )
         rows: list[LiveDataPartitionRow] = []
         for part in parts:
             _validate_partition(part)
+        if (
+            len(set(incoming_identities)) != len(incoming_identities)
+            or len({part.relative_path for part in parts}) != len(parts)
+        ):
+            raise LiveCatalogError("live batch artifact set contains duplicates")
+
+        lock_key = f"crypto-research:live-batch:{result.batch_id}"
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
+        )
+        existing_statement = (
+            select(LiveDataPartitionRow)
+            .where(LiveDataPartitionRow.batch_id == result.batch_id)
+            .with_for_update()
+        )
+        existing_rows = (
+            (await self._session.execute(existing_statement)).scalars().all()
+        )
+        if existing_rows:
+            existing_by_identity = {
+                _row_identity(row): row for row in existing_rows
+            }
+            if set(existing_by_identity) != set(incoming_identities):
+                raise LiveCatalogError("approved live batch is immutable")
+            return tuple(
+                existing_by_identity[identity] for identity in incoming_identities
+            )
+
+        for part in parts:
             identity = str(
                 uuid5(
                     NAMESPACE_URL,
                     f"crypto-research:live:{result.batch_id}:{part.relative_path}",
                 )
             )
-            existing = await self._session.get(LiveDataPartitionRow, identity)
-            if existing is not None:
-                if _row_identity(existing) != _part_identity(result.batch_id, part):
-                    raise LiveCatalogError("approved live partition is immutable")
-                rows.append(existing)
-                continue
             now = utc_now()
             row = LiveDataPartitionRow(
                 id=identity,
@@ -356,8 +382,8 @@ def _part_identity(batch_id: str, part: StoredLivePartition) -> tuple[object, ..
         part.relative_path,
         part.sha256,
         part.schema_name,
-        list(part.sort_keys),
-        list(part.unique_keys),
+        tuple(part.sort_keys),
+        tuple(part.unique_keys),
         part.min_source_event_time,
         part.max_source_event_time,
         part.min_canonical_time,
@@ -377,8 +403,8 @@ def _row_identity(row: LiveDataPartitionRow) -> tuple[object, ...]:
         row.relative_path,
         row.checksum_sha256,
         row.schema_name,
-        row.sort_keys,
-        row.unique_keys,
+        tuple(row.sort_keys),
+        tuple(row.unique_keys),
         row.min_source_event_time,
         row.max_source_event_time,
         row.min_canonical_time,
