@@ -36,7 +36,7 @@ A later read-only Compose gate confirmed the exact smoke layout: installation ro
 
 The backup command attempted during this gate failed before any stop action. All old containers remained healthy, no `VERIFIED` marker was created, and an empty timestamped backup directory may remain. It is not a usable backup and was not removed. The existing stack remained untouched.
 
-A subsequent runtime gate completed a `VERIFIED` backup, then exposed a sanitized ownership failure. Host data `/home/keyubin/crypto-research-phase0-smoke/data` was mode `0750`, owner `1000:1000`, while the API/worker image process was root. The worker failed `_open_secure_root` with `ValueError: data root owner does not match the effective user`. This intermediate failure led to the non-root runtime fix and was superseded by the accepted deployment below.
+A subsequent runtime gate completed a `VERIFIED` backup, then exposed a sanitized ownership failure. Host data `/home/keyubin/crypto-research-phase0-smoke/data` was mode `0750`, owner `1000:1000`, while the API/worker image process was root. The worker failed `_open_secure_root` with `ValueError: data root owner does not match the effective user`; at that evidence snapshot the worker is stopped while API, Web, and PostgreSQL remain healthy. The VERIFIED backup exists. This intermediate failure led to the non-root runtime fix and was superseded by the accepted deployment below.
 
 ## Bounded server acceptance
 
