@@ -354,14 +354,17 @@ def test_postgres_persistence_invariants() -> None:
 
                 class SlowPublishStages:
                     async def download(self, _work: BackfillObject) -> DownloadEvidence:
+                        await asyncio.sleep(0.025)
                         return DownloadEvidence("1" * 64, "raw/1.zip")
 
                     async def normalize(self, _work: BackfillObject) -> NormalizeEvidence:
+                        await asyncio.sleep(0.025)
                         return NormalizeEvidence(
                             "normalized/publish-heartbeat.parquet", "2" * 64, 2
                         )
 
                     async def validate(self, _work: BackfillObject) -> dict[str, bool]:
+                        await asyncio.sleep(0.025)
                         return _validations()
 
                     async def publish(self, _work: BackfillObject) -> PublishEvidence:
@@ -387,7 +390,7 @@ def test_postgres_persistence_invariants() -> None:
                     SlowPublishStages(),
                     clock=lambda: datetime.now(UTC),
                     heartbeat_repository=heartbeat_repository,
-                ).run_once("worker-publish", timedelta(milliseconds=60))
+                ).run_once("worker-publish", timedelta(milliseconds=100))
                 assert completed is not None
                 assert completed.state is BackfillState.CATALOG_APPROVED
             finally:

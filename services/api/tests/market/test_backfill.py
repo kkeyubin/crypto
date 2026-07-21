@@ -296,11 +296,65 @@ def test_runner_renews_lease_while_publish_is_still_running() -> None:
     asyncio.run(scenario())
 
 
+def test_runner_renews_before_each_short_stage_when_cumulative_time_exceeds_lease() -> None:
+    class Repository(InMemoryBackfillRepository):
+        renewals = 0
+
+        async def renew(self, *args, **kwargs):
+            self.renewals += 1
+            return await super().renew(*args, **kwargs)
+
+    class ShortStages:
+        async def download(self, _work: BackfillObject) -> DownloadEvidence:
+            await asyncio.sleep(0.025)
+            return DownloadEvidence("a" * 64, "raw/a.zip")
+
+        async def normalize(self, _work: BackfillObject) -> NormalizeEvidence:
+            await asyncio.sleep(0.025)
+            return NormalizeEvidence("normalized/a.parquet", "b" * 64, 1)
+
+        async def validate(self, _work: BackfillObject) -> dict[str, bool]:
+            await asyncio.sleep(0.025)
+            return {
+                name: True
+                for name in (
+                    "checksum",
+                    "schema",
+                    "ordering",
+                    "uniqueness",
+                    "range",
+                    "row_count",
+                )
+            }
+
+        async def publish(self, _work: BackfillObject) -> PublishEvidence:
+            await asyncio.sleep(0.025)
+            return PublishEvidence("partition-1", "manifest-1")
+
+    async def scenario() -> None:
+        repository = Repository()
+        await repository.plan(object_for())
+        completed = await BackfillRunner(
+            repository, ShortStages(), clock=lambda: datetime.now(UTC)
+        ).run_once("worker-a", timedelta(milliseconds=90))
+
+        assert completed is not None
+        assert completed.state is BackfillState.CATALOG_APPROVED
+        assert repository.renewals >= 4
+
+    asyncio.run(scenario())
+
+
 def test_failed_lease_heartbeat_cancels_the_inflight_stage() -> None:
     cancelled = asyncio.Event()
 
     class Repository(InMemoryBackfillRepository):
+        renewal_attempts = 0
+
         async def renew(self, *args, **kwargs):
+            self.renewal_attempts += 1
+            if self.renewal_attempts == 1:
+                return await super().renew(*args, **kwargs)
             raise ValueError("lease heartbeat rejected")
 
     class Stages:
@@ -320,6 +374,32 @@ def test_failed_lease_heartbeat_cancels_the_inflight_stage() -> None:
 
         assert result is not None and result.state is BackfillState.FAILED
         assert cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_failed_pre_stage_renewal_does_not_create_the_operation_coroutine() -> None:
+    started = False
+
+    class Repository(InMemoryBackfillRepository):
+        async def renew(self, *args, **kwargs):
+            raise ValueError("pre-stage lease renewal rejected")
+
+    class Stages:
+        async def download(self, _work: BackfillObject) -> DownloadEvidence:
+            nonlocal started
+            started = True
+            return DownloadEvidence("a" * 64, "raw/a.zip")
+
+    async def scenario() -> None:
+        repository = Repository()
+        await repository.plan(object_for())
+        result = await BackfillRunner(
+            repository, Stages(), clock=lambda: datetime.now(UTC)
+        ).run_once("worker-a", timedelta(seconds=1))
+
+        assert result is not None and result.state is BackfillState.FAILED
+        assert started is False
 
     asyncio.run(scenario())
 

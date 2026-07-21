@@ -231,7 +231,7 @@ class BackfillRunner:
                         work,
                         worker_id,
                         lease_duration,
-                        self._stages.download(work),
+                        lambda current=work: self._stages.download(current),
                     )
                 except ArchiveNotFoundError as error:
                     now = self._clock()
@@ -267,7 +267,7 @@ class BackfillRunner:
                         work,
                         worker_id,
                         lease_duration,
-                        self._stages.normalize(work),
+                        lambda current=work: self._stages.normalize(current),
                     )
                 except Exception as error:
                     return await self._fail(work, worker_id, error)
@@ -288,7 +288,7 @@ class BackfillRunner:
                         work,
                         worker_id,
                         lease_duration,
-                        self._stages.validate(work),
+                        lambda current=work: self._stages.validate(current),
                     )
                 except Exception as error:
                     return await self._fail(work, worker_id, error)
@@ -320,7 +320,7 @@ class BackfillRunner:
                         work,
                         worker_id,
                         lease_duration,
-                        self._stages.publish(work),
+                        lambda current=work: self._stages.publish(current),
                     )
                 except Exception as error:
                     return await self._fail(work, worker_id, error)
@@ -372,9 +372,17 @@ class BackfillRunner:
         work: BackfillObject,
         worker_id: str,
         lease_duration: timedelta,
-        operation: Awaitable[T],
+        operation: Callable[[], Awaitable[T]],
     ) -> T:
-        task = asyncio.create_task(operation)
+        await self._heartbeat_repository.renew(
+            work.object_id,
+            worker_id,
+            work.attempt_count,
+            self._clock(),
+            lease_duration,
+        )
+        await self._heartbeat_repository.checkpoint()
+        task = asyncio.create_task(operation())
         interval = max(0.01, min(30.0, lease_duration.total_seconds() / 3))
         try:
             while True:

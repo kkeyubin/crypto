@@ -121,7 +121,7 @@ active catalog.
 ```text
 cd services/api
 .venv/bin/pytest -q
-# 341 passed, 1 skipped
+# 343 passed, 1 skipped
 
 .venv/bin/ruff check src tests
 # All checks passed!
@@ -176,3 +176,15 @@ exclude computed `resolved_url` and are rehydrated through JSON validation.
 Focused verification passed with `21 passed, 1 skipped`; final API verification
 passed with `341 passed, 1 skipped`. The skipped case remains the opt-in real
 PostgreSQL suite when `CRYPTO_TEST_DATABASE_URL` is absent.
+
+The second real PostgreSQL gate exposed cumulative lease age across several
+short stages: because each operation completed before the periodic heartbeat
+interval, none renewed, while intervening durable commits consumed the original
+claim lease. Every external stage now renews and commits through the independent
+heartbeat repository before its side-effect coroutine is created, then retains
+periodic renewal while running. The awaitable factory means a rejected
+pre-stage renewal creates no unawaited coroutine. Regressions cover cumulative
+short stages, pre-stage failure without operation creation, and periodic
+failure cancellation; the opt-in PostgreSQL case now includes multiple short
+stages below the heartbeat interval. Final verification passed with
+`343 passed, 1 skipped`.
