@@ -189,17 +189,6 @@ def _preflight_central_directory(path: Path, limits: ArchiveSizeLimits) -> None:
     position = tail.rfind(b"PK\x05\x06")
     if position < 0 or position + eocd_size > len(tail):
         raise ArchiveSafetyError("archive is not a valid ZIP")
-    locator_start = position - 20
-    zip64_eocd_start = locator_start - 56
-    if (
-        locator_start >= 0
-        and tail[locator_start : locator_start + 4] == b"PK\x06\x07"
-    ) or (
-        position >= 4 and tail[position - 4 : position] == b"PK\x06\x06"
-    ) or (
-        zip64_eocd_start >= 0 and tail[zip64_eocd_start : zip64_eocd_start + 4] == b"PK\x06\x06"
-    ):
-        raise ArchiveSafetyError("archive ZIP64 metadata is not supported")
     (
         _signature,
         disk_number,
@@ -211,6 +200,7 @@ def _preflight_central_directory(path: Path, limits: ArchiveSizeLimits) -> None:
         comment_length,
     ) = struct.unpack_from("<4s4H2LH", tail, position)
     eocd_offset = file_size - tail_size + position
+    _reject_zip64_records_before_eocd(path, eocd_offset)
     if position + eocd_size + comment_length != len(tail):
         raise ArchiveSafetyError("archive has an invalid final EOCD record")
     if (
@@ -231,6 +221,20 @@ def _preflight_central_directory(path: Path, limits: ArchiveSizeLimits) -> None:
         or central_directory_end > file_size
     ):
         raise ArchiveSafetyError("archive central directory exceeds safe bounds")
+
+
+def _reject_zip64_records_before_eocd(path: Path, eocd_offset: int) -> None:
+    locator_size = 20
+    if eocd_offset < locator_size:
+        return
+    with path.open("rb") as source:
+        source.seek(eocd_offset - locator_size)
+        locator = source.read(locator_size)
+        if locator[:4] != b"PK\x06\x07":
+            source.seek(max(0, eocd_offset - 4))
+            if source.read(4) != b"PK\x06\x06":
+                return
+    raise ArchiveSafetyError("archive ZIP64 metadata is not supported")
 
 
 def _fsync_directory(directory: Path) -> None:

@@ -187,3 +187,38 @@ services/api/.venv/bin/pytest -q services/api/tests/market
 ```
 
 Result: `55 passed`.
+
+## EOCD and nonblocking descriptor edge cases
+
+### RED
+
+Added tests for a ZIP64 locator hidden immediately before a valid unsaturated
+classic EOCD with a maximum-size comment, mismatched root UID, owner-controlled
+0755 roots, and FIFO staging/existing raw entries. The FIFO test first asserts
+the nonblocking flag, so its RED execution cannot hang on a blocking FIFO open.
+
+```text
+services/api/.venv/bin/pytest -q \
+  services/api/tests/market/test_archive_download.py::test_rejects_zip64_locator_hidden_before_maximum_classic_comment \
+  services/api/tests/market/test_storage.py::test_rejects_root_owned_by_another_uid \
+  services/api/tests/market/test_storage.py::test_fifo_staging_and_existing_raw_destination_are_rejected_without_blocking
+```
+
+Result before the fixes: `3 failed`; the ZIP64 case constructed `ZipFile`, root
+UID mismatch was accepted, and the untrusted read flags omitted `O_NONBLOCK`.
+
+### GREEN
+
+The EOCD preflight now independently seeks and reads exactly the 20 bytes before
+the absolute classic EOCD offset, so the ZIP64 locator cannot be hidden outside
+the maximum-comment tail slice. Untrusted staging and existing raw entries use
+`O_NONBLOCK|O_NOFOLLOW`, then require `S_ISREG` from `fstat` before any read.
+The opened root must be a directory owned by `os.geteuid()` and may not be
+group/world writable. Newly created roots request mode 0700; pre-existing,
+same-owner non-writable modes including 0755 remain valid.
+
+```text
+services/api/.venv/bin/pytest -q services/api/tests/market
+```
+
+Result: `59 passed`.

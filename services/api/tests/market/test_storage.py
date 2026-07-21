@@ -90,6 +90,33 @@ def test_rejects_insecure_or_symlinked_data_root(tmp_path: Path) -> None:
         )
 
 
+def test_allows_owner_controlled_preexisting_0755_root(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+
+    result = write_normalized_parquet(
+        _normalized_dataset(), root, "BTCUSDT", DatasetKind.KLINES, PERIOD
+    )
+
+    assert result.path.exists()
+
+
+def test_rejects_root_owned_by_another_uid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = secure_root(tmp_path / "root")
+    original_fstat = storage.os.fstat
+
+    def wrong_owner(descriptor: int):
+        actual = original_fstat(descriptor)
+        values = list(actual)
+        values[4] = actual.st_uid + 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(storage.os, "fstat", wrong_owner)
+    with pytest.raises(ValueError, match="owner"):
+        storage._open_secure_root(root)
+
+
 def test_rejects_ancestor_and_existing_destination_symlinks(tmp_path: Path) -> None:
     root = secure_root(tmp_path / "root")
     outside = secure_root(tmp_path / "outside")
@@ -157,6 +184,27 @@ def test_raw_retention_rejects_staging_or_existing_destination_symlink(tmp_path:
     with pytest.raises(ValueError, match="destination symlink"):
         retain_raw_archive(regular, root, "BTCUSDT", DatasetKind.KLINES, PERIOD, checksum)
     assert regular.exists()
+
+
+def test_fifo_staging_and_existing_raw_destination_are_rejected_without_blocking(
+    tmp_path: Path,
+) -> None:
+    assert storage._READ_FLAGS & os.O_NONBLOCK
+    root = secure_root(tmp_path / "root")
+    fifo = tmp_path / "staging.fifo"
+    os.mkfifo(fifo)
+    checksum = "a" * 64
+    with pytest.raises(ValueError, match="staging"):
+        retain_raw_archive(fifo, root, "BTCUSDT", DatasetKind.KLINES, PERIOD, checksum)
+
+    regular = tmp_path / "regular.zip"
+    regular.write_bytes(b"x")
+    checksum = hashlib.sha256(b"x").hexdigest()
+    destination = raw_archive_path(root, "BTCUSDT", DatasetKind.KLINES, PERIOD, checksum)
+    destination.parent.mkdir(parents=True)
+    os.mkfifo(destination)
+    with pytest.raises(ValueError, match="raw destination"):
+        retain_raw_archive(regular, root, "BTCUSDT", DatasetKind.KLINES, PERIOD, checksum)
 
 
 def partial_names(directory: Path) -> list[Path]:

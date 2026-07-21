@@ -15,7 +15,7 @@ from crypto_research.market.binance.normalization import NormalizedDataset
 from crypto_research.market.validation import normalize_symbol, require_utc_midnight
 
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _TEMP_FLAGS = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
@@ -191,6 +191,8 @@ def _open_secure_root(data_root: Path) -> int:
         raise ValueError("data root could not be opened securely") from error
     try:
         opened_stat = os.fstat(descriptor)
+        if opened_stat.st_uid != os.geteuid():
+            raise ValueError("data root owner does not match the effective user")
         if not stat.S_ISDIR(opened_stat.st_mode) or stat.S_IMODE(opened_stat.st_mode) & 0o022:
             raise ValueError("data root is not a secure directory")
         return descriptor
