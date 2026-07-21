@@ -275,7 +275,7 @@ export interface SymbolEvidence {
 }
 
 export type SymbolEvidenceState =
-  | { readonly status: "ready"; readonly symbol: SymbolView; readonly evidence: SymbolEvidence; readonly focusAction?: boolean }
+  | { readonly status: "ready"; readonly symbol: SymbolView; readonly evidence: SymbolEvidence }
   | { readonly status: "loading"; readonly symbol: SymbolView }
   | { readonly status: "error"; readonly symbol: SymbolView }
   | { readonly status: "refreshing"; readonly symbol: SymbolView }

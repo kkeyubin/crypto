@@ -67,11 +67,27 @@ function replaceItem(
   };
 }
 
-function acknowledgesMutation(listed: SymbolView, committed: SymbolView): boolean {
+type MutationReconciliation = "supersede" | "acknowledge" | "retain";
+
+function reconcileMutation(listed: SymbolView, committed: SymbolView): MutationReconciliation {
+  const listedUpdatedAt = Date.parse(listed.updated_at);
+  const committedUpdatedAt = Date.parse(committed.updated_at);
+  if (!Number.isFinite(listedUpdatedAt) || !Number.isFinite(committedUpdatedAt)) {
+    return "retain";
+  }
+  if (listedUpdatedAt > committedUpdatedAt) {
+    return "supersede";
+  }
+  if (listedUpdatedAt < committedUpdatedAt) {
+    return "retain";
+  }
   return (
+    listed.symbol === committed.symbol &&
     listed.enabled === committed.enabled &&
-    Date.parse(listed.updated_at) >= Date.parse(committed.updated_at)
-  );
+    listed.history_start === committed.history_start &&
+    listed.history_end === committed.history_end &&
+    listed.include_agg_trades === committed.include_agg_trades
+  ) ? "acknowledge" : "retain";
 }
 
 export function useSymbols(): SymbolsState {
@@ -159,7 +175,6 @@ export function useSymbols(): SymbolsState {
           status: "ready",
           symbol,
           evidence,
-          focusAction: mode === "recoverable",
         }),
       } : value);
       return true;
@@ -237,9 +252,17 @@ export function useSymbols(): SymbolsState {
         generationRef.current = generation;
         abortAll();
 
+        const supersededSymbols = new Set<string>();
         for (const listed of symbols) {
           const committed = committedMutationsRef.current.get(listed.symbol);
-          if (committed !== undefined && acknowledgesMutation(listed, committed.symbol)) {
+          if (committed === undefined) {
+            continue;
+          }
+          const reconciliation = reconcileMutation(listed, committed.symbol);
+          if (reconciliation === "supersede") {
+            committedMutationsRef.current.delete(listed.symbol);
+            supersededSymbols.add(listed.symbol);
+          } else if (reconciliation === "acknowledge") {
             committed.listAcknowledged = true;
             if (committed.evidenceConfirmed) {
               committedMutationsRef.current.delete(listed.symbol);
@@ -266,6 +289,9 @@ export function useSymbols(): SymbolsState {
                 const committed = committedMutationsRef.current.get(mergedSymbol.symbol);
                 if (committed !== undefined) {
                   return { status: "refreshing" as const, symbol: committed.symbol };
+                }
+                if (supersededSymbols.has(mergedSymbol.symbol)) {
+                  return { status: "loading" as const, symbol: mergedSymbol };
                 }
                 return currentDashboard?.items.find((item) => item.symbol.symbol === mergedSymbol.symbol)
                   ?? { status: "loading" as const, symbol: mergedSymbol };

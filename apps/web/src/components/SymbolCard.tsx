@@ -4,10 +4,16 @@ import type { SymbolEvidence } from "../apiClient";
 
 interface SymbolCardProps {
   evidence: SymbolEvidence;
-  focusAction?: boolean;
-  onDisable: (symbol: string) => Promise<SymbolEvidence["symbol"] | null>;
-  onEnable: (symbol: SymbolEvidence["symbol"]) => Promise<SymbolEvidence["symbol"] | null>;
-  onMutationCommitted: (symbol: SymbolEvidence["symbol"], kind: "disabled" | "enabled") => void;
+  focusToken?: number;
+  onDisable: (symbol: string) => Promise<SymbolMutationResult | null>;
+  onEnable: (symbol: SymbolEvidence["symbol"]) => Promise<SymbolMutationResult | null>;
+  onMutationCommitted: (mutation: SymbolMutationResult, kind: "disabled" | "enabled") => void;
+  onFocusConsumed: (token: number) => void;
+}
+
+export interface SymbolMutationResult {
+  readonly updated: SymbolEvidence["symbol"];
+  readonly actionToken: number;
 }
 
 const REQUIRED_STREAM_SUFFIXES = ["aggtrade", "bookticker", "kline_1m", "markprice@1s"] as const;
@@ -37,7 +43,7 @@ function summarizeFreshness(evidence: SymbolEvidence) {
   };
 }
 
-export function SymbolCard({ evidence, focusAction = false, onDisable, onEnable, onMutationCommitted }: SymbolCardProps) {
+export function SymbolCard({ evidence, focusToken, onDisable, onEnable, onMutationCommitted, onFocusConsumed }: SymbolCardProps) {
   const { i18n, t } = useTranslation();
   const { symbol, profile, eligibility } = evidence;
   const [confirmingDisable, setConfirmingDisable] = useState(false);
@@ -74,10 +80,13 @@ export function SymbolCard({ evidence, focusAction = false, onDisable, onEnable,
   }, [confirmingDisable]);
 
   useEffect(() => {
-    if (focusAction) {
+    if (focusToken !== undefined) {
       actionButton.current?.focus();
+      if (document.activeElement === actionButton.current) {
+        onFocusConsumed(focusToken);
+      }
     }
-  }, [focusAction, symbol.enabled]);
+  }, [focusToken, onFocusConsumed, symbol.enabled]);
 
   const closeConfirmation = () => {
     if (!disabling) {
@@ -90,25 +99,25 @@ export function SymbolCard({ evidence, focusAction = false, onDisable, onEnable,
       return;
     }
     setDisabling(true);
-    const updated = await onDisable(symbol.symbol);
+    const mutation = await onDisable(symbol.symbol);
     setDisabling(false);
-    if (updated !== null) {
+    if (mutation !== null) {
       setConfirmingDisable(false);
-      onMutationCommitted(updated, "disabled");
+      onMutationCommitted(mutation, "disabled");
     }
   };
 
   const reenable = async () => {
     setEnabling(true);
-    const updated = await onEnable(symbol);
+    const mutation = await onEnable(symbol);
     setEnabling(false);
-    if (updated !== null) {
-      onMutationCommitted(updated, "enabled");
+    if (mutation !== null) {
+      onMutationCommitted(mutation, "enabled");
     }
   };
 
   return (
-    <article className="symbol-card" aria-label={t("symbolEvidenceLabel", { symbol: symbol.symbol })}>
+    <article className="symbol-card" aria-label={t("symbolEvidenceLabel", { symbol: symbol.symbol })} data-symbol-surface={symbol.symbol}>
       <header className="symbol-card__header">
         <div>
           <p className="symbol-kicker">{t("perpetualContract")}</p>

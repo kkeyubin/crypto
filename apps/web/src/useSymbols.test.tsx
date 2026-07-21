@@ -516,3 +516,74 @@ test("keeps a committed enable override when a reload still lists the symbol dis
     expect(firstSymbolState(result.current)?.symbol.enabled).toBe(true);
   });
 });
+
+test.each([
+  {
+    name: "newer opposite server state supersedes",
+    committed: disabledSymbol,
+    listed: { ...symbol, updated_at: "2026-07-21T10:02:00Z" },
+    pendingStatus: "loading",
+    expectedEnabled: true,
+  },
+  {
+    name: "older opposite server state is retained locally",
+    committed: disabledSymbol,
+    listed: { ...symbol, updated_at: "2026-07-21T10:00:00Z" },
+    pendingStatus: "refreshing",
+    expectedEnabled: false,
+  },
+  {
+    name: "equal current server state acknowledges the mutation",
+    committed: disabledSymbol,
+    listed: { ...disabledSymbol },
+    pendingStatus: "ready",
+    expectedEnabled: false,
+  },
+  {
+    name: "invalid server ordering fails closed",
+    committed: disabledSymbol,
+    listed: { ...symbol, updated_at: "not-a-date" },
+    pendingStatus: "refreshing",
+    expectedEnabled: false,
+  },
+  {
+    name: "invalid committed ordering fails closed",
+    committed: { ...disabledSymbol, updated_at: "not-a-date" },
+    listed: { ...symbol, updated_at: "2026-07-21T10:02:00Z" },
+    pendingStatus: "refreshing",
+    expectedEnabled: false,
+  },
+] as const)("reconciles committed mutation ordering: $name", async ({ committed, listed, pendingStatus, expectedEnabled }) => {
+  const reloadProfile = deferred<Response>();
+  let listRequests = 0;
+  let profileRequests = 0;
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.startsWith("/api/symbols?")) {
+      listRequests += 1;
+      return Promise.resolve(jsonResponse(listRequests === 1 ? [symbol] : [listed]));
+    }
+    if (path.endsWith("/profile")) {
+      profileRequests += 1;
+      return profileRequests === 3
+        ? reloadProfile.promise
+        : Promise.resolve(jsonResponse(profile(120000 + profileRequests)));
+    }
+    return Promise.resolve(baseResponse(path));
+  }));
+
+  const { result } = renderHook(() => useSymbols());
+  await waitFor(() => expect(firstSymbolState(result.current)?.status).toBe("ready"));
+  await act(async () => {
+    await result.current.refreshSymbol(committed);
+  });
+
+  act(() => result.current.reload());
+  await waitFor(() => expect(profileRequests).toBe(3));
+  expect(firstSymbolState(result.current)?.status).toBe(pendingStatus);
+  expect(firstSymbolState(result.current)?.symbol.enabled).toBe(expectedEnabled);
+
+  reloadProfile.resolve(jsonResponse(profile(999999)));
+  await waitFor(() => expect(firstSymbolState(result.current)?.status).toBe("ready"));
+  expect(firstSymbolState(result.current)?.symbol.enabled).toBe(expectedEnabled);
+});

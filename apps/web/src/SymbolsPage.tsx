@@ -1,14 +1,43 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AddSymbolForm } from "./components/AddSymbolForm";
 import { disableSymbol, enableSymbol, type SymbolEvidenceState } from "./apiClient";
 import type { SymbolView } from "./contracts";
 import { DataStatus } from "./components/DataStatus";
-import { SymbolCard } from "./components/SymbolCard";
+import { SymbolCard, type SymbolMutationResult } from "./components/SymbolCard";
 import { useSymbols } from "./useSymbols";
 
-function RecoverableSymbolState({ item, onRetry }: {
+type MutationKind = "disabled" | "enabled";
+
+interface FocusIntent {
+  readonly symbol: string;
+  readonly token: number;
+}
+
+interface UserAction extends FocusIntent {
+  readonly canceled: boolean;
+}
+
+interface PendingMutation extends FocusIntent {
+  readonly kind: MutationKind;
+  readonly expectedEnabled: boolean;
+  readonly committedUpdatedAt: string;
+}
+
+function isStrictlyNewerOpposite(symbol: SymbolView, pending: PendingMutation): boolean {
+  const listedUpdatedAt = Date.parse(symbol.updated_at);
+  const committedUpdatedAt = Date.parse(pending.committedUpdatedAt);
+  return (
+    Number.isFinite(listedUpdatedAt) &&
+    Number.isFinite(committedUpdatedAt) &&
+    listedUpdatedAt > committedUpdatedAt &&
+    symbol.enabled !== pending.expectedEnabled
+  );
+}
+
+function RecoverableSymbolState({ item, focusToken, onRetry }: {
   item: Extract<SymbolEvidenceState, { status: "refreshing" | "refresh_error" }>;
+  focusToken?: number;
   onRetry: (symbol: string) => Promise<void>;
 }) {
   const { t } = useTranslation();
@@ -16,18 +45,22 @@ function RecoverableSymbolState({ item, onRetry }: {
   const retry = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
+    if (focusToken === undefined) {
+      return;
+    }
     if (item.status === "refreshing") {
       owner.current?.focus();
     } else {
       retry.current?.focus();
     }
-  }, [item.status]);
+  }, [focusToken, item.status]);
 
   return (
     <article
       ref={owner}
       className="symbol-card symbol-card--state"
       aria-label={t(item.status === "refreshing" ? "symbolEvidenceRefreshingLabel" : "symbolEvidenceRefreshErrorLabel", { symbol: item.symbol.symbol })}
+      data-symbol-surface={item.symbol.symbol}
       tabIndex={-1}
     >
       <p role={item.status === "refreshing" ? "status" : "alert"}>
@@ -48,45 +81,152 @@ export function SymbolsPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [addFormProtected, setAddFormProtected] = useState(false);
   const [filter, setFilter] = useState("");
+  const [focusIntent, setFocusIntent] = useState<FocusIntent | null>(null);
+  const [pendingMutations, setPendingMutations] = useState<Record<string, PendingMutation>>({});
+  const nextActionToken = useRef(0);
+  const latestUserAction = useRef<UserAction | null>(null);
   const [actionNotice, setActionNotice] = useState<{
     kind: "disabled" | "enabled" | "disableError" | "enableError";
     symbol?: string;
   } | null>(null);
 
-  const handleDisable = async (symbol: string): Promise<SymbolView | null> => {
+  const beginUserAction = useCallback((symbol: string): number => {
+    const token = nextActionToken.current + 1;
+    nextActionToken.current = token;
+    latestUserAction.current = { symbol, token, canceled: false };
+    setFocusIntent(null);
+    return token;
+  }, []);
+
+  const abandonUserAction = useCallback((token: number) => {
+    if (latestUserAction.current?.token === token) {
+      latestUserAction.current = null;
+    }
+    setFocusIntent((current) => current?.token === token ? null : current);
+  }, []);
+
+  const consumeFocusIntent = useCallback((token: number) => {
+    abandonUserAction(token);
+  }, [abandonUserAction]);
+
+  const cancelFocusOutside = useCallback((target: EventTarget | null) => {
+    const latest = latestUserAction.current;
+    if (latest === null || !(target instanceof Element)) {
+      return;
+    }
+    const surface = target.closest<HTMLElement>("[data-symbol-surface]");
+    if (surface?.dataset.symbolSurface === latest.symbol) {
+      return;
+    }
+    latestUserAction.current = { ...latest, canceled: true };
+    setFocusIntent((current) => current?.token === latest.token ? null : current);
+  }, []);
+
+  const handleDisable = async (symbol: string): Promise<SymbolMutationResult | null> => {
+    const actionToken = beginUserAction(symbol);
     setActionNotice(null);
     try {
-      return await disableSymbol(symbol);
+      return { updated: await disableSymbol(symbol), actionToken };
     } catch {
+      abandonUserAction(actionToken);
       setActionNotice({ kind: "disableError" });
       return null;
     }
   };
 
-  const handleEnable = async (symbol: SymbolView): Promise<SymbolView | null> => {
+  const handleEnable = async (symbol: SymbolView): Promise<SymbolMutationResult | null> => {
+    const actionToken = beginUserAction(symbol.symbol);
     setActionNotice(null);
     try {
-      return await enableSymbol(symbol);
+      return { updated: await enableSymbol(symbol), actionToken };
     } catch {
+      abandonUserAction(actionToken);
       setActionNotice({ kind: "enableError" });
       return null;
     }
   };
 
-  const handleMutationCommitted = (updated: SymbolView, kind: "disabled" | "enabled") => {
-    void symbols.refreshSymbol(updated).then((refreshed) => {
-      if (refreshed) {
-        setActionNotice({ kind, symbol: updated.symbol });
-      }
-    });
+  const handleMutationCommitted = (mutation: SymbolMutationResult, kind: MutationKind) => {
+    const { updated, actionToken } = mutation;
+    setPendingMutations((current) => ({
+      ...current,
+      [updated.symbol]: {
+        symbol: updated.symbol,
+        token: actionToken,
+        kind,
+        expectedEnabled: updated.enabled,
+        committedUpdatedAt: updated.updated_at,
+      },
+    }));
+    const latest = latestUserAction.current;
+    if (latest?.token === actionToken && !latest.canceled) {
+      setFocusIntent({ symbol: updated.symbol, token: actionToken });
+    }
+    void symbols.refreshSymbol(updated);
   };
+
+  useEffect(() => {
+    if (symbols.status !== "ready") {
+      return;
+    }
+    const completed: PendingMutation[] = [];
+    const superseded: PendingMutation[] = [];
+    for (const pending of Object.values(pendingMutations)) {
+      const item = symbols.dashboard.items.find((candidate) => candidate.symbol.symbol === pending.symbol);
+      if (item === undefined) {
+        continue;
+      }
+      if (isStrictlyNewerOpposite(item.symbol, pending)) {
+        superseded.push(pending);
+      } else if (item.status === "ready" && item.symbol.enabled === pending.expectedEnabled) {
+        completed.push(pending);
+      }
+    }
+    const settled = [...completed, ...superseded];
+    if (settled.length === 0) {
+      return;
+    }
+    setPendingMutations((current) => {
+      const next = { ...current };
+      for (const mutation of settled) {
+        if (next[mutation.symbol]?.token === mutation.token) {
+          delete next[mutation.symbol];
+        }
+      }
+      return next;
+    });
+    for (const mutation of superseded) {
+      abandonUserAction(mutation.token);
+    }
+    const latestCompleted = completed.sort((left, right) => right.token - left.token)[0];
+    if (latestCompleted !== undefined) {
+      setActionNotice({ kind: latestCompleted.kind, symbol: latestCompleted.symbol });
+    }
+  }, [abandonUserAction, pendingMutations, symbols]);
   const normalizedFilter = filter.trim().toUpperCase();
   const visibleItems = symbols.status === "ready"
     ? symbols.dashboard.items.filter((item) => item.symbol.symbol.includes(normalizedFilter))
     : [];
+  const focusTokenFor = (item: SymbolEvidenceState): number | undefined => {
+    if (focusIntent?.symbol !== item.symbol.symbol) {
+      return undefined;
+    }
+    const pending = pendingMutations[item.symbol.symbol];
+    return pending !== undefined && isStrictlyNewerOpposite(item.symbol, pending)
+      ? undefined
+      : focusIntent.token;
+  };
 
   return (
-    <div className="content-frame symbols-page">
+    <div
+      className="content-frame symbols-page"
+      onFocusCapture={(event) => cancelFocusOutside(event.target)}
+      onBlurCapture={(event) => {
+        if (event.relatedTarget instanceof Element && !event.currentTarget.contains(event.relatedTarget)) {
+          cancelFocusOutside(event.relatedTarget);
+        }
+      }}
+    >
       <div className="page-title-row">
         <div>
           <p className="eyebrow">{t("evidenceLab")}</p>
@@ -166,19 +306,25 @@ export function SymbolsPage() {
               <SymbolCard
                 key={item.symbol.symbol}
                 evidence={item.evidence}
-                focusAction={item.focusAction}
+                focusToken={focusTokenFor(item)}
                 onDisable={handleDisable}
                 onEnable={handleEnable}
                 onMutationCommitted={handleMutationCommitted}
+                onFocusConsumed={consumeFocusIntent}
               />
             ) : item.status === "loading" ? (
-              <article className="symbol-card symbol-card--state" aria-label={t("symbolEvidenceLoadingLabel", { symbol: item.symbol.symbol })} key={item.symbol.symbol}>
+              <article className="symbol-card symbol-card--state" aria-label={t("symbolEvidenceLoadingLabel", { symbol: item.symbol.symbol })} data-symbol-surface={item.symbol.symbol} key={item.symbol.symbol}>
                 <p role="status">{t("symbolEvidenceLoading", { symbol: item.symbol.symbol })}</p>
               </article>
             ) : item.status === "refreshing" || item.status === "refresh_error" ? (
-              <RecoverableSymbolState key={item.symbol.symbol} item={item} onRetry={symbols.retrySymbol} />
+              <RecoverableSymbolState
+                key={item.symbol.symbol}
+                item={item}
+                focusToken={focusTokenFor(item)}
+                onRetry={symbols.retrySymbol}
+              />
             ) : (
-              <article className="symbol-card symbol-card--state" aria-label={t("symbolEvidenceErrorLabel", { symbol: item.symbol.symbol })} key={item.symbol.symbol}>
+              <article className="symbol-card symbol-card--state" aria-label={t("symbolEvidenceErrorLabel", { symbol: item.symbol.symbol })} data-symbol-surface={item.symbol.symbol} key={item.symbol.symbol}>
                 <p>{t("symbolEvidenceError", { symbol: item.symbol.symbol })}</p>
                 <button type="button" onClick={() => void symbols.retrySymbol(item.symbol.symbol)}>{t("retrySymbolEvidence", { symbol: item.symbol.symbol })}</button>
               </article>
