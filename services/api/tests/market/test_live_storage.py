@@ -302,7 +302,7 @@ def test_accept_is_durable_in_partitioned_sqlite_wal_before_publish(
     accepted = storage.accept(lease, aggregate_trade())
 
     assert accepted.accepted is True
-    journals = list(root.glob("spool/binance/usdm/PEPEUSDT/agg_trades/date=*/journal.sqlite3"))
+    journals = list(root.glob("spool/binance/usdm/bucket=*/journal.sqlite3"))
     assert len(journals) == 1
     with sqlite3.connect(journals[0]) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
@@ -325,10 +325,11 @@ def test_normalized_primary_key_is_unique_across_raw_shards(tmp_path: Path) -> N
     storage = LiveStorage(tmp_path / "market-data")
     lease = storage.acquire_writer("worker-a")
     first = kline(closed=True)
+    next_day = 86_400_000
     equivalent = replace(
         first,
-        source_event_time=first.source_event_time + 1,
-        raw={**first.raw, "E": first.source_event_time + 1},
+        source_event_time=first.source_event_time + next_day,
+        raw={**first.raw, "E": first.source_event_time + next_day},
     )
 
     storage.accept(lease, first)
@@ -347,16 +348,65 @@ def test_normalized_primary_key_is_unique_across_raw_shards(tmp_path: Path) -> N
 
     conflict = replace(
         first,
-        source_event_time=first.source_event_time + 2,
+        source_event_time=first.source_event_time + 2 * next_day,
         values={**first.values, "close": "1.240000000000000000"},
         raw={
             **first.raw,
-            "E": first.source_event_time + 2,
+            "E": first.source_event_time + 2 * next_day,
             "k": {**first.raw["k"], "c": "1.240000000000000000"},  # type: ignore[dict-item]
         },
     )
     with pytest.raises(LiveStorageError, match="normalized primary key"):
         storage.accept(lease, conflict)
+    lease.close()
+
+
+def test_source_natural_key_conflicts_across_source_dates(tmp_path: Path) -> None:
+    storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
+    first = aggregate_trade()
+    storage.accept(lease, first)
+    result = storage.publish_next_batch(lease, max_events=10)
+    assert result is not None and result.batch_id is not None
+    storage.acknowledge_cataloged(lease, result.batch_id)
+    next_day = 86_400_000
+    conflicting = replace(
+        first,
+        source_event_time=first.source_event_time + next_day,
+        values={
+            **first.values,
+            "transact_time": int(first.values["transact_time"]) + next_day,
+        },
+        raw={
+            **first.raw,
+            "E": first.source_event_time + next_day,
+            "T": int(first.raw["T"]) + next_day,
+        },
+    )
+
+    with pytest.raises(LiveStorageError, match="source identity"):
+        storage.accept(lease, conflicting)
+    lease.close()
+
+
+def test_fixed_bucket_journal_and_direct_ack_do_not_glob_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "market-data"
+    storage = LiveStorage(root)
+    lease = storage.acquire_writer("worker-a")
+    storage.accept(lease, aggregate_trade())
+    journals = list(root.glob("spool/binance/usdm/bucket=*/journal.sqlite3"))
+    assert len(journals) == 1
+    assert not list(root.glob("spool/binance/usdm/*/*/date=*/journal.sqlite3"))
+    result = storage.publish_next_batch(lease, max_events=10)
+    assert result is not None and result.batch_id is not None
+
+    def reject_glob(*_args, **_kwargs):
+        raise AssertionError("history glob is forbidden")
+
+    monkeypatch.setattr(Path, "glob", reject_glob)
+    storage.acknowledge_cataloged(lease, result.batch_id)
     lease.close()
 
 

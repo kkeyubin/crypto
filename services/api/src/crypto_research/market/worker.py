@@ -18,6 +18,12 @@ from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy.exc import (
+    DBAPIError as SqlAlchemyDBAPIError,
+)
+from sqlalchemy.exc import (
+    DisconnectionError as SqlAlchemyDisconnectionError,
+)
+from sqlalchemy.exc import (
     InterfaceError as SqlAlchemyInterfaceError,
 )
 from sqlalchemy.exc import (
@@ -1108,6 +1114,8 @@ def classify_connection_failure(error: Exception) -> ConnectionFailureKind | Non
 
 
 def is_transient_database_error(error: Exception) -> bool:
+    if isinstance(error, SqlAlchemyDisconnectionError):
+        return True
     if isinstance(
         error,
         (
@@ -1116,6 +1124,8 @@ def is_transient_database_error(error: Exception) -> bool:
             SqlAlchemyTimeoutError,
         ),
     ):
+        return True
+    if isinstance(error, SqlAlchemyDBAPIError) and error.connection_invalidated:
         return True
     error_type = type(error)
     module = error_type.__module__

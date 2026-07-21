@@ -412,8 +412,29 @@ def _decimal(
         raise StreamMessageError(f"{field} must be a decimal string") from error
     if not parsed.is_finite():
         raise StreamMessageError(f"{field} must be a finite decimal string")
+    if not _fits_decimal128_38_18(parsed):
+        raise StreamMessageError(f"{field} must fit decimal128(38, 18)")
     if positive and parsed <= 0:
         raise StreamMessageError(f"{field} must be a positive decimal string")
     if nonnegative and parsed < 0:
         raise StreamMessageError(f"{field} must be a nonnegative decimal string")
     return value, parsed
+
+
+def _fits_decimal128_38_18(value: Decimal) -> bool:
+    """Return whether value is exactly representable at precision 38, scale 18."""
+    _sign, digits, exponent = value.as_tuple()
+    if not any(digits):
+        return True
+    scale_shift = exponent + 18
+    coefficient = digits
+    if scale_shift < 0:
+        removed = -scale_shift
+        if removed > len(coefficient) or any(coefficient[-removed:]):
+            return False
+        coefficient = coefficient[:-removed]
+        scale_shift = 0
+    significant = tuple(coefficient)
+    while significant and significant[0] == 0:
+        significant = significant[1:]
+    return len(significant) + scale_shift <= 38

@@ -346,6 +346,38 @@ class LiveDataPartitionRow(Base):
             name="ck_live_data_partitions_checksum_sha256",
         ),
         CheckConstraint(
+            "partition_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'",
+            name="ck_live_data_partitions_partition_date",
+        ),
+        CheckConstraint(
+            "dataset IN ('klines', 'agg_trades', 'mark_price', 'book_ticker')",
+            name="ck_live_data_partitions_dataset",
+        ),
+        CheckConstraint(
+            "CASE WHEN json_typeof(sort_keys) = 'array' "
+            "THEN json_array_length(sort_keys) > 0 ELSE FALSE END",
+            name="ck_live_data_partitions_sort_keys_shape",
+        ),
+        CheckConstraint(
+            "CASE WHEN json_typeof(unique_keys) = 'array' "
+            "THEN json_array_length(unique_keys) > 0 ELSE FALSE END",
+            name="ck_live_data_partitions_unique_keys_shape",
+        ),
+        CheckConstraint(
+            "(layer = 'raw' AND schema_name = "
+            "'ndjson/binance-stream-event-v1') OR "
+            "(layer = 'normalized' AND ("
+            "(dataset = 'klines' AND schema_name = "
+            "'parquet/binance-kline-1m-v1') OR "
+            "(dataset = 'agg_trades' AND schema_name = "
+            "'parquet/binance-aggregate-trade-v1') OR "
+            "(dataset = 'mark_price' AND schema_name = "
+            "'parquet/binance-mark-price-v1') OR "
+            "(dataset = 'book_ticker' AND schema_name = "
+            "'parquet/binance-book-ticker-v1'))) ",
+            name="ck_live_data_partitions_schema_contract",
+        ),
+        CheckConstraint(
             "row_count > 0", name="ck_live_data_partitions_row_count_positive"
         ),
         CheckConstraint(
@@ -360,6 +392,14 @@ class LiveDataPartitionRow(Base):
             "(layer = 'raw' AND relative_path LIKE 'raw/%.ndjson.gz') OR "
             "(layer = 'normalized' AND relative_path LIKE 'normalized/%.parquet')",
             name="ck_live_data_partitions_layer_path",
+        ),
+        CheckConstraint(
+            "relative_path ~ ('^' || layer || "
+            "'/binance/usdm/[A-Z0-9]{3,32}/' || dataset || '/date=' || "
+            "partition_date || '/part-' || left(checksum_sha256, 24) || "
+            "CASE WHEN layer = 'raw' THEN '\\.ndjson\\.gz$' "
+            "ELSE '\\.parquet$' END)",
+            name="ck_live_data_partitions_checksum_path",
         ),
         Index(
             "ix_live_data_partitions_approved_query",

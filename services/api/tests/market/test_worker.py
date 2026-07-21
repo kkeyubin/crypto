@@ -4,7 +4,7 @@ import signal
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, DisconnectionError, OperationalError
 from websockets.asyncio.client import connect
 
 from crypto_research.db.models import BackfillObjectRow
@@ -21,6 +21,7 @@ from crypto_research.market.worker import (
     RoutedConnectionFactory,
     StreamConnectionSupervisor,
     install_sigterm_handler,
+    is_transient_database_error,
 )
 
 NOW = datetime(2026, 7, 21, 12, tzinfo=UTC)
@@ -621,6 +622,32 @@ def test_main_loop_retries_transient_sqlalchemy_failure_with_bound() -> None:
     asyncio.run(scenario())
 
 
+def test_invalidated_sqlalchemy_dbapi_connection_is_transient() -> None:
+    error = DBAPIError(
+        "SELECT symbols",
+        {},
+        Exception("connection was invalidated"),
+        connection_invalidated=True,
+    )
+
+    assert is_transient_database_error(error) is True
+
+
+def test_non_invalidated_generic_sqlalchemy_dbapi_error_is_not_transient() -> None:
+    error = DBAPIError(
+        "SELECT symbols",
+        {},
+        Exception("statement failed"),
+        connection_invalidated=False,
+    )
+
+    assert is_transient_database_error(error) is False
+
+
+def test_sqlalchemy_pool_disconnection_is_transient() -> None:
+    assert is_transient_database_error(DisconnectionError("stale pool socket")) is True
+
+
 def test_shutdown_interrupts_connection_backoff() -> None:
     class FailedSupervisor(Supervisor):
         async def refresh(self, groups, now) -> None:
@@ -689,6 +716,41 @@ def test_handle_message_waits_for_durable_accept_not_batch_publish() -> None:
         await market_worker.flush_events(force=True)
         await market_worker.flush_events(force=True)
         assert [len(batch) for batch in storage.batches] == [1, 1]
+
+    asyncio.run(scenario())
+
+
+def test_unrepresentable_decimal_is_rejected_before_durable_accept() -> None:
+    async def scenario() -> None:
+        storage = Storage()
+        market_worker = worker(
+            Repository(),
+            Supervisor(),
+            storage,
+            Backfill(),
+        )
+        message = json.dumps(
+            {
+                "stream": "btcusdt@aggtrade",
+                "data": {
+                    "e": "aggTrade",
+                    "E": 1_753_099_200_010,
+                    "s": "BTCUSDT",
+                    "a": 42,
+                    "p": "1E-19",
+                    "q": "2",
+                    "f": 100,
+                    "l": 102,
+                    "T": 1_753_099_200_009,
+                    "m": True,
+                },
+            }
+        )
+
+        with pytest.raises(ValueError, match=r"decimal128\(38, 18\)"):
+            await market_worker.handle_message(message)
+
+        assert storage.events == []
 
     asyncio.run(scenario())
 

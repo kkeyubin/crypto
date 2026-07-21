@@ -103,6 +103,13 @@ def test_live_catalog_is_independent_and_records_query_contract() -> None:
     }.issubset(LiveDataPartitionRow.__table__.columns.keys())
     assert any("normalized" in str(item.sqltext) for item in checks)
     assert any("row_count > 0" in str(item.sqltext) for item in checks)
+    check_sql = "\n".join(str(item.sqltext) for item in checks)
+    assert "partition_date ~" in check_sql
+    assert "dataset IN" in check_sql
+    assert "json_typeof(sort_keys)" in check_sql
+    assert "json_array_length(unique_keys)" in check_sql
+    assert "schema_name" in check_sql
+    assert "left(checksum_sha256, 24)" in check_sql
     assert any(
         {column.name for column in item.columns} == {"relative_path"}
         for item in uniques

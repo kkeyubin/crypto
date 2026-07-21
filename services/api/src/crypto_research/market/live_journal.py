@@ -26,6 +26,7 @@ class JournalEvent:
     event_json: str
     source_event_time: int
     normalize: bool
+    partition_key: str
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ class JournalBatch:
 
 
 class LivePartitionJournal:
-    """One WAL-backed, day-bounded source partition spool."""
+    """One WAL-backed fixed-bucket spool containing isolated source partitions."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -50,6 +51,7 @@ class LivePartitionJournal:
         payload_hash: str,
         event_json: str,
         source_event_time: int,
+        partition_key: str,
         normalized_key: str | None,
         normalized_hash: str | None,
     ) -> JournalAcceptResult:
@@ -91,8 +93,8 @@ class LivePartitionJournal:
                 """
                 INSERT INTO events(
                     identity, payload_hash, event_json, source_event_time,
-                    normalize, state
-                ) VALUES (?, ?, ?, ?, ?, 'queued')
+                    normalize, partition_key, state
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued')
                 """,
                 (
                     identity,
@@ -100,6 +102,7 @@ class LivePartitionJournal:
                     event_json,
                     source_event_time,
                     int(normalize),
+                    partition_key,
                 ),
             )
         return JournalAcceptResult(True)
@@ -121,15 +124,27 @@ class LivePartitionJournal:
 
     def queued(self, limit: int) -> tuple[JournalEvent, ...]:
         with self._connect() as connection:
-            rows = connection.execute(
+            partition = connection.execute(
                 """
-                SELECT identity, payload_hash, event_json, source_event_time, normalize
+                SELECT partition_key
                 FROM events
                 WHERE state = 'queued'
                 ORDER BY source_event_time, identity
+                LIMIT 1
+                """
+            ).fetchone()
+            if partition is None:
+                return ()
+            rows = connection.execute(
+                """
+                SELECT identity, payload_hash, event_json, source_event_time,
+                       normalize, partition_key
+                FROM events
+                WHERE state = 'queued' AND partition_key = ?
+                ORDER BY source_event_time, identity
                 LIMIT ?
                 """,
-                (limit,),
+                (partition["partition_key"], limit),
             ).fetchall()
         return tuple(
             JournalEvent(
@@ -138,6 +153,7 @@ class LivePartitionJournal:
                 row["event_json"],
                 row["source_event_time"],
                 bool(row["normalize"]),
+                row["partition_key"],
             )
             for row in rows
         )
@@ -179,7 +195,7 @@ class LivePartitionJournal:
             rows = connection.execute(
                 """
                 SELECT e.identity, e.payload_hash, e.event_json,
-                       e.source_event_time, e.normalize
+                       e.source_event_time, e.normalize, e.partition_key
                 FROM batch_events AS be
                 JOIN events AS e ON e.identity = be.event_identity
                 WHERE be.batch_id = ?
@@ -196,6 +212,7 @@ class LivePartitionJournal:
                 row["event_json"],
                 row["source_event_time"],
                 bool(row["normalize"]),
+                row["partition_key"],
             )
             for row in rows
         )
@@ -272,6 +289,7 @@ class LivePartitionJournal:
                     event_json TEXT,
                     source_event_time INTEGER NOT NULL,
                     normalize INTEGER NOT NULL CHECK (normalize IN (0, 1)),
+                    partition_key TEXT NOT NULL,
                     state TEXT NOT NULL CHECK (
                         state IN ('queued', 'prepared', 'published', 'cataloged')
                     ),
@@ -279,7 +297,7 @@ class LivePartitionJournal:
                 ) WITHOUT ROWID;
 
                 CREATE INDEX IF NOT EXISTS ix_events_state_order
-                    ON events(state, source_event_time, identity);
+                    ON events(state, partition_key, source_event_time, identity);
 
                 CREATE TABLE IF NOT EXISTS normalized_records (
                     normalized_key TEXT PRIMARY KEY,

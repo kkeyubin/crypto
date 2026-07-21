@@ -69,6 +69,7 @@ BOOK_TICKER_SCHEMA = pa.schema(
 )
 
 _LOCK_NAME = ".live-writer.lock"
+_LIVE_JOURNAL_BUCKETS = 64
 
 
 class LiveStorageError(ValueError):
@@ -168,6 +169,8 @@ class LiveStorage:
     def __init__(self, data_root: Path) -> None:
         self.data_root = data_root
         self._write_lock = threading.RLock()
+        self._journals_by_bucket: dict[int, LivePartitionJournal] = {}
+        self._journals_discovered = False
 
     def acquire_writer(self, owner: str) -> LiveWriterLease:
         if not owner:
@@ -198,6 +201,7 @@ class LiveStorage:
                 os.ftruncate(lock_fd, 0)
                 _write_all(lock_fd, owner.encode("utf-8"))
                 os.fsync(lock_fd)
+                self._discover_journals()
                 return LiveWriterLease(self, lock_fd, owner)
             except Exception:
                 os.close(lock_fd)
@@ -221,12 +225,14 @@ class LiveStorage:
             self._require_lease_locked(lease)
             indexed = _index_event(event)
             normalized_key = _normalized_key(event)
+            _bucket, journal = self._journal_for_event(event)
             try:
-                result = self._journal_for_event(event).accept(
+                result = journal.accept(
                     identity=indexed.identity,
                     payload_hash=indexed.payload_hash,
                     event_json=_serialize_event(event),
                     source_event_time=event.source_event_time,
+                    partition_key=_source_partition_key(event),
                     normalized_key=normalized_key,
                     normalized_hash=(
                         _normalized_payload_hash(event)
@@ -247,15 +253,15 @@ class LiveStorage:
         with self._write_lock:
             self._require_lease_locked(lease)
             journals = self._journals()
-            for journal in journals:
+            for _bucket, journal in journals:
                 batch = journal.next_open_batch()
                 if batch is not None:
                     return self._publish_journal_batch(journal, batch)
-            for journal in journals:
+            for bucket, journal in journals:
                 queued = journal.queued(max_events)
                 if not queued:
                     continue
-                batch = self._prepare_journal_batch(journal, queued)
+                batch = self._prepare_journal_batch(bucket, journal, queued)
                 return self._publish_journal_batch(journal, batch)
             return None
 
@@ -266,44 +272,67 @@ class LiveStorage:
             raise ValueError("batch_id must not be empty")
         with self._write_lock:
             self._require_lease_locked(lease)
-            for journal in self._journals():
-                try:
-                    if journal.acknowledge_cataloged(batch_id):
-                        return
-                except LiveJournalError as error:
-                    raise LiveStorageError(str(error)) from error
+            bucket = _batch_bucket(batch_id)
+            journal = self._journal_for_bucket(bucket, create=False)
+            if journal is None:
+                raise LiveStorageError("live batch is not present in the durable spool")
+            try:
+                if journal.acknowledge_cataloged(batch_id):
+                    return
+            except LiveJournalError as error:
+                raise LiveStorageError(str(error)) from error
             raise LiveStorageError("live batch is not present in the durable spool")
 
     def _require_lease_locked(self, lease: LiveWriterLease) -> None:
         if lease._storage is not self or lease._closed:
             raise LiveWriterUnavailable("authoritative live writer lease is not active")
 
-    def _journal_for_event(self, event: ParsedStreamEvent) -> LivePartitionJournal:
-        descriptor = _PartitionDescriptor(
-            "spool",
-            event.symbol,
-            event.dataset,
-            _event_date(event.source_event_time),
-        )
-        with _open_partition(self.data_root, descriptor):
-            pass
-        return LivePartitionJournal(
-            self.data_root.joinpath(*descriptor.components, "journal.sqlite3")
-        )
+    def _journal_for_event(
+        self, event: ParsedStreamEvent
+    ) -> tuple[int, LivePartitionJournal]:
+        bucket = _journal_bucket(event)
+        journal = self._journal_for_bucket(bucket, create=True)
+        assert journal is not None
+        return bucket, journal
 
-    def _journals(self) -> tuple[LivePartitionJournal, ...]:
-        spool = self.data_root / "spool" / "binance" / "usdm"
-        if not spool.exists():
-            return ()
-        return tuple(
-            LivePartitionJournal(path)
-            for path in sorted(spool.glob("*/*/date=*/journal.sqlite3"))
-        )
+    def _journal_for_bucket(
+        self, bucket: int, *, create: bool
+    ) -> LivePartitionJournal | None:
+        journal = self._journals_by_bucket.get(bucket)
+        if journal is not None:
+            return journal
+        path = _journal_path(self.data_root, bucket)
+        if not create:
+            try:
+                file_stat = os.lstat(path)
+            except FileNotFoundError:
+                return None
+            if not stat.S_ISREG(file_stat.st_mode) or stat.S_ISLNK(file_stat.st_mode):
+                raise LiveStorageError("live journal must be a private regular file")
+        with _open_journal_bucket(self.data_root, bucket):
+            pass
+        journal = LivePartitionJournal(path)
+        self._journals_by_bucket[bucket] = journal
+        return journal
+
+    def _discover_journals(self) -> None:
+        if self._journals_discovered:
+            return
+        for bucket in range(_LIVE_JOURNAL_BUCKETS):
+            self._journal_for_bucket(bucket, create=False)
+        self._journals_discovered = True
+
+    def _journals(self) -> tuple[tuple[int, LivePartitionJournal], ...]:
+        self._discover_journals()
+        return tuple(sorted(self._journals_by_bucket.items()))
 
     def _prepare_journal_batch(
-        self, journal: LivePartitionJournal, events: tuple[JournalEvent, ...]
+        self,
+        bucket: int,
+        journal: LivePartitionJournal,
+        events: tuple[JournalEvent, ...],
     ) -> JournalBatch:
-        batch_id = hashlib.sha256(
+        digest = hashlib.sha256(
             _json_bytes(
                 {
                     "journal": journal.path.relative_to(self.data_root).as_posix(),
@@ -313,6 +342,7 @@ class LiveStorage:
                 }
             )
         ).hexdigest()[:32]
+        batch_id = f"b{bucket:02x}-{digest}"
         artifacts = _planned_artifacts(self.data_root, events)
         manifest = {
             "version": 1,
@@ -389,6 +419,10 @@ def _deserialize_event(payload: str) -> ParsedStreamEvent:
 def _normalized_key(event: ParsedStreamEvent) -> str | None:
     if not _normalizes(event):
         return None
+    return _source_natural_key(event)
+
+
+def _source_natural_key(event: ParsedStreamEvent) -> str:
     if event.dataset is LiveDataset.KLINES:
         value = event.values["open_time"]
     elif event.dataset is LiveDataset.AGG_TRADES:
@@ -400,6 +434,50 @@ def _normalized_key(event: ParsedStreamEvent) -> str | None:
     else:
         raise LiveStorageError(f"unsupported live dataset: {event.dataset}")
     return f"{event.symbol}|{event.dataset.value}|{value}"
+
+
+def _journal_bucket(event: ParsedStreamEvent) -> int:
+    # A stream is the durable uniqueness domain for all of its source/natural
+    # keys.  Keeping the domain stable across dates preserves cross-day checks
+    # while allowing one source partition to publish as one recoverable batch.
+    domain = f"{event.symbol}|{event.dataset.value}"
+    digest = hashlib.sha256(domain.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % _LIVE_JOURNAL_BUCKETS
+
+
+def _source_partition_key(event: ParsedStreamEvent) -> str:
+    return "|".join(
+        (event.symbol, event.dataset.value, _event_date(event.source_event_time))
+    )
+
+
+def _journal_path(data_root: Path, bucket: int) -> Path:
+    if not 0 <= bucket < _LIVE_JOURNAL_BUCKETS:
+        raise LiveStorageError("live journal bucket is invalid")
+    return (
+        data_root
+        / "spool"
+        / "binance"
+        / "usdm"
+        / f"bucket={bucket:02x}"
+        / "journal.sqlite3"
+    )
+
+
+def _batch_bucket(batch_id: str) -> int:
+    prefix, separator, digest = batch_id.partition("-")
+    if (
+        separator != "-"
+        or len(prefix) != 3
+        or prefix[0] != "b"
+        or len(digest) != 32
+        or any(character not in "0123456789abcdef" for character in prefix[1:] + digest)
+    ):
+        raise LiveStorageError("live batch identity is invalid")
+    bucket = int(prefix[1:], 16)
+    if bucket >= _LIVE_JOURNAL_BUCKETS:
+        raise LiveStorageError("live batch identity is invalid")
+    return bucket
 
 
 def _normalized_payload_hash(event: ParsedStreamEvent) -> str:
@@ -430,11 +508,15 @@ def _planned_artifacts(
     indexed.sort(key=_event_order)
     first = indexed[0].event
     partition_date = _event_date(first.source_event_time)
+    partition_key = _source_partition_key(first)
     if any(
         item.event.symbol != first.symbol
         or item.event.dataset is not first.dataset
         or _event_date(item.event.source_event_time) != partition_date
         for item in indexed
+    ) or any(
+        journal_event.partition_key != partition_key
+        for journal_event in journal_events
     ):
         raise LiveStorageError("journal batch crosses its source partition")
 
@@ -857,6 +939,24 @@ def _open_partition(
     descriptors = [_open_secure_root(data_root)]
     try:
         for component in descriptor.components:
+            descriptors.append(_open_or_create_directory(descriptors[-1], component))
+        yield descriptors[-1]
+    finally:
+        for opened in reversed(descriptors):
+            os.close(opened)
+
+
+@contextmanager
+def _open_journal_bucket(data_root: Path, bucket: int) -> Iterator[int]:
+    _journal_path(data_root, bucket)
+    descriptors = [_open_secure_root(data_root)]
+    try:
+        for component in (
+            "spool",
+            "binance",
+            "usdm",
+            f"bucket={bucket:02x}",
+        ):
             descriptors.append(_open_or_create_directory(descriptors[-1], component))
         yield descriptors[-1]
     finally:

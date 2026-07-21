@@ -328,3 +328,34 @@ def test_negative_provisional_funding_rate_remains_valid() -> None:
     )
 
     assert parsed.values["provisional_funding_rate"] == "-0.0001"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "1E-19",
+        "100000000000000000000",
+        "99999999999999999999.9999999999999999999",
+    ],
+)
+def test_decimal_fields_must_fit_decimal128_38_18(value: str) -> None:
+    trade = valid_aggregate()
+    trade["p"] = value
+
+    with pytest.raises(StreamMessageError, match=r"decimal128\(38, 18\)"):
+        parse_stream_message(combined("btcusdt@aggtrade", trade), RECEIVED_AT)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1E-18", "99999999999999999999.999999999999999999"],
+)
+def test_decimal128_extremes_and_scientific_notation_are_exact(value: str) -> None:
+    trade = valid_aggregate()
+    trade["p"] = value
+
+    parsed = parse_stream_message(
+        combined("btcusdt@aggtrade", trade), RECEIVED_AT
+    )
+
+    assert parsed.values["price"] == value
