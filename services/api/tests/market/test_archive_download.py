@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import io
+import stat
+import struct
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from crypto_research.market.binance.archive import (
     ArchiveNotFoundError,
     ArchiveSafetyError,
     ArchiveSizeLimits,
+    _parse_checksum,
     fetch_archive,
 )
 from crypto_research.market.binance.archive_paths import DatasetKind, plan_archives
@@ -24,6 +27,36 @@ def zip_bytes(members: dict[str, bytes], compression: int = zipfile.ZIP_DEFLATED
         for name, content in members.items():
             archive.writestr(name, content)
     return buffer.getvalue()
+
+
+def special_zip(name: str, content: bytes, external_attr: int, create_system: int = 3) -> bytes:
+    buffer = io.BytesIO()
+    info = zipfile.ZipInfo(name)
+    info.create_system = create_system
+    info.external_attr = external_attr
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr(info, content)
+    return buffer.getvalue()
+
+
+def patch_eocd(
+    body: bytes,
+    *,
+    entries: int | None = None,
+    size: int | None = None,
+    offset: int | None = None,
+) -> bytes:
+    patched = bytearray(body)
+    position = patched.rfind(b"PK\x05\x06")
+    assert position >= 0
+    if entries is not None:
+        struct.pack_into("<H", patched, position + 8, entries)
+        struct.pack_into("<H", patched, position + 10, entries)
+    if size is not None:
+        struct.pack_into("<L", patched, position + 12, size)
+    if offset is not None:
+        struct.pack_into("<L", patched, position + 16, offset)
+    return bytes(patched)
 
 
 def object_for_test():
@@ -39,7 +72,8 @@ def client_for(body: bytes, checksum: str | None = None, status: int = 200) -> h
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith(".CHECKSUM"):
             digest = checksum if checksum is not None else hashlib.sha256(body).hexdigest()
-            return httpx2.Response(200, text=f"{digest}  source.zip\n")
+            name = Path(request.url.path.removesuffix(".CHECKSUM")).name
+            return httpx2.Response(200, text=f"{digest}  {name}\n")
         return httpx2.Response(status, content=body)
 
     return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
@@ -72,12 +106,35 @@ def test_rejects_bad_checksum_and_removes_partial_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "payload",
+    [
+        "",
+        "0" * 64,
+        f"{'0' * 64}  another.zip\n",
+        f"{'0' * 64}  path/archive.zip\n",
+        f"{'0' * 64}  archive.zip\nextra prose",
+        f"{'0' * 64}  archive.zip\n{'1' * 64}  archive.zip\n",
+        f"error page {'0' * 64} archive.zip",
+    ],
+)
+def test_checksum_parser_rejects_everything_except_one_exact_official_record(payload: str) -> None:
+    with pytest.raises(ArchiveChecksumError, match="checksum"):
+        _parse_checksum(payload, "archive.zip")
+
+
+def test_checksum_parser_accepts_optional_asterisk_and_single_trailing_newline() -> None:
+    assert _parse_checksum(f"{'a' * 64} *archive.zip\n", "archive.zip") == "a" * 64
+
+
+@pytest.mark.parametrize(
     ("body", "limits", "message"),
     [
         (b"not a zip", ArchiveSizeLimits(), "ZIP"),
         (zip_bytes({"first.csv": b"a", "second.csv": b"b"}), ArchiveSizeLimits(), "exactly one"),
         (zip_bytes({"/absolute.csv": b"a"}), ArchiveSizeLimits(), "safe relative"),
         (zip_bytes({"../traversal.csv": b"a"}), ArchiveSizeLimits(), "safe relative"),
+        (zip_bytes({"empty.csv": b""}), ArchiveSizeLimits(), "non-empty"),
+        (special_zip("symlink.csv", b"x", stat.S_IFLNK << 16), ArchiveSizeLimits(), "regular"),
         (
             zip_bytes({"data.csv": b"x" * 256}),
             ArchiveSizeLimits(max_uncompressed_bytes=10),
@@ -125,5 +182,25 @@ def test_rejects_archive_larger_than_compressed_limit(tmp_path: Path) -> None:
                     client,
                     limits=ArchiveSizeLimits(max_compressed_bytes=10),
                 )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        patch_eocd(zip_bytes({"data.csv": b"x"}), entries=2),
+        patch_eocd(zip_bytes({"data.csv": b"x"}), size=65_537),
+        patch_eocd(zip_bytes({"data.csv": b"x"}), offset=999_999),
+        zip_bytes({f"{index}.csv": b"x" for index in range(2_000)}),
+    ],
+)
+def test_rejects_invalid_or_unbounded_central_directory_before_zip_parsing(
+    tmp_path: Path, body: bytes
+) -> None:
+    async def scenario() -> None:
+        async with client_for(body) as client:
+            with pytest.raises(ArchiveSafetyError, match="central directory|exactly one"):
+                await fetch_archive(object_for_test(), tmp_path / "download.zip", client)
 
     asyncio.run(scenario())

@@ -108,3 +108,40 @@ Binance changes a published archive header, ingestion fails closed instead of
 silently mapping a changed schema; a future compatibility change must add an
 explicit versioned mapping and fixture. Task 4 still must decide per-object
 pending/gap state and record manifests/catalog approval after this boundary.
+
+## Review hardening follow-up
+
+### RED
+
+Review findings were first added as deterministic tests for the current/open UTC
+day, non-UTC `as_of`, strict checksum records, empty and non-regular ZIP
+members, EOCD count/size/offset and many-entry archives, destination traversal
+and symlink escapes, corrupt/schema/row-count Parquet writes, and raw-retention
+symlink escape.
+
+```text
+services/api/.venv/bin/pytest -q services/api/tests/market
+```
+
+Result before the fixes: `24 failed, 28 passed`. The expected failures included
+missing `as_of` and `data_root` arguments, permissive checksum parsing,
+acceptance of empty CSV members, EOCD-derived malformed ZIP paths reaching
+`zipfile`, and publication/retention escapes.
+
+### GREEN
+
+The corresponding changes now enforce:
+
+- planner ranges ending no later than deterministic current UTC midnight;
+- one exact official checksum record for the URL basename;
+- single non-empty regular CSV member with bounded, preflighted EOCD/central
+  directory before `ZipFile` construction;
+- resolved-root containment and same-filesystem raw retention;
+- Parquet footer/schema/row-group/row-count/data equality validation before
+  rename, preserving an existing published file on every validation failure.
+
+```text
+services/api/.venv/bin/pytest -q services/api/tests/market
+```
+
+Result: `52 passed`.

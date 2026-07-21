@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -76,6 +76,57 @@ def test_planner_rejects_non_midnight_or_non_utc_ranges() -> None:
             "BTCUSDT",
             utc("2024-01-01T01:00:00"),
             utc("2024-01-02T00:00:00"),
+        )
+
+
+def test_planner_rejects_current_open_day_and_future_days() -> None:
+    as_of = utc("2024-02-01T12:34:56")
+
+    with pytest.raises(ValueError, match="closed UTC days"):
+        plan_archives(
+            DatasetKind.KLINES,
+            "BTCUSDT",
+            utc("2024-02-01T00:00:00"),
+            utc("2024-02-02T00:00:00"),
+            as_of=as_of,
+        )
+    with pytest.raises(ValueError, match="closed UTC days"):
+        plan_archives(
+            DatasetKind.KLINES,
+            "BTCUSDT",
+            utc("2024-02-02T00:00:00"),
+            utc("2024-02-03T00:00:00"),
+            as_of=as_of,
+        )
+
+
+def test_planner_allows_range_ending_at_current_utc_midnight() -> None:
+    objects = plan_archives(
+        DatasetKind.KLINES,
+        "BTCUSDT",
+        utc("2024-01-31T00:00:00"),
+        utc("2024-02-01T00:00:00"),
+        as_of=utc("2024-02-01T12:34:56"),
+    )
+
+    assert len(objects) == 1
+
+
+@pytest.mark.parametrize(
+    "as_of",
+    [
+        datetime(2024, 2, 1, 12, 34, 56),
+        datetime(2024, 2, 1, 12, 34, 56, tzinfo=timezone(timedelta(hours=8))),
+    ],
+)
+def test_planner_requires_utc_as_of(as_of: datetime) -> None:
+    with pytest.raises(ValueError, match="as_of must be UTC"):
+        plan_archives(
+            DatasetKind.KLINES,
+            "BTCUSDT",
+            utc("2024-01-31T00:00:00"),
+            utc("2024-02-01T00:00:00"),
+            as_of=as_of,
         )
 
 

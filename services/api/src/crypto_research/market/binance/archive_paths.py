@@ -53,7 +53,12 @@ class ArchiveObject:
 
 
 def plan_archives(
-    dataset: DatasetKind, symbol: str, start: datetime, end: datetime
+    dataset: DatasetKind,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    *,
+    as_of: datetime | None = None,
 ) -> tuple[ArchiveObject, ...]:
     """Build official archive objects, choosing full months before daily edge days.
 
@@ -61,6 +66,8 @@ def plan_archives(
     archive handling deliberately belongs to the orchestration layer.
     """
     start, end = require_utc_range(start, end)
+    if end > _current_utc_midnight(as_of):
+        raise ValueError("archive ranges must contain only closed UTC days")
     normalized_symbol = normalize_symbol(symbol)
     month_starts = _complete_month_starts(start, end)
     monthly_days = {
@@ -77,6 +84,13 @@ def plan_archives(
         _archive_object(dataset, normalized_symbol, day, ArchiveCadence.DAILY) for day in daily_days
     )
     return tuple(objects)
+
+
+def _current_utc_midnight(as_of: datetime | None) -> datetime:
+    current = datetime.now(UTC) if as_of is None else as_of
+    if current.tzinfo is not UTC:
+        raise ValueError("as_of must be UTC")
+    return current.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _archive_object(

@@ -1,11 +1,14 @@
 import hashlib
 import os
 import re
+import stat
+import struct
 import zipfile
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol
+from urllib.parse import urlparse
 
 from crypto_research.market.binance.archive_paths import ArchiveObject
 
@@ -36,7 +39,7 @@ class HttpClient(Protocol):
 class ArchiveSizeLimits:
     max_compressed_bytes: int = 128 * 1024 * 1024
     max_uncompressed_bytes: int = 1024 * 1024 * 1024
-    max_members: int = 1
+    max_central_directory_bytes: int = 64 * 1024
     max_compression_ratio: int = 100
 
 
@@ -80,7 +83,12 @@ async def fetch_archive(
                 output.flush()
                 os.fsync(output.fileno())
 
-        expected = _parse_checksum((await client.get(obj.checksum_url)).text)
+        checksum_response = await client.get(obj.checksum_url)
+        _raise_for_bad_status(checksum_response.status_code, obj.checksum_url)
+        expected = _parse_checksum(
+            checksum_response.text,
+            Path(urlparse(obj.url).path).name,
+        )
         actual = digest.hexdigest()
         if actual != expected:
             raise ArchiveChecksumError("official archive checksum mismatch")
@@ -106,18 +114,20 @@ def _raise_for_bad_status(status_code: int, url: str) -> None:
         raise ArchiveError(f"archive request failed with HTTP {status_code}: {url}")
 
 
-def _parse_checksum(payload: str) -> str:
-    matches = re.findall(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])", payload)
-    if len(matches) != 1:
-        raise ArchiveChecksumError("official checksum response must contain exactly one SHA-256")
-    return matches[0].lower()
+def _parse_checksum(payload: str, expected_basename: str) -> str:
+    pattern = rf"([0-9a-fA-F]{{64}})[ \t]+\*?{re.escape(expected_basename)}\n?"
+    match = re.fullmatch(pattern, payload)
+    if match is None:
+        raise ArchiveChecksumError("official checksum record is invalid")
+    return match.group(1).lower()
 
 
 def _inspect_zip(path: Path, limits: ArchiveSizeLimits) -> tuple[str, int]:
     try:
+        _preflight_central_directory(path, limits)
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()
-            if len(members) != limits.max_members:
+            if len(members) != 1:
                 raise ArchiveSafetyError("archive must contain exactly one CSV member")
             member = members[0]
             _validate_member(member, limits)
@@ -130,23 +140,32 @@ def _inspect_zip(path: Path, limits: ArchiveSizeLimits) -> tuple[str, int]:
             if consumed != member.file_size:
                 raise ArchiveSafetyError("archive member size changed while reading")
             return member.filename, consumed
-    except zipfile.BadZipFile as error:
+    except (OSError, zipfile.BadZipFile) as error:
         raise ArchiveSafetyError("archive is not a valid ZIP") from error
 
 
 def _validate_member(member: zipfile.ZipInfo, limits: ArchiveSizeLimits) -> None:
     name = member.filename
     path = PurePosixPath(name)
-    is_symlink = (member.external_attr >> 16) & 0o170000 == 0o120000
+    unix_mode = member.external_attr >> 16
+    unix_file_type = stat.S_IFMT(unix_mode)
+    dos_is_directory = member.external_attr & 0x10 != 0
+    is_regular = (
+        unix_file_type in {0, stat.S_IFREG}
+        if member.create_system == 3
+        else not dos_is_directory
+    )
     if (
         path.is_absolute()
         or ".." in path.parts
         or "\\" in name
         or name.endswith("/")
-        or is_symlink
+        or not is_regular
         or path.suffix.lower() != ".csv"
     ):
-        raise ArchiveSafetyError("archive member must be one safe relative CSV path")
+        raise ArchiveSafetyError("archive member must be one safe relative regular CSV path")
+    if member.file_size == 0:
+        raise ArchiveSafetyError("archive CSV member must be non-empty")
     if member.file_size > limits.max_uncompressed_bytes:
         raise ArchiveSafetyError("archive uncompressed size exceeds byte limit")
     if member.compress_size == 0:
@@ -155,6 +174,52 @@ def _validate_member(member: zipfile.ZipInfo, limits: ArchiveSizeLimits) -> None
         return
     if member.file_size / member.compress_size > limits.max_compression_ratio:
         raise ArchiveSafetyError("archive compression ratio exceeds limit")
+
+
+def _preflight_central_directory(path: Path, limits: ArchiveSizeLimits) -> None:
+    file_size = path.stat().st_size
+    eocd_size = 22
+    maximum_comment_size = 65_535
+    if file_size < eocd_size:
+        raise ArchiveSafetyError("archive is not a valid ZIP")
+    tail_size = min(file_size, eocd_size + maximum_comment_size)
+    with path.open("rb") as source:
+        source.seek(file_size - tail_size)
+        tail = source.read(tail_size)
+    position = tail.rfind(b"PK\x05\x06")
+    if position < 0 or position + eocd_size > len(tail):
+        raise ArchiveSafetyError("archive is not a valid ZIP")
+    (
+        _signature,
+        disk_number,
+        central_directory_disk,
+        entries_on_disk,
+        total_entries,
+        central_directory_size,
+        central_directory_offset,
+        comment_length,
+    ) = struct.unpack_from("<4s4H2LH", tail, position)
+    eocd_offset = file_size - tail_size + position
+    if position + eocd_size + comment_length != len(tail):
+        raise ArchiveSafetyError("archive has an invalid final EOCD record")
+    if (
+        disk_number != 0
+        or central_directory_disk != 0
+        or entries_on_disk == 0xFFFF
+        or total_entries == 0xFFFF
+        or central_directory_size == 0xFFFFFFFF
+        or central_directory_offset == 0xFFFFFFFF
+    ):
+        raise ArchiveSafetyError("archive multi-disk or ZIP64 records are not supported")
+    if entries_on_disk != 1 or total_entries != 1:
+        raise ArchiveSafetyError("archive must contain exactly one central-directory member")
+    central_directory_end = central_directory_offset + central_directory_size
+    if (
+        central_directory_size > limits.max_central_directory_bytes
+        or central_directory_end > eocd_offset
+        or central_directory_end > file_size
+    ):
+        raise ArchiveSafetyError("archive central directory exceeds safe bounds")
 
 
 def _fsync_directory(directory: Path) -> None:
