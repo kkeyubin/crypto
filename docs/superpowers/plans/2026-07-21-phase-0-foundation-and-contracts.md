@@ -1060,7 +1060,7 @@ class MarketSnapshot(UTCModel):
     cutoff: datetime
     data_manifest_id: UUID
     strategy_spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    bars: list[OHLCVBar]
+    bars: tuple[OHLCVBar, ...]
     best_bid_ask: BestBidAsk | None = None
     funding_rate: float | None = None
     deterministic_signal_id: UUID | None = None
@@ -1104,9 +1104,9 @@ class AIAssessment(UTCModel):
     assessment_id: UUID
     snapshot_id: UUID
     opinion: AIOpinion
-    reasons: list[str] = Field(min_length=1)
-    citations: list[PrincipleCitation] = Field(min_length=1)
-    risk_notes: list[str]
+    reasons: tuple[str, ...] = Field(min_length=1)
+    citations: tuple[PrincipleCitation, ...] = Field(min_length=1)
+    risk_notes: tuple[str, ...]
     market_data_cutoff: datetime
     model_id: str
     prompt_version: str
@@ -1155,8 +1155,8 @@ class DataManifest(UTCModel):
     checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
     schema_version: str
     normalization_version: str
-    missing_intervals: list[MissingInterval] = Field(default_factory=list)
-    repair_history: list[RepairRecord] = Field(default_factory=list)
+    missing_intervals: tuple[MissingInterval, ...] = ()
+    repair_history: tuple[RepairRecord, ...] = ()
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "DataManifest":
