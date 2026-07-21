@@ -17,6 +17,7 @@ def eligible_context() -> EligibilityContext:
     return EligibilityContext(
         symbol="BTCUSDT",
         metadata_verified=True,
+        profile_complete=True,
         history_start=NOW - timedelta(days=60),
         history_end=NOW,
         coverage_fraction=0.999,
@@ -42,6 +43,7 @@ def policy() -> SymbolEligibilityPolicy:
     ("changes", "reason"),
     [
         ({"metadata_verified": False}, EligibilityReasonCode.METADATA_UNVERIFIED),
+        ({"profile_complete": False}, EligibilityReasonCode.PROFILE_INCOMPLETE),
         (
             {"history_start": NOW - timedelta(days=2)},
             EligibilityReasonCode.INSUFFICIENT_HISTORY,
@@ -72,6 +74,7 @@ def test_all_reasons_are_evaluated_without_short_circuiting() -> None:
     context = EligibilityContext(
         symbol="1000PEPEUSDT",
         metadata_verified=False,
+        profile_complete=False,
         history_start=NOW - timedelta(days=1),
         history_end=NOW,
         coverage_fraction=0.2,

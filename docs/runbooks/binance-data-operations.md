@@ -170,7 +170,9 @@ curl --fail-with-body -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:8088/api/gaps/$GAP_ID/reconcile"
 ```
 
-Retry changes only failed or `source_pending` objects back to planned. Recheck reads the structured approved archive identity and official sibling checksum; unchanged bytes are a no-op, while a new checksum creates a separate immutable job/object and lets the catalog publish the next version. Reconcile accepts 1–100 unique approved partition IDs and leaves the gap open unless their validated coverage fully repairs it.
+Retry changes only failed or `source_pending` objects back to planned. Recheck reads the structured approved archive identity and official sibling checksum; unchanged bytes are a no-op, while a new checksum creates a separate immutable job/object and lets the catalog publish the next version. Reconcile accepts 1–100 unique approved partition IDs. Unknown or foreign evidence returns 404, superseded evidence returns 409, and only current valid evidence may produce a 200 `partial` attempt. A gap remains open unless current validated coverage fully repairs it. Catalog publication and reconciliation serialize on the same symbol/dataset lock.
+
+`DataManifest.missing_intervals` records immutable time boundaries used to subtract unsafe coverage. The corresponding `data_gaps.reason` plus validation evidence is the authoritative reason provenance; the operator must not invent or infer a reason from timestamps alone.
 
 After reconnect or restart, inspect `/api/operations/market-data`, per-symbol streams, and gaps. A disconnect gap is repaired only by continuity or approved replacement evidence; new messages alone are insufficient. Keep eligibility false while a required stream is stale/degraded or a required gap remains open. `metadata_unverified` caused by unavailable Binance REST metadata is a separate fail-closed gate and must never be filled with invented values.
 

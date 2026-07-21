@@ -73,6 +73,7 @@ class EligibilityReasonCode(StrEnum):
     UNREPAIRED_GAP = "unrepaired_gap"
     INSUFFICIENT_LIQUIDITY = "insufficient_liquidity"
     METADATA_UNVERIFIED = "metadata_unverified"
+    PROFILE_INCOMPLETE = "profile_incomplete"
     INSUFFICIENT_COVERAGE = "insufficient_coverage"
     DATA_NOT_READY = "data_not_ready"
     SOURCE_DEGRADED = "source_degraded"

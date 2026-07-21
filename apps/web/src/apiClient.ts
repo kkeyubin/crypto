@@ -40,6 +40,7 @@ const eligibilityReasons = new Set([
   "unrepaired_gap",
   "insufficient_liquidity",
   "metadata_unverified",
+  "profile_incomplete",
   "insufficient_coverage",
   "data_not_ready",
   "source_degraded",

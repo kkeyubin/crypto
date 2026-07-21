@@ -186,6 +186,15 @@ npm run web:build
 
 ### Task 5: Review, Server Migration, and Re-Acceptance
 
+Before Task 5, the independent final review added four merge-blocking regressions. Their remediation is part of this plan rather than an undocumented follow-up:
+
+- [x] Incomplete required profile metrics now add `profile_incomplete`; `profile_building` can never coexist with `eligible=true`, and API/UI regressions cover the gate.
+- [x] Catalog replay is idempotent only for the same immutable `manifest_id`; checksum evolution `A → B → A` creates versions 1, 2, and 3 while preserving every generation.
+- [x] Gap reconciliation accepts only the latest approved version for an exact coverage identity. Catalog publication and reconciliation share one `symbol + dataset` advisory lock. Unknown/foreign evidence fails with 404, superseded evidence conflicts with 409, and valid partial/repaired attempts retain partition IDs in repair history and audit details.
+- [x] GitHub backend CI starts PostgreSQL 17 and sets `CRYPTO_TEST_DATABASE_URL`, so migration, version, and concurrency integration tests cannot silently skip.
+
+`MissingInterval` deliberately stores only immutable time boundaries. The linked `data_gaps.reason` and validation evidence are the authoritative reason provenance; do not infer a reason from the range alone.
+
 **Files:**
 - Modify: `.superpowers/sdd/task-8-report.md`
 - Modify: `docs/roadmap.md`

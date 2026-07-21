@@ -32,6 +32,7 @@ class SymbolEligibilityPolicy:
 class EligibilityContext:
     symbol: str
     metadata_verified: bool
+    profile_complete: bool
     history_start: datetime
     history_end: datetime
     coverage_fraction: float
@@ -102,6 +103,10 @@ def evaluate_eligibility(
         (
             not context.metadata_verified,
             EligibilityReasonCode.METADATA_UNVERIFIED,
+        ),
+        (
+            not context.profile_complete,
+            EligibilityReasonCode.PROFILE_INCOMPLETE,
         ),
         (
             context.coverage_fraction < policy.minimum_coverage_fraction,

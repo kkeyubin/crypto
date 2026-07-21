@@ -9,6 +9,8 @@ from crypto_research.contracts.data import EligibilityReasonCode, MetadataStatus
 from crypto_research.db.repositories import StreamState
 from crypto_research.market.binance.streams import streams_for_symbols
 from crypto_research.market.control import (
+    MarketDataConflict,
+    MarketDataNotFound,
     MarketDataSourceUnavailable,
     _metadata_status,
     _profile_view,
@@ -288,6 +290,35 @@ def test_gap_reconcile_accepts_only_one_to_one_hundred_unique_partition_ids(
     assert empty.status_code == 422
     assert duplicate.status_code == 422
     assert arbitrary_source.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code"),
+    (
+        (MarketDataNotFound("partition evidence does not exist"), 404),
+        (MarketDataConflict("partition evidence is superseded"), 409),
+    ),
+)
+def test_gap_reconcile_maps_evidence_errors_to_http_status(
+    client: TestClient,
+    control,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    status_code: int,
+) -> None:
+    async def reject(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(control, "reconcile_gap", reject)
+    response = client.post(
+        "/api/gaps/00000000-0000-0000-0000-000000000301/reconcile",
+        json={
+            "partition_ids": ["00000000-0000-0000-0000-000000000201"]
+        },
+    )
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": str(error)}
 
 
 def test_partitions_gaps_profile_eligibility_and_streams_are_symbol_scoped(

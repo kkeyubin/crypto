@@ -21,6 +21,8 @@ from crypto_research.contracts.data import (
 from crypto_research.contracts.manifest import DataType
 from crypto_research.db.repositories import (
     AddSymbolCommand,
+    ApprovedPartitionEvidenceConflict,
+    ApprovedPartitionEvidenceNotFound,
     ArchiveRecheckDecision,
     BackfillCommand,
     DataGap,
@@ -264,6 +266,15 @@ class Profiles:
         )
 
 
+class IncompleteProfiles(Profiles):
+    async def compute(self, symbol: str, start: datetime, end: datetime, *, calculated_at):
+        profile = await super().compute(symbol, start, end, calculated_at=calculated_at)
+        return replace(
+            profile,
+            median_spread_bps=ProfileMetric(None, 0, 0),
+        )
+
+
 class ChecksumProbe:
     def __init__(self, checksum: str) -> None:
         self.checksum = checksum
@@ -302,6 +313,7 @@ def service(
     repository: Repository,
     *,
     checksum_probe: ChecksumProbe | None = None,
+    profiles: Profiles | None = None,
     **settings_overrides: object,
 ):
     settings = Settings(
@@ -311,7 +323,7 @@ def service(
     )
     return MarketDataControlService(
         repository,
-        Profiles(),
+        profiles or Profiles(),
         settings,
         clock=lambda: NOW,
         archive_checksum_probe=checksum_probe,
@@ -656,6 +668,51 @@ def test_gap_reconcile_maps_missing_gap_to_not_found() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("message", ("unknown evidence", "foreign evidence"))
+def test_gap_reconcile_maps_invalid_partition_evidence_to_not_found(
+    message: str,
+) -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+
+        async def reject(*_args, **_kwargs):
+            raise ApprovedPartitionEvidenceNotFound(message)
+
+        repository.reconcile_gap = reject  # type: ignore[method-assign]
+        with pytest.raises(MarketDataNotFound, match=message):
+            await service(repository).reconcile_gap(
+                UUID("00000000-0000-0000-0000-000000000301"),
+                GapReconcileRequest(
+                    partition_ids=(
+                        UUID("00000000-0000-0000-0000-000000000201"),
+                    )
+                ),
+            )
+
+    asyncio.run(scenario())
+
+
+def test_gap_reconcile_maps_superseded_partition_evidence_to_conflict() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+
+        async def reject(*_args, **_kwargs):
+            raise ApprovedPartitionEvidenceConflict("partition evidence is superseded")
+
+        repository.reconcile_gap = reject  # type: ignore[method-assign]
+        with pytest.raises(MarketDataConflict, match="superseded"):
+            await service(repository).reconcile_gap(
+                UUID("00000000-0000-0000-0000-000000000301"),
+                GapReconcileRequest(
+                    partition_ids=(
+                        UUID("00000000-0000-0000-0000-000000000201"),
+                    )
+                ),
+            )
+
+    asyncio.run(scenario())
+
+
 def test_source_pending_job_keeps_symbol_in_backfilling_state() -> None:
     async def scenario() -> None:
         repository = configured_repository()
@@ -686,6 +743,42 @@ def test_service_keeps_profile_and_eligibility_evidence_symbol_specific() -> Non
         assert "unrepaired_gap" in pepe.reason_codes
         assert btc.symbol == "BTCUSDT"
         assert pepe.symbol == "1000PEPEUSDT"
+
+    asyncio.run(scenario())
+
+
+def test_incomplete_profile_blocks_eligibility_while_metadata_builds() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+        repository.summaries["BTCUSDT"] = SimpleNamespace(
+            approved_data_types=("kline_1m", "mark_price", "funding"),
+            archive_intervals={
+                data_type: ((START, END),)
+                for data_type in ("kline_1m", "mark_price", "funding")
+            },
+            metadata_verified=True,
+            open_gap_count=0,
+            job_statuses=("succeeded",),
+        )
+        repository.streams["BTCUSDT"] = tuple(
+            StreamState(
+                "BTCUSDT",
+                stream.name,
+                NOW - timedelta(seconds=1),
+                "connected",
+                {"source_mode": "direct"},
+                NOW,
+            )
+            for stream in streams_for_symbols(("BTCUSDT",))
+        )
+        control = service(repository, profiles=IncompleteProfiles())
+
+        symbol = await control.get_symbol("BTCUSDT")
+        eligibility = await control.get_eligibility("BTCUSDT")
+
+        assert symbol.metadata_status.value == "profile_building"
+        assert eligibility.eligible is False
+        assert eligibility.reason_codes == (EligibilityReasonCode.PROFILE_INCOMPLETE,)
 
     asyncio.run(scenario())
 

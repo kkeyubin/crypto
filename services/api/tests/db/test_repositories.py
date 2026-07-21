@@ -16,6 +16,7 @@ from crypto_research.db.models import (
 )
 from crypto_research.db.repositories import (
     AddSymbolCommand,
+    ApprovedPartitionEvidenceNotFound,
     BackfillCommand,
     GapRecord,
     PartitionCandidate,
@@ -68,13 +69,33 @@ class FakeCoverageResolver:
         self.coverage = {item.partition_id: item for item in coverage}
 
     async def resolve(
-        self, partition_ids: tuple[str, ...]
+        self,
+        partition_ids: tuple[str, ...],
+        *,
+        symbol: str,
+        data_type: DataType,
     ) -> tuple[ApprovedCoverage, ...]:
+        del symbol, data_type
         return tuple(
             self.coverage[partition_id]
             for partition_id in partition_ids
             if partition_id in self.coverage
         )
+
+
+class FailingCoverageResolver:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def resolve(
+        self,
+        partition_ids: tuple[str, ...],
+        *,
+        symbol: str,
+        data_type: DataType,
+    ) -> tuple[ApprovedCoverage, ...]:
+        del partition_ids, symbol, data_type
+        raise self.error
 
 
 def test_add_disable_symbol_is_idempotent_and_audited() -> None:
@@ -298,6 +319,57 @@ def test_gaps_keep_open_and_repair_history() -> None:
             "partial",
             "repaired",
         ]
+        assert [
+            item["partition_ids"] for item in repaired.repair_details["history"]
+        ] == [["partial-partition"], ["full-partition"]]
+        attempts = [
+            row
+            for row in session.rows
+            if isinstance(row, AuditEventRow)
+            and row.action in {"gap_repair_attempted", "gap_repaired"}
+        ]
+        assert [row.details["partition_ids"] for row in attempts] == [
+            ["partial-partition"],
+            ["full-partition"],
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_gap_reconcile_propagates_missing_evidence_without_recording_attempt() -> None:
+    async def scenario() -> None:
+        session = FakeAsyncSession()
+        repository = SqlAlchemyDataStateRepository(  # type: ignore[arg-type]
+            session,
+            FailingCoverageResolver(
+                ApprovedPartitionEvidenceNotFound("partition evidence does not exist")
+            ),
+        )
+        opened = await repository.record_gap(
+            GapRecord(
+                id="00000000-0000-0000-0000-000000000023",
+                symbol="BTCUSDT",
+                dataset="kline_1m",
+                start_at=datetime(2026, 7, 20, tzinfo=UTC),
+                end_at=datetime(2026, 7, 20, 0, 1, tzinfo=UTC),
+                reason="disconnect",
+            )
+        )
+
+        with pytest.raises(
+            ApprovedPartitionEvidenceNotFound, match="partition evidence"
+        ):
+            await repository.reconcile_gap(
+                opened.id,
+                ("unknown-partition",),
+                datetime(2026, 7, 20, 1, tzinfo=UTC),
+                "archive",
+            )
+
+        assert opened.repair_details == {"gap": {}, "history": []}
+        assert [
+            row.action for row in session.rows if isinstance(row, AuditEventRow)
+        ] == ["gap_recorded"]
 
     asyncio.run(scenario())
 

@@ -147,7 +147,7 @@ def test_catalog_exposes_only_partitions_with_all_validators_approved() -> None:
     asyncio.run(scenario())
 
 
-def test_same_checksum_is_idempotent_and_replacement_creates_immutable_version() -> None:
+def test_manifest_replay_is_idempotent_and_reversion_creates_monotonic_version() -> None:
     async def scenario() -> None:
         repository = InMemoryCatalogRepository()
         first_manifest = manifest(
@@ -158,15 +158,7 @@ def test_same_checksum_is_idempotent_and_replacement_creates_immutable_version()
         )
         first = await repository.approve(CatalogCandidate(first_manifest, validations()))
         retry = await repository.approve(
-            CatalogCandidate(
-                manifest(
-                    "00000000-0000-0000-0000-000000000112",
-                    "a" * 64,
-                    "b" * 64,
-                    "normalized/btc-v1.parquet",
-                ),
-                validations(),
-            )
+            CatalogCandidate(first_manifest, validations())
         )
         replacement = await repository.approve(
             CatalogCandidate(
@@ -179,12 +171,33 @@ def test_same_checksum_is_idempotent_and_replacement_creates_immutable_version()
                 validations(),
             )
         )
+        reversion = await repository.approve(
+            CatalogCandidate(
+                manifest(
+                    "00000000-0000-0000-0000-000000000114",
+                    "a" * 64,
+                    "b" * 64,
+                    "normalized/btc-v1.parquet",
+                ),
+                validations(),
+            )
+        )
 
         assert retry == first
         assert replacement.version == 2
+        assert reversion.version == 3
+        assert reversion.partition_id not in {
+            first.partition_id,
+            replacement.partition_id,
+        }
         assert replacement.partition_id != first.partition_id
         assert first.parquet_path == "normalized/btc-v1.parquet"
         assert replacement.parquet_path == "normalized/btc-v2.parquet"
+        assert reversion.parquet_path == first.parquet_path
+        approved = await repository.approved(
+            "BTCUSDT", DataType.KLINE_1M, START, END
+        )
+        assert [item.version for item in approved] == [1, 2, 3]
 
     asyncio.run(scenario())
 

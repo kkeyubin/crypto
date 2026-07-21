@@ -59,11 +59,22 @@ def test_market_data_recovery_migration_preserves_api_entrypoint() -> None:
 def test_ci_has_backend_web_and_clean_container_safety_gates() -> None:
     workflow = yaml.safe_load(read_repository_file(".github/workflows/ci.yml"))
     jobs = workflow["jobs"]
+    backend = jobs["backend"]
     backend_commands = [step["run"] for step in jobs["backend"]["steps"] if "run" in step]
     web_commands = [step["run"] for step in jobs["web"]["steps"] if "run" in step]
     container_commands = [step["run"] for step in jobs["containers"]["steps"] if "run" in step]
 
     assert "pytest -q" in backend_commands
+    assert backend["services"]["postgres"]["image"] == "postgres:17-alpine"
+    assert backend["services"]["postgres"]["env"] == {
+        "POSTGRES_DB": "crypto_test",
+        "POSTGRES_PASSWORD": "ci-test-postgres-password",
+        "POSTGRES_USER": "postgres",
+    }
+    assert backend["env"]["CRYPTO_TEST_DATABASE_URL"] == (
+        "postgresql+asyncpg://postgres:ci-test-postgres-password@"
+        "127.0.0.1:5432/crypto_test"
+    )
     assert "python scripts/export_schemas.py --check" in backend_commands
     assert "npm run contracts:test-generation" in web_commands
     assert "npm run contracts:check-types" in web_commands

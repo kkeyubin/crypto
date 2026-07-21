@@ -74,9 +74,12 @@ class InMemoryCatalogRepository:
     async def approve(self, candidate: CatalogCandidate) -> CatalogPartition:
         _validate_candidate(candidate)
         manifest = candidate.manifest
-        source_key = _source_version_key(manifest)
         for approved in self._approved:
-            if _source_version_key(approved.manifest) == source_key:
+            if approved.manifest_id == str(manifest.manifest_id):
+                if approved.manifest != manifest:
+                    raise CatalogValidationError(
+                        "manifest identity is immutable across approval retries"
+                    )
                 return approved
 
         identity = _partition_identity(manifest)
@@ -94,7 +97,11 @@ class InMemoryCatalogRepository:
             for item in self._approved
             if _partition_identity(item.manifest) == identity
         ]
-        if any(item.parquet_path == manifest.normalized_path for item in versions):
+        if any(
+            item.parquet_path == manifest.normalized_path
+            and item.normalized_checksum != manifest.normalized_checksum
+            for item in versions
+        ):
             raise CatalogValidationError(
                 "source replacement must use immutable partition bytes and a new path"
             )
@@ -167,7 +174,9 @@ class SqlAlchemyCatalogRepository:
         _validate_candidate(candidate)
         manifest = candidate.manifest
         partition_date = manifest.start.date().isoformat()
-        lock_key = f"{manifest.instrument.symbol}|{manifest.data_type.value}"
+        lock_key = catalog_lock_key(
+            manifest.instrument.symbol, manifest.data_type
+        )
         await self._session.execute(
             select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
         )
@@ -175,16 +184,15 @@ class SqlAlchemyCatalogRepository:
             select(DataPartitionRow, DataManifestRow)
             .join(DataManifestRow, DataManifestRow.partition_id == DataPartitionRow.id)
             .where(
-                DataPartitionRow.symbol == manifest.instrument.symbol,
-                DataPartitionRow.dataset == manifest.data_type.value,
-                DataPartitionRow.partition_date == partition_date,
-                DataPartitionRow.approval_status == "approved",
-                DataManifestRow.source_url == manifest.source.resolved_url,
-                DataManifestRow.source_checksum == manifest.source_checksum,
+                DataManifestRow.manifest_id == str(manifest.manifest_id),
             )
         )
         existing = (await self._session.execute(existing_statement)).first()
         if existing is not None:
+            if _stored_data_manifest(existing[1].manifest) != manifest:
+                raise CatalogValidationError(
+                    "manifest identity is immutable across approval retries"
+                )
             return _catalog_partition(existing[0], existing[1])
 
         active_statement = (
@@ -208,7 +216,9 @@ class SqlAlchemyCatalogRepository:
                     "approved partition coverage cannot overlap a different active range"
                 )
         if any(
-            row.parquet_path == manifest.normalized_path for row, _stored in active_rows
+            row.parquet_path == manifest.normalized_path
+            and row.checksum_sha256 != manifest.normalized_checksum
+            for row, _stored in active_rows
         ):
             raise CatalogValidationError(
                 "source replacement must use immutable partition bytes and a new path"
@@ -413,8 +423,14 @@ def _validate_candidate(candidate: CatalogCandidate) -> None:
         raise CatalogValidationError(f"catalog validation failed: {', '.join(failed)}")
 
 
-def _source_version_key(manifest: DataManifest) -> tuple[object, ...]:
-    return (*_partition_identity(manifest), manifest.source.resolved_url, manifest.source_checksum)
+def catalog_lock_key(symbol: str, data_type: DataType) -> str:
+    return "|".join(
+        (
+            "crypto-research:catalog",
+            symbol.strip().upper(),
+            data_type.value,
+        )
+    )
 
 
 def _current_approved(

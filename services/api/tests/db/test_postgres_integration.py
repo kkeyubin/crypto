@@ -32,6 +32,7 @@ from crypto_research.contracts.strategy import InstrumentRef
 from crypto_research.db.models import (
     AuditEventRow,
     BackfillObjectRow,
+    DataGapRow,
     DataManifestRow,
     DataPartitionRow,
     IngestionJobRow,
@@ -41,6 +42,7 @@ from crypto_research.db.models import (
 )
 from crypto_research.db.repositories import (
     AddSymbolCommand,
+    ApprovedPartitionEvidenceConflict,
     ApprovedPartitionEvidenceNotFound,
     BackfillCommand,
     GapRecord,
@@ -408,16 +410,7 @@ def test_postgres_persistence_invariants() -> None:
                     CatalogCandidate(first_manifest, _validations())
                 )
                 retry = await catalog.approve(
-                    CatalogCandidate(
-                        _manifest(
-                            "00000000-0000-0000-0000-000000000110",
-                            lease_start,
-                            "c" * 64,
-                            "d" * 64,
-                            "normalized/btc-c.parquet",
-                        ),
-                        _validations(),
-                    )
+                    CatalogCandidate(first_manifest, _validations())
                 )
                 replacement = await catalog.approve(
                     CatalogCandidate(
@@ -427,6 +420,18 @@ def test_postgres_persistence_invariants() -> None:
                             "e" * 64,
                             "f" * 64,
                             "normalized/btc-e.parquet",
+                        ),
+                        _validations(),
+                    )
+                )
+                reversion = await catalog.approve(
+                    CatalogCandidate(
+                        _manifest(
+                            "00000000-0000-0000-0000-000000000110",
+                            lease_start,
+                            "c" * 64,
+                            "d" * 64,
+                            "normalized/btc-c.parquet",
                         ),
                         _validations(),
                     )
@@ -444,7 +449,7 @@ def test_postgres_persistence_invariants() -> None:
                 )
                 repaired_gap = await state_repository.reconcile_gap(
                     repair_gap.id,
-                    (replacement.partition_id,),
+                    (reversion.partition_id,),
                     lease_start.replace(day=5),
                     "catalog",
                 )
@@ -468,12 +473,17 @@ def test_postgres_persistence_invariants() -> None:
                 await catalog_session.commit()
                 assert retry.partition_id == first.partition_id
                 assert replacement.version == first.version + 1
+                assert reversion.version == replacement.version + 1
                 assert repaired_gap.status == "repaired"
                 assert fabricated_gap.status == "open"
                 approved = await catalog.approved(
                     "BTCUSDT", DataType.KLINE_1M, lease_start, lease_start.replace(day=4)
                 )
-                assert [item.version for item in approved] == [first.version, replacement.version]
+                assert [item.version for item in approved] == [
+                    first.version,
+                    replacement.version,
+                    reversion.version,
+                ]
 
             publish_start = datetime(2026, 1, 4, tzinfo=UTC)
             async with session_factory() as setup_session:
@@ -1194,7 +1204,9 @@ def test_postgres_manifest_gap_migration_and_safe_repair_coverage() -> None:
                 )
 
                 coverage = await SqlAlchemyApprovedCoverageResolver(session).resolve(
-                    (approved.partition_id,)
+                    (approved.partition_id,),
+                    symbol=symbol,
+                    data_type=DataType.KLINE_1M,
                 )
                 assert [
                     (item.time_range.start, item.time_range.end) for item in coverage
@@ -1217,6 +1229,274 @@ def test_postgres_manifest_gap_migration_and_safe_repair_coverage() -> None:
                 with pytest.raises(RuntimeError, match="fail-closed"):
                     migration["downgrade"]()
                 await session.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_postgres_gap_repair_requires_current_exact_coverage_version() -> None:
+    _upgrade_test_database()
+
+    async def scenario() -> None:
+        engine = create_async_engine(TEST_DATABASE_URL)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        suffix = uuid4().hex[:8].upper()
+        symbol = f"CV{suffix}USDT"
+        foreign_symbol = f"FV{suffix}USDT"
+        start = datetime(2026, 3, 1, tzinfo=UTC)
+        end = start + timedelta(hours=3)
+        hole = MissingInterval(
+            start=start + timedelta(hours=1),
+            end=start + timedelta(hours=2),
+        )
+
+        def revision(
+            base: DataManifest,
+            label: str,
+            *,
+            missing_intervals: tuple[MissingInterval, ...],
+        ) -> DataManifest:
+            source_checksum = hashlib.sha256(f"source|{label}".encode()).hexdigest()
+            normalized_checksum = hashlib.sha256(
+                f"normalized|{label}".encode()
+            ).hexdigest()
+            return base.model_copy(
+                update={
+                    "manifest_id": uuid4(),
+                    "raw_path": f"raw/{symbol}/{label}-{source_checksum}.json",
+                    "normalized_path": (
+                        f"normalized/{symbol}/{label}-{normalized_checksum}.parquet"
+                    ),
+                    "source_checksum": source_checksum,
+                    "normalized_checksum": normalized_checksum,
+                    "missing_intervals": missing_intervals,
+                }
+            )
+
+        async def gap(
+            repository: SqlAlchemyDataStateRepository,
+            gap_start: datetime,
+            gap_end: datetime,
+        ):
+            return await repository.record_gap(
+                GapRecord(
+                    id=str(uuid4()),
+                    symbol=symbol,
+                    dataset=DataType.KLINE_1M.value,
+                    start_at=gap_start,
+                    end_at=gap_end,
+                    reason="missing_minute_open_time",
+                )
+            )
+
+        try:
+            async with session_factory() as session:
+                repository = SqlAlchemyDataStateRepository(session)
+                await repository.add_symbol(AddSymbolCommand(symbol, start, end))
+                await repository.add_symbol(
+                    AddSymbolCommand(foreign_symbol, start, end)
+                )
+                catalog = SqlAlchemyCatalogRepository(session)
+                first_manifest = _rest_manifest(
+                    symbol, DataType.KLINE_1M, start, end
+                )
+                first = await catalog.approve(
+                    CatalogCandidate(first_manifest, _validations())
+                )
+                replay = await catalog.approve(
+                    CatalogCandidate(first_manifest, _validations())
+                )
+                second_manifest = revision(
+                    first_manifest, "current-hole", missing_intervals=(hole,)
+                )
+                second = await catalog.approve(
+                    CatalogCandidate(second_manifest, _validations())
+                )
+                foreign = await catalog.approve(
+                    CatalogCandidate(
+                        _rest_manifest(
+                            foreign_symbol, DataType.KLINE_1M, start, end
+                        ),
+                        _validations(),
+                    )
+                )
+
+                with pytest.raises(ApprovedPartitionEvidenceConflict):
+                    await SqlAlchemyApprovedCoverageResolver(session).resolve(
+                        (first.partition_id, second.partition_id),
+                        symbol=symbol,
+                        data_type=DataType.KLINE_1M,
+                    )
+
+                complete_gap = await gap(repository, start, hole.start)
+                hole_gap = await gap(repository, hole.start, hole.end)
+                superseded_gap = await gap(repository, hole.start, hole.end)
+                foreign_gap = await gap(repository, hole.start, hole.end)
+                unknown_gap = await gap(repository, hole.start, hole.end)
+
+                complete = await repository.reconcile_gap(
+                    complete_gap.id,
+                    (second.partition_id,),
+                    end + timedelta(hours=1),
+                    "catalog",
+                )
+                current_hole = await repository.reconcile_gap(
+                    hole_gap.id,
+                    (second.partition_id,),
+                    end + timedelta(hours=2),
+                    "catalog",
+                )
+                with pytest.raises(ApprovedPartitionEvidenceConflict):
+                    await repository.reconcile_gap(
+                        superseded_gap.id,
+                        (first.partition_id,),
+                        end + timedelta(hours=3),
+                        "catalog",
+                    )
+                with pytest.raises(ApprovedPartitionEvidenceNotFound):
+                    await repository.reconcile_gap(
+                        foreign_gap.id,
+                        (foreign.partition_id,),
+                        end + timedelta(hours=4),
+                        "catalog",
+                    )
+                unknown_id = str(uuid4())
+                with pytest.raises(ApprovedPartitionEvidenceNotFound):
+                    await repository.reconcile_gap(
+                        unknown_gap.id,
+                        (unknown_id,),
+                        end + timedelta(hours=5),
+                        "catalog",
+                    )
+
+                reverted_manifest = first_manifest.model_copy(
+                    update={"manifest_id": uuid4()}
+                )
+                reverted = await catalog.approve(
+                    CatalogCandidate(reverted_manifest, _validations())
+                )
+                reversion_gap = await gap(repository, hole.start, hole.end)
+                reversion = await repository.reconcile_gap(
+                    reversion_gap.id,
+                    (reverted.partition_id,),
+                    end + timedelta(hours=6),
+                    "catalog",
+                )
+                await session.commit()
+
+                assert replay.partition_id == first.partition_id
+                assert [first.version, second.version, reverted.version] == [1, 2, 3]
+                assert complete.status == "repaired"
+                assert current_hole.status == "open"
+                assert reversion.status == "repaired"
+
+                expected_ids = {
+                    complete_gap.id: [second.partition_id],
+                    hole_gap.id: [second.partition_id],
+                    reversion_gap.id: [reverted.partition_id],
+                }
+                for repaired_gap in (
+                    complete,
+                    current_hole,
+                    reversion,
+                ):
+                    assert repaired_gap.repair_details is not None
+                    assert repaired_gap.repair_details["history"][-1][
+                        "partition_ids"
+                    ] == expected_ids[repaired_gap.id]
+                invalid_gap_ids = {
+                    superseded_gap.id,
+                    foreign_gap.id,
+                    unknown_gap.id,
+                }
+                for invalid_gap_id in invalid_gap_ids:
+                    invalid_gap = await session.get(DataGapRow, invalid_gap_id)
+                    assert invalid_gap is not None
+                    assert invalid_gap.repair_details == {"gap": {}, "history": []}
+
+                all_gap_ids = set(expected_ids) | invalid_gap_ids
+                audit_rows = (
+                    await session.execute(
+                        select(AuditEventRow).where(
+                            AuditEventRow.subject_id.in_(all_gap_ids),
+                            AuditEventRow.action.in_(
+                                ("gap_repaired", "gap_repair_attempted")
+                            ),
+                        )
+                    )
+                ).scalars().all()
+                assert {
+                    row.subject_id: row.details["partition_ids"] for row in audit_rows
+                } == expected_ids
+
+            concurrent_start = end + timedelta(days=1)
+            concurrent_end = concurrent_start + timedelta(hours=3)
+            concurrent_hole = MissingInterval(
+                start=concurrent_start + timedelta(hours=1),
+                end=concurrent_start + timedelta(hours=2),
+            )
+            async with session_factory() as setup:
+                setup_repository = SqlAlchemyDataStateRepository(setup)
+                first_concurrent_manifest = _rest_manifest(
+                    symbol,
+                    DataType.KLINE_1M,
+                    concurrent_start,
+                    concurrent_end,
+                )
+                first_concurrent = await SqlAlchemyCatalogRepository(setup).approve(
+                    CatalogCandidate(first_concurrent_manifest, _validations())
+                )
+                concurrent_gap = await gap(
+                    setup_repository, concurrent_hole.start, concurrent_hole.end
+                )
+                await setup.commit()
+
+            publisher = session_factory()
+            reconciler = session_factory()
+            reconcile_task: asyncio.Task | None = None
+            try:
+                current_concurrent_manifest = revision(
+                    first_concurrent_manifest,
+                    "concurrent-hole",
+                    missing_intervals=(concurrent_hole,),
+                )
+                current_concurrent = await SqlAlchemyCatalogRepository(
+                    publisher
+                ).approve(
+                    CatalogCandidate(current_concurrent_manifest, _validations())
+                )
+                reconcile_task = asyncio.create_task(
+                    SqlAlchemyDataStateRepository(reconciler).reconcile_gap(
+                        concurrent_gap.id,
+                        (first_concurrent.partition_id,),
+                        concurrent_end + timedelta(hours=1),
+                        "catalog",
+                    )
+                )
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(reconcile_task), timeout=0.25)
+                await publisher.commit()
+                with pytest.raises(ApprovedPartitionEvidenceConflict):
+                    await asyncio.wait_for(reconcile_task, timeout=5)
+                await reconciler.commit()
+
+                assert current_concurrent.version == first_concurrent.version + 1
+                concurrent_row = await reconciler.get(
+                    DataGapRow, concurrent_gap.id, populate_existing=True
+                )
+                assert concurrent_row is not None
+                assert concurrent_row.repair_details == {"gap": {}, "history": []}
+                assert await _audit_count(
+                    reconciler, "gap_repair_attempted", concurrent_gap.id
+                ) == 0
+            finally:
+                if reconcile_task is not None and not reconcile_task.done():
+                    reconcile_task.cancel()
+                await publisher.rollback()
+                await reconciler.rollback()
+                await publisher.close()
+                await reconciler.close()
         finally:
             await engine.dispose()
 

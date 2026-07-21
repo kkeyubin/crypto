@@ -31,6 +31,7 @@ from crypto_research.market.backfill import (
     BackfillState,
     is_legal_backfill_transition,
 )
+from crypto_research.market.catalog import catalog_lock_key
 from crypto_research.market.gaps import (
     ApprovedCoverage,
     DetectedGap,
@@ -76,6 +77,10 @@ class RepositoryNotFound(LookupError):
 
 class ApprovedPartitionEvidenceNotFound(RepositoryNotFound):
     """One or more requested partitions are not approved catalog evidence."""
+
+
+class ApprovedPartitionEvidenceConflict(MutationIdentityConflict):
+    """Requested approved evidence is no longer the current catalog version."""
 
 
 @dataclass(frozen=True)
@@ -292,7 +297,11 @@ class DataStateRepository(Protocol):
 
 class ApprovedCoverageResolver(Protocol):
     async def resolve(
-        self, partition_ids: tuple[str, ...]
+        self,
+        partition_ids: tuple[str, ...],
+        *,
+        symbol: str,
+        data_type: DataType,
     ) -> tuple[ApprovedCoverage, ...]: ...
 
 
@@ -303,28 +312,83 @@ class SqlAlchemyApprovedCoverageResolver:
         self._session = session
 
     async def resolve(
-        self, partition_ids: tuple[str, ...]
+        self,
+        partition_ids: tuple[str, ...],
+        *,
+        symbol: str,
+        data_type: DataType,
     ) -> tuple[ApprovedCoverage, ...]:
         if not partition_ids:
             return ()
-        statement = (
+        symbol = normalize_symbol(symbol)
+        requested_statement = (
             select(DataPartitionRow, DataManifestRow)
             .join(DataManifestRow, DataManifestRow.partition_id == DataPartitionRow.id)
             .where(
                 DataPartitionRow.id.in_(set(partition_ids)),
+                DataPartitionRow.symbol == symbol,
+                DataPartitionRow.dataset == data_type.value,
                 DataPartitionRow.approval_status == "approved",
             )
         )
 
-        rows = (await self._session.execute(statement)).all()
+        requested_rows = (await self._session.execute(requested_statement)).all()
         requested_ids = set(partition_ids)
-        resolved_ids = {partition.id for partition, _stored in rows}
+        resolved_ids = {partition.id for partition, _stored in requested_rows}
         if resolved_ids != requested_ids:
             raise ApprovedPartitionEvidenceNotFound(
                 "one or more approved partition evidence records do not exist"
             )
+
+        requested: list[
+            tuple[DataPartitionRow, DataManifest, tuple[object, ...]]
+        ] = []
+        partition_dates: set[str] = set()
+        for partition, stored in requested_rows:
+            manifest = DataManifest.model_validate_json(json.dumps(stored.manifest))
+            identity = (
+                manifest.instrument.symbol,
+                manifest.data_type,
+                manifest.start,
+                manifest.end,
+            )
+            requested.append((partition, manifest, identity))
+            partition_dates.add(partition.partition_date)
+
+        current_statement = (
+            select(DataPartitionRow, DataManifestRow)
+            .join(DataManifestRow, DataManifestRow.partition_id == DataPartitionRow.id)
+            .where(
+                DataPartitionRow.symbol == symbol,
+                DataPartitionRow.dataset == data_type.value,
+                DataPartitionRow.partition_date.in_(partition_dates),
+                DataPartitionRow.approval_status == "approved",
+            )
+        )
+        current_rows = (await self._session.execute(current_statement)).all()
+        current_versions: dict[tuple[object, ...], int] = {}
+        for partition, stored in current_rows:
+            manifest = DataManifest.model_validate_json(json.dumps(stored.manifest))
+            identity = (
+                manifest.instrument.symbol,
+                manifest.data_type,
+                manifest.start,
+                manifest.end,
+            )
+            current_versions[identity] = max(
+                partition.version, current_versions.get(identity, 0)
+            )
+
+        if any(
+            partition.version != current_versions.get(identity)
+            for partition, _manifest, identity in requested
+        ):
+            raise ApprovedPartitionEvidenceConflict(
+                "one or more approved partition evidence records are superseded"
+            )
+
         coverage: list[ApprovedCoverage] = []
-        for partition, stored in rows:
+        for partition, manifest, _identity in requested:
             validation = partition.validation_details or {}
             if any(
                 validation.get(name) is not True
@@ -338,7 +402,6 @@ class SqlAlchemyApprovedCoverageResolver:
                 )
             ):
                 continue
-            manifest = DataManifest.model_validate_json(json.dumps(stored.manifest))
             coverage_ranges = _manifest_coverage_intervals(manifest)
             recovered_ranges = validation.get("recovered_id_ranges")
             if isinstance(recovered_ranges, list):
@@ -835,12 +898,18 @@ class SqlAlchemyDataStateRepository:
             raise RepositoryNotFound(f"gap does not exist: {gap_id}")
         attempted_at = _require_utc(attempted_at)
         previous = row.repair_details or {}
-        approved_ranges = await self._coverage_resolver.resolve(partition_ids)
+        data_type = DataType(row.dataset)
+        await self._lock_identity(catalog_lock_key(row.symbol, data_type))
+        approved_ranges = await self._coverage_resolver.resolve(
+            partition_ids,
+            symbol=row.symbol,
+            data_type=data_type,
+        )
         covered = approved_evidence_repairs(
             DetectedGap(
                 gap_id=row.id,
                 symbol=row.symbol,
-                data_type=DataType(row.dataset),
+                data_type=data_type,
                 start=row.start_at,
                 end=row.end_at,
                 reason=_gap_reason(row.reason),
@@ -855,15 +924,19 @@ class SqlAlchemyDataStateRepository:
                 "attempted_at": attempted_at.isoformat(),
                 "source": source,
                 "result": "repaired" if covered else "partial",
+                "partition_ids": list(partition_ids),
             }
         )
         row.repair_details = {"gap": previous.get("gap", {}), "history": history}
+        audit_details = {"partition_ids": list(partition_ids)}
         if row.status == "open" and covered:
             row.status = "repaired"
             row.repaired_at = attempted_at
-            self._add_audit("gap_repaired", "data_gap", row.id)
+            self._add_audit("gap_repaired", "data_gap", row.id, audit_details)
         else:
-            self._add_audit("gap_repair_attempted", "data_gap", row.id)
+            self._add_audit(
+                "gap_repair_attempted", "data_gap", row.id, audit_details
+            )
         await self._session.flush()
         return _data_gap(row)
 

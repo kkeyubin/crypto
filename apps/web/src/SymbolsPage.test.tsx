@@ -292,10 +292,23 @@ test("shows explicit insufficient evidence without turning a genuine zero into m
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      const response = dashboardResponse(path);
-      if (!path.endsWith("BTCUSDT/profile")) {
-        return response;
+      if (path.startsWith("/api/symbols?")) {
+        const response = dashboardResponse(path);
+        const body = await response.json() as Array<Record<string, unknown>>;
+        return jsonResponse(body.map((symbol) => symbol.symbol === "BTCUSDT"
+          ? { ...symbol, metadata_status: "profile_building" }
+          : symbol));
       }
+      if (path.endsWith("BTCUSDT/eligibility")) {
+        return jsonResponse({
+          symbol: "BTCUSDT",
+          eligible: false,
+          reason_codes: ["profile_incomplete"],
+          evaluated_at: "2026-07-21T10:00:00Z",
+        });
+      }
+      const response = dashboardResponse(path);
+      if (!path.endsWith("BTCUSDT/profile")) return response;
       const body = await response.json() as Record<string, unknown>;
       return jsonResponse({
         ...body,
@@ -308,6 +321,9 @@ test("shows explicit insufficient evidence without turning a genuine zero into m
   render(<SymbolsPage />);
 
   const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+  expect(within(btc).getByText("不符合数据启用条件")).toBeInTheDocument();
+  expect(within(btc).getByText("画像证据不完整")).toBeInTheDocument();
+  expect(within(btc).getByText(/元数据状态/)).toHaveTextContent("元数据状态: 画像构建中");
   expect(within(btc).getByText("0.00%")).toBeInTheDocument();
   expect(within(btc).getByText("证据不足")).toBeInTheDocument();
   expect(within(btc).getByText("0 个样本 · 0% 覆盖")).toBeInTheDocument();

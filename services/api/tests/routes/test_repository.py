@@ -4,6 +4,7 @@ from uuid import UUID
 
 import pytest
 
+import crypto_research.db.repositories as repository_module
 from crypto_research.contracts.manifest import (
     ArchiveCadence,
     ArchiveDataset,
@@ -22,11 +23,19 @@ from crypto_research.db.models import (
     SymbolMetadataSnapshotRow,
 )
 from crypto_research.db.repositories import (
+    ApprovedPartitionEvidenceConflict,
     ApprovedPartitionEvidenceNotFound,
     SqlAlchemyApprovedCoverageResolver,
     SqlAlchemyDataStateRepository,
     _effective_job_status,
 )
+
+
+def test_superseded_partition_evidence_has_explicit_conflict_type() -> None:
+    assert issubclass(
+        repository_module.ApprovedPartitionEvidenceConflict,
+        repository_module.MutationIdentityConflict,
+    )
 
 
 class Result:
@@ -68,7 +77,48 @@ def test_approved_coverage_resolver_rejects_unknown_or_unapproved_ids() -> None:
     async def scenario() -> None:
         resolver = SqlAlchemyApprovedCoverageResolver(CapturingSession())  # type: ignore[arg-type]
         with pytest.raises(ApprovedPartitionEvidenceNotFound):
-            await resolver.resolve(("00000000-0000-0000-0000-000000000999",))
+            await resolver.resolve(
+                ("00000000-0000-0000-0000-000000000999",),
+                symbol="BTCUSDT",
+                data_type=DataType.KLINE_1M,
+            )
+
+    asyncio.run(scenario())
+
+
+def test_approved_coverage_resolver_rejects_superseded_ids_as_conflict() -> None:
+    class SupersededSession(CapturingSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.old_partition, self.old_manifest = archive_row(
+                DataType.KLINE_1M, 41
+            )
+            self.current_partition, self.current_manifest = archive_row(
+                DataType.KLINE_1M, 42
+            )
+            self.current_partition.version = 2
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            if len(self.statements) == 1:
+                return ValuesResult([(self.old_partition, self.old_manifest)])
+            return ValuesResult(
+                [
+                    (self.old_partition, self.old_manifest),
+                    (self.current_partition, self.current_manifest),
+                ]
+            )
+
+    async def scenario() -> None:
+        session = SupersededSession()
+        resolver = SqlAlchemyApprovedCoverageResolver(session)  # type: ignore[arg-type]
+
+        with pytest.raises(ApprovedPartitionEvidenceConflict, match="superseded"):
+            await resolver.resolve(
+                (session.old_partition.id,),
+                symbol="BTCUSDT",
+                data_type=DataType.KLINE_1M,
+            )
 
     asyncio.run(scenario())
 

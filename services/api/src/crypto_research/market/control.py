@@ -39,6 +39,7 @@ from crypto_research.contracts.manifest import DataType
 from crypto_research.db.repositories import (
     ActiveStreamHealth,
     AddSymbolCommand,
+    ApprovedPartitionEvidenceConflict,
     ArchiveRecheckDecision,
     BackfillCommand,
     DataGap,
@@ -483,6 +484,8 @@ class MarketDataControlService:
                 self._clock(),
                 "catalog_reconcile",
             )
+        except ApprovedPartitionEvidenceConflict as error:
+            raise MarketDataConflict(str(error)) from error
         except RepositoryNotFound as error:
             raise MarketDataNotFound(str(error)) from error
         return _gap_view(gap, fallback_now=self._clock())
@@ -538,6 +541,7 @@ class MarketDataControlService:
             EligibilityContext(
                 symbol=configured.symbol,
                 metadata_verified=summary.metadata_verified,
+                profile_complete=_profile_complete(profile),
                 history_start=_required_time(configured.history_start, "history_start"),
                 history_end=_required_time(configured.history_end, "history_end"),
                 coverage_fraction=(
