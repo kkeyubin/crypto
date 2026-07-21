@@ -39,7 +39,8 @@ body {
 
 .app-shell button:focus-visible,
 .app-shell a:focus-visible,
-.app-shell input:focus-visible {
+.app-shell input:focus-visible,
+.symbol-card--state:focus-visible {
   outline: 3px solid var(--blue-soft);
   outline-offset: 3px;
 }
@@ -309,6 +310,16 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
+}
+
+.form-protection-note {
+  padding: 10px 12px;
+  margin: -12px 0 16px;
+  color: var(--amber);
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--amber) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, var(--border));
+  border-radius: 8px;
 }
 
 .page-state p:last-child,

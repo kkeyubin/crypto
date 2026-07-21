@@ -1,44 +1,84 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AddSymbolForm } from "./components/AddSymbolForm";
-import { disableSymbol, enableSymbol } from "./apiClient";
+import { disableSymbol, enableSymbol, type SymbolEvidenceState } from "./apiClient";
 import type { SymbolView } from "./contracts";
 import { DataStatus } from "./components/DataStatus";
 import { SymbolCard } from "./components/SymbolCard";
 import { useSymbols } from "./useSymbols";
 
+function RecoverableSymbolState({ item, onRetry }: {
+  item: Extract<SymbolEvidenceState, { status: "refreshing" | "refresh_error" }>;
+  onRetry: (symbol: string) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const owner = useRef<HTMLElement>(null);
+  const retry = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (item.status === "refreshing") {
+      owner.current?.focus();
+    } else {
+      retry.current?.focus();
+    }
+  }, [item.status]);
+
+  return (
+    <article
+      ref={owner}
+      className="symbol-card symbol-card--state"
+      aria-label={t(item.status === "refreshing" ? "symbolEvidenceRefreshingLabel" : "symbolEvidenceRefreshErrorLabel", { symbol: item.symbol.symbol })}
+      tabIndex={-1}
+    >
+      <p role={item.status === "refreshing" ? "status" : "alert"}>
+        {t(item.status === "refreshing" ? "symbolEvidenceRefreshing" : "symbolEvidenceRefreshError", { symbol: item.symbol.symbol })}
+      </p>
+      {item.status === "refresh_error" ? (
+        <button ref={retry} type="button" onClick={() => void onRetry(item.symbol.symbol)}>
+          {t("retrySymbolRefresh", { symbol: item.symbol.symbol })}
+        </button>
+      ) : null}
+    </article>
+  );
+}
+
 export function SymbolsPage() {
   const { t } = useTranslation();
   const symbols = useSymbols();
   const [showAddForm, setShowAddForm] = useState(false);
+  const [addFormProtected, setAddFormProtected] = useState(false);
   const [filter, setFilter] = useState("");
   const [actionNotice, setActionNotice] = useState<{
     kind: "disabled" | "enabled" | "disableError" | "enableError";
     symbol?: string;
   } | null>(null);
 
-  const handleDisable = async (symbol: string) => {
+  const handleDisable = async (symbol: string): Promise<SymbolView | null> => {
     setActionNotice(null);
     try {
-      const disabled = await disableSymbol(symbol);
-      if (await symbols.refreshSymbol(disabled)) {
-        setActionNotice({ kind: "disabled", symbol });
-      }
+      return await disableSymbol(symbol);
     } catch {
       setActionNotice({ kind: "disableError" });
+      return null;
     }
   };
 
-  const handleEnable = async (symbol: SymbolView) => {
+  const handleEnable = async (symbol: SymbolView): Promise<SymbolView | null> => {
     setActionNotice(null);
     try {
-      const enabled = await enableSymbol(symbol);
-      if (await symbols.refreshSymbol(enabled)) {
-        setActionNotice({ kind: "enabled", symbol: symbol.symbol });
-      }
+      return await enableSymbol(symbol);
     } catch {
       setActionNotice({ kind: "enableError" });
+      return null;
     }
+  };
+
+  const handleMutationCommitted = (updated: SymbolView, kind: "disabled" | "enabled") => {
+    void symbols.refreshSymbol(updated).then((refreshed) => {
+      if (refreshed) {
+        setActionNotice({ kind, symbol: updated.symbol });
+      }
+    });
   };
   const normalizedFilter = filter.trim().toUpperCase();
   const visibleItems = symbols.status === "ready"
@@ -57,12 +97,29 @@ export function SymbolsPage() {
             <span>{t("filterSymbols")}</span>
             <input type="search" value={filter} onChange={(event) => setFilter(event.target.value)} />
           </label>
-          <button className="primary-action" type="button" aria-expanded={showAddForm} onClick={() => setShowAddForm((visible) => !visible)}>
+          <button
+            className="primary-action"
+            type="button"
+            aria-expanded={showAddForm}
+            disabled={showAddForm && addFormProtected}
+            onClick={() => setShowAddForm((visible) => !visible)}
+          >
             {showAddForm ? t("closeAddSymbol") : t("addSymbol")}
           </button>
         </div>
       </div>
-      {showAddForm ? <AddSymbolForm onAdded={symbols.reload} onBackfillsCreated={symbols.reload} /> : null}
+      {showAddForm && addFormProtected ? (
+        <p className="form-protection-note" role="status" aria-label={t("addFormProtectedLabel")}>
+          {t("addFormProtectedNotice")}
+        </p>
+      ) : null}
+      {showAddForm ? (
+        <AddSymbolForm
+          onAdded={symbols.reload}
+          onBackfillsCreated={symbols.reload}
+          onProtectionChange={setAddFormProtected}
+        />
+      ) : null}
       {actionNotice === null ? null : actionNotice.kind === "disabled" || actionNotice.kind === "enabled" ? (
         <p className="action-notice" role="status" aria-label={t(actionNotice.kind === "disabled" ? "symbolDisabledLabel" : "symbolEnabledLabel")}>
           {t(actionNotice.kind === "disabled" ? "symbolDisabledNotice" : "symbolEnabledNotice", { symbol: actionNotice.symbol })}
@@ -106,11 +163,20 @@ export function SymbolsPage() {
           ) : null}
           <section className="symbol-grid" aria-label={t("monitoredSymbols")}>
             {visibleItems.map((item) => item.status === "ready" ? (
-              <SymbolCard key={item.symbol.symbol} evidence={item.evidence} onDisable={handleDisable} onEnable={handleEnable} />
+              <SymbolCard
+                key={item.symbol.symbol}
+                evidence={item.evidence}
+                focusAction={item.focusAction}
+                onDisable={handleDisable}
+                onEnable={handleEnable}
+                onMutationCommitted={handleMutationCommitted}
+              />
             ) : item.status === "loading" ? (
               <article className="symbol-card symbol-card--state" aria-label={t("symbolEvidenceLoadingLabel", { symbol: item.symbol.symbol })} key={item.symbol.symbol}>
                 <p role="status">{t("symbolEvidenceLoading", { symbol: item.symbol.symbol })}</p>
               </article>
+            ) : item.status === "refreshing" || item.status === "refresh_error" ? (
+              <RecoverableSymbolState key={item.symbol.symbol} item={item} onRetry={symbols.retrySymbol} />
             ) : (
               <article className="symbol-card symbol-card--state" aria-label={t("symbolEvidenceErrorLabel", { symbol: item.symbol.symbol })} key={item.symbol.symbol}>
                 <p>{t("symbolEvidenceError", { symbol: item.symbol.symbol })}</p>

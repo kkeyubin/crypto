@@ -24,6 +24,31 @@ interface Operation {
   readonly controller: AbortController;
 }
 
+const SYMBOL_REFRESH_TIMEOUT_MS = 10_000;
+
+type EvidenceLoadMode = "initial" | "retry" | "recoverable";
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => void,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      onTimeout();
+      reject(new Error("Symbol evidence refresh timed out"));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
 function replaceItem(
   dashboard: SymbolsDashboard,
   symbolName: string,
@@ -77,27 +102,39 @@ export function useSymbols(): SymbolsState {
   const loadEvidence = useCallback(async (
     symbol: SymbolView,
     generation: number,
-    publishLoading: boolean,
+    mode: EvidenceLoadMode,
   ): Promise<boolean> => {
     if (!mountedRef.current || generationRef.current !== generation) {
       return false;
     }
     const key = `symbol:${symbol.symbol}`;
     const operation = beginOperation(key);
-    if (publishLoading && isCurrent(generation, key, operation.token)) {
+    if (mode !== "initial" && isCurrent(generation, key, operation.token)) {
       setState((value) => value.status === "ready" ? {
         status: "ready",
-        dashboard: replaceItem(value.dashboard, symbol.symbol, { status: "loading", symbol }),
+        dashboard: replaceItem(
+          value.dashboard,
+          symbol.symbol,
+          mode === "recoverable" ? { status: "refreshing", symbol } : { status: "loading", symbol },
+        ),
       } : value);
     }
     try {
-      const evidence = await loadSymbolEvidence(symbol, operation.controller.signal);
+      const evidencePromise = loadSymbolEvidence(symbol, operation.controller.signal);
+      const evidence = mode === "recoverable"
+        ? await withTimeout(evidencePromise, SYMBOL_REFRESH_TIMEOUT_MS, () => operation.controller.abort())
+        : await evidencePromise;
       if (!isCurrent(generation, key, operation.token)) {
         return false;
       }
       setState((value) => value.status === "ready" ? {
         status: "ready",
-        dashboard: replaceItem(value.dashboard, symbol.symbol, { status: "ready", symbol, evidence }),
+        dashboard: replaceItem(value.dashboard, symbol.symbol, {
+          status: "ready",
+          symbol,
+          evidence,
+          focusAction: mode === "recoverable",
+        }),
       } : value);
       return true;
     } catch {
@@ -106,7 +143,11 @@ export function useSymbols(): SymbolsState {
       }
       setState((value) => value.status === "ready" ? {
         status: "ready",
-        dashboard: replaceItem(value.dashboard, symbol.symbol, { status: "error", symbol }),
+        dashboard: replaceItem(
+          value.dashboard,
+          symbol.symbol,
+          mode === "recoverable" ? { status: "refresh_error", symbol } : { status: "error", symbol },
+        ),
       } : value);
       return false;
     } finally {
@@ -175,7 +216,7 @@ export function useSymbols(): SymbolsState {
         });
         void loadHealth(generation, false);
         for (const symbol of symbols) {
-          void loadEvidence(symbol, generation, false);
+          void loadEvidence(symbol, generation, "initial");
         }
       },
       () => {
@@ -207,7 +248,11 @@ export function useSymbols(): SymbolsState {
     if (current === undefined) {
       return;
     }
-    await loadEvidence(current.symbol, generationRef.current, true);
+    await loadEvidence(
+      current.symbol,
+      generationRef.current,
+      current.status === "refresh_error" ? "recoverable" : "retry",
+    );
   }, [loadEvidence]);
 
   const retryHealth = useCallback(async () => {
@@ -218,7 +263,7 @@ export function useSymbols(): SymbolsState {
   }, [loadHealth]);
 
   const refreshSymbol = useCallback(async (updated: SymbolView) => (
-    loadEvidence(updated, generationRef.current, false)
+    loadEvidence(updated, generationRef.current, "recoverable")
   ), [loadEvidence]);
 
   return { ...state, reload, retrySymbol, retryHealth, refreshSymbol };

@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { SymbolsPage } from "./SymbolsPage";
 import { toArchiveUtcRange } from "./components/AddSymbolForm";
 import i18n from "./i18n";
@@ -125,6 +125,10 @@ function dashboardResponse(path: string): Response {
 
 beforeEach(async () => {
   await i18n.changeLanguage("zh-CN");
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 test("allows exactly 366 inclusive UTC days and converts the inclusive end to the next midnight", () => {
@@ -603,6 +607,7 @@ test("rejects an inclusive history selection longer than 366 UTC days", async ()
 
 test("keeps a configured symbol visible and retries only backfill after partial success", async () => {
   const user = userEvent.setup();
+  const firstBackfill = deferred<Response>();
   let configured = false;
   let symbolPosts = 0;
   let backfillPosts = 0;
@@ -625,7 +630,7 @@ test("keeps a configured symbol visible and retries only backfill after partial 
       if (init?.method === "POST" && path === "/api/symbols/SOLUSDT/backfills") {
         backfillPosts += 1;
         if (backfillPosts === 1) {
-          return jsonResponse({ detail: "planner temporarily unavailable" }, 503);
+          return firstBackfill.promise;
         }
         return jsonResponse(["funding", "kline_1m", "mark_price"].map((dataType, index) => ({
           job_id: `00000000-0000-0000-0000-00000000051${index}`,
@@ -685,9 +690,18 @@ test("keeps a configured symbol visible and retries only backfill after partial 
   fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
   await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
 
+  await waitFor(() => expect(backfillPosts).toBe(1));
+  const collapse = screen.getByRole("button", { name: "收起添加表单" });
+  expect(collapse).toBeDisabled();
+  expect(screen.getByRole("status", { name: "添加表单已锁定" })).toHaveTextContent(
+    "正在提交币种或等待回填恢复；为避免丢失仅重试入口，完成前无法收起此表单。",
+  );
+  firstBackfill.resolve(jsonResponse({ detail: "planner temporarily unavailable" }, 503));
+
   const partial = await within(form).findByRole("status", { name: "币种已添加，回填尚未启动" });
   expect(partial).toHaveTextContent("SOLUSDT 已加入监控；回填任务创建失败。可从此处安全重试，已有币种配置不会重复创建。");
   expect(await screen.findByRole("article", { name: "SOLUSDT 数据证据" })).toBeInTheDocument();
+  expect(collapse).toBeDisabled();
   expect(symbolPosts).toBe(1);
   expect(backfillPosts).toBe(1);
 
@@ -695,8 +709,61 @@ test("keeps a configured symbol visible and retries only backfill after partial 
   expect(await screen.findByRole("status", { name: "回填任务已创建" })).toHaveTextContent("已创建 3 个回填任务");
   const refreshedCard = await screen.findByRole("article", { name: "SOLUSDT 数据证据" });
   await waitFor(() => expect(within(refreshedCard).getByText(/采集状态/)).toHaveTextContent("回填中"));
+  expect(collapse).toBeEnabled();
+  expect(screen.queryByRole("status", { name: "添加表单已锁定" })).not.toBeInTheDocument();
+  await user.click(collapse);
+  expect(screen.queryByRole("form", { name: "添加监控币种" })).not.toBeInTheDocument();
   expect(symbolPosts).toBe(1);
   expect(backfillPosts).toBe(2);
+});
+
+test("aborts a protected add-and-backfill workflow if the page unmounts externally", async () => {
+  const user = userEvent.setup();
+  const pendingBackfill = deferred<Response>();
+  let backfillSignal: AbortSignal | undefined;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === "POST" && path === "/api/symbols") {
+      return jsonResponse({
+        ...baseSymbol,
+        symbol: "SOLUSDT",
+        data_status: "requested",
+        metadata_status: "metadata_unverified",
+      });
+    }
+    if (init?.method === "POST" && path === "/api/symbols/SOLUSDT/backfills") {
+      backfillSignal = init.signal ?? undefined;
+      return pendingBackfill.promise;
+    }
+    if (path.startsWith("/api/symbols?")) {
+      return jsonResponse([]);
+    }
+    if (path === "/api/operations/market-data") {
+      return jsonResponse({
+        source_mode: "direct",
+        archive_healthy: true,
+        rest_healthy: true,
+        worker_heartbeat_at: "2026-07-21T10:00:00Z",
+        streams: [],
+        checked_at: "2026-07-21T10:00:01Z",
+      });
+    }
+    throw new Error(`Unexpected mock request: ${path}`);
+  }));
+
+  const view = render(<SymbolsPage />);
+  await screen.findByText("尚未监控任何币种");
+  await user.click(screen.getByRole("button", { name: "添加币种" }));
+  const form = screen.getByRole("form", { name: "添加监控币种" });
+  await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
+
+  await waitFor(() => expect(backfillSignal).toBeDefined());
+  view.unmount();
+  expect(backfillSignal?.aborted).toBe(true);
+  pendingBackfill.resolve(jsonResponse([]));
 });
 
 test("requires a focused confirmation before disabling collection and preserves history", async () => {
@@ -785,8 +852,9 @@ test("requires a focused confirmation before disabling collection and preserves 
   }));
 
   await waitFor(() => expect(profileRefreshRequested).toBe(true));
-  expect(screen.getByRole("alertdialog", { name: "确认停用 BTCUSDT" })).toBeInTheDocument();
-  expect(confirm).toHaveFocus();
+  expect(screen.queryByRole("alertdialog", { name: "确认停用 BTCUSDT" })).not.toBeInTheDocument();
+  const updating = screen.getByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
+  expect(updating).toHaveFocus();
   freshProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
 
   expect(await screen.findByRole("status", { name: "币种已停用" })).toHaveTextContent("BTCUSDT 已停用；历史数据已保留。");
@@ -823,8 +891,71 @@ test("shows a symbol-scoped error and no success notice when post-disable eviden
   await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
   await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "确认停用" }));
 
-  expect(await screen.findByRole("article", { name: "BTCUSDT 数据加载失败" })).toBeInTheDocument();
+  const refreshError = await screen.findByRole("article", { name: "BTCUSDT 最新数据确认失败" });
+  expect(refreshError).toHaveTextContent("BTCUSDT 的采集状态已经改变，但最新数据证据暂时无法确认。请重试；不会显示操作前的旧证据。");
+  expect(within(refreshError).getByRole("button", { name: "重试确认 BTCUSDT 最新数据" })).toHaveFocus();
   expect(screen.queryByRole("status", { name: "币种已停用" })).not.toBeInTheDocument();
+});
+
+test("times out a never-settling post-disable refresh and recovers without repeating DELETE", async () => {
+  const user = userEvent.setup();
+  const neverSettles = deferred<Response>();
+  let disabled = false;
+  let deletes = 0;
+  let refreshedProfiles = 0;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === "DELETE") {
+      deletes += 1;
+      disabled = true;
+      return jsonResponse({
+        ...baseSymbol,
+        symbol: "BTCUSDT",
+        enabled: false,
+        data_status: "disabled",
+      });
+    }
+    if (disabled && path.endsWith("BTCUSDT/profile")) {
+      refreshedProfiles += 1;
+      return refreshedProfiles === 1
+        ? neverSettles.promise
+        : dashboardResponse(path);
+    }
+    return dashboardResponse(path);
+  }));
+
+  render(<SymbolsPage />);
+  const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+  await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
+  const confirm = within(screen.getByRole("alertdialog")).getByRole("button", { name: "确认停用" });
+
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(confirm);
+    for (let index = 0; index < 10; index += 1) {
+      await Promise.resolve();
+    }
+  });
+  const updating = screen.getByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
+  expect(updating).toHaveFocus();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  const refreshError = screen.getByRole("article", { name: "BTCUSDT 最新数据确认失败" });
+  const retry = within(refreshError).getByRole("button", { name: "重试确认 BTCUSDT 最新数据" });
+  expect(retry).toHaveFocus();
+  expect(deletes).toBe(1);
+
+  await act(async () => {
+    fireEvent.click(retry);
+    for (let index = 0; index < 10; index += 1) {
+      await Promise.resolve();
+    }
+  });
+  const recovered = screen.getByRole("article", { name: "BTCUSDT 数据证据" });
+  expect(within(recovered).getByRole("button", { name: "重新启用 BTCUSDT 数据采集" })).toHaveFocus();
+  expect(deletes).toBe(1);
 });
 
 test("re-enables a disabled symbol with its immutable history identity and no automatic backfill", async () => {

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { addSymbol, createBackfills, getBackfill, type AddSymbolInput } from "../apiClient";
 import type { IngestionJobView } from "../contracts";
@@ -6,6 +6,7 @@ import type { IngestionJobView } from "../contracts";
 interface AddSymbolFormProps {
   onAdded: () => void;
   onBackfillsCreated: () => void;
+  onProtectionChange: (protectedState: boolean) => void;
 }
 
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
@@ -49,7 +50,7 @@ export function toArchiveUtcRange(
   };
 }
 
-export function AddSymbolForm({ onAdded, onBackfillsCreated }: AddSymbolFormProps) {
+export function AddSymbolForm({ onAdded, onBackfillsCreated, onProtectionChange }: AddSymbolFormProps) {
   const { t } = useTranslation();
   const [symbol, setSymbol] = useState("");
   const [historyStart, setHistoryStart] = useState("");
@@ -62,14 +63,46 @@ export function AddSymbolForm({ onAdded, onBackfillsCreated }: AddSymbolFormProp
   const [refreshingJobs, setRefreshingJobs] = useState(false);
   const [configuredInput, setConfiguredInput] = useState<AddSymbolInput | null>(null);
   const [backfillPending, setBackfillPending] = useState(false);
+  const mounted = useRef(true);
+  const activeControllers = useRef(new Set<AbortController>());
 
-  const startBackfills = async (input: AddSymbolInput) => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      for (const controller of activeControllers.current) {
+        controller.abort();
+      }
+      activeControllers.current.clear();
+    };
+  }, []);
+
+  const beginRequest = () => {
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
+    return controller;
+  };
+
+  const finishRequest = (controller: AbortController) => {
+    activeControllers.current.delete(controller);
+  };
+
+  const startBackfills = async (input: AddSymbolInput, signal: AbortSignal): Promise<boolean> => {
     try {
-      setJobs(await createBackfills(input));
+      const createdJobs = await createBackfills(input, signal);
+      if (!mounted.current) {
+        return false;
+      }
+      setJobs(createdJobs);
       setBackfillPending(false);
       onBackfillsCreated();
+      return true;
     } catch {
-      setBackfillPending(true);
+      if (mounted.current) {
+        setBackfillPending(true);
+        onProtectionChange(true);
+      }
+      return false;
     }
   };
 
@@ -85,22 +118,35 @@ export function AddSymbolForm({ onAdded, onBackfillsCreated }: AddSymbolFormProp
       setError(t("aggTradesSecondOptInRequired"));
       return;
     }
+    onProtectionChange(true);
     setBusy(true);
+    const controller = beginRequest();
     const input = {
       symbol,
       historyStart: range.start,
       historyEnd: range.end,
       includeAggTrades: symbolAggTrades && backfillAggTrades,
     };
+    let remainProtected = true;
     try {
-      await addSymbol(input);
+      await addSymbol(input, controller.signal);
+      if (!mounted.current) {
+        return;
+      }
       setConfiguredInput(input);
       onAdded();
-      await startBackfills(input);
+      remainProtected = !(await startBackfills(input, controller.signal));
     } catch {
-      setError(t("addSymbolError"));
+      if (mounted.current) {
+        setError(t("addSymbolError"));
+        remainProtected = false;
+      }
     } finally {
-      setBusy(false);
+      finishRequest(controller);
+      if (mounted.current) {
+        setBusy(false);
+        onProtectionChange(remainProtected);
+      }
     }
   };
 
@@ -110,22 +156,40 @@ export function AddSymbolForm({ onAdded, onBackfillsCreated }: AddSymbolFormProp
     }
     setError(null);
     setBusy(true);
+    onProtectionChange(true);
+    const controller = beginRequest();
+    let backfillsCreated = false;
     try {
-      await startBackfills(configuredInput);
+      backfillsCreated = await startBackfills(configuredInput, controller.signal);
     } finally {
-      setBusy(false);
+      finishRequest(controller);
+      if (mounted.current) {
+        setBusy(false);
+        if (backfillsCreated) {
+          onProtectionChange(false);
+        }
+      }
     }
   };
 
   const refreshJobs = async () => {
     setError(null);
     setRefreshingJobs(true);
+    const controller = beginRequest();
     try {
-      setJobs(await Promise.all(jobs.map((job) => getBackfill(job.job_id))));
+      const refreshed = await Promise.all(jobs.map((job) => getBackfill(job.job_id, controller.signal)));
+      if (mounted.current) {
+        setJobs(refreshed);
+      }
     } catch {
-      setError(t("backfillRefreshError"));
+      if (mounted.current) {
+        setError(t("backfillRefreshError"));
+      }
     } finally {
-      setRefreshingJobs(false);
+      finishRequest(controller);
+      if (mounted.current) {
+        setRefreshingJobs(false);
+      }
     }
   };
 

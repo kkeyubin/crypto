@@ -4,8 +4,10 @@ import type { SymbolEvidence } from "../apiClient";
 
 interface SymbolCardProps {
   evidence: SymbolEvidence;
-  onDisable: (symbol: string) => Promise<void>;
-  onEnable: (symbol: SymbolEvidence["symbol"]) => Promise<void>;
+  focusAction?: boolean;
+  onDisable: (symbol: string) => Promise<SymbolEvidence["symbol"] | null>;
+  onEnable: (symbol: SymbolEvidence["symbol"]) => Promise<SymbolEvidence["symbol"] | null>;
+  onMutationCommitted: (symbol: SymbolEvidence["symbol"], kind: "disabled" | "enabled") => void;
 }
 
 const REQUIRED_STREAM_SUFFIXES = ["aggtrade", "bookticker", "kline_1m", "markprice@1s"] as const;
@@ -35,7 +37,7 @@ function summarizeFreshness(evidence: SymbolEvidence) {
   };
 }
 
-export function SymbolCard({ evidence, onDisable, onEnable }: SymbolCardProps) {
+export function SymbolCard({ evidence, focusAction = false, onDisable, onEnable, onMutationCommitted }: SymbolCardProps) {
   const { i18n, t } = useTranslation();
   const { symbol, profile, eligibility } = evidence;
   const [confirmingDisable, setConfirmingDisable] = useState(false);
@@ -71,6 +73,12 @@ export function SymbolCard({ evidence, onDisable, onEnable }: SymbolCardProps) {
     }
   }, [confirmingDisable]);
 
+  useEffect(() => {
+    if (focusAction) {
+      actionButton.current?.focus();
+    }
+  }, [focusAction, symbol.enabled]);
+
   const closeConfirmation = () => {
     if (!disabling) {
       setConfirmingDisable(false);
@@ -82,20 +90,20 @@ export function SymbolCard({ evidence, onDisable, onEnable }: SymbolCardProps) {
       return;
     }
     setDisabling(true);
-    try {
-      await onDisable(symbol.symbol);
+    const updated = await onDisable(symbol.symbol);
+    setDisabling(false);
+    if (updated !== null) {
       setConfirmingDisable(false);
-    } finally {
-      setDisabling(false);
+      onMutationCommitted(updated, "disabled");
     }
   };
 
   const reenable = async () => {
     setEnabling(true);
-    try {
-      await onEnable(symbol);
-    } finally {
-      setEnabling(false);
+    const updated = await onEnable(symbol);
+    setEnabling(false);
+    if (updated !== null) {
+      onMutationCommitted(updated, "enabled");
     }
   };
 
