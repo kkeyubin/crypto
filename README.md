@@ -34,9 +34,12 @@ git diff --check
 Use this procedure only when there is no existing database, Compose volume, or runtime environment. An administrator needs Docker Engine with Compose, `sudo`, and a reviewed checkout. Runtime data and secrets stay outside Git:
 
 ```bash
+runtime_uid=1000
+runtime_gid=1000
 sudo install -d -m 0755 /srv/crypto-research
 sudo git clone <REPOSITORY_URL> /srv/crypto-research/repo
-sudo install -d -m 0750 /srv/crypto-research/config /srv/crypto-research/data
+sudo install -d -m 0750 /srv/crypto-research/config
+sudo install -d -m 0750 -o "$runtime_uid" -g "$runtime_gid" /srv/crypto-research/data
 sudo cp /srv/crypto-research/repo/.env.example /srv/crypto-research/config/runtime.env
 sudo chmod 0600 /srv/crypto-research/config/runtime.env
 openssl rand -hex 32  # POSTGRES_PASSWORD; copy once into runtime.env
@@ -44,7 +47,24 @@ openssl rand -hex 32  # CRYPTO_SESSION_SECRET; copy once into runtime.env
 sudoedit /srv/crypto-research/config/runtime.env
 ```
 
-Do not run `cp .env.example` or generate a new `POSTGRES_PASSWORD` when upgrading an existing installation. Do not paste secret values into commands or logs. The entrypoint reads `POSTGRES_PASSWORD`, constructs a percent-encoded DSN in-process, removes the raw variable from the application process, and runs migrations only in the API container.
+Keep `CRYPTO_RUNTIME_UID` and `CRYPTO_RUNTIME_GID` in `runtime.env` equal to the owner assigned above. If the deployment user is not `1000:1000`, change both the file and directory ownership deliberately. Do not run `cp .env.example` or generate a new `POSTGRES_PASSWORD` when upgrading an existing installation. Do not paste secret values into commands or logs. The entrypoint reads `POSTGRES_PASSWORD`, constructs a percent-encoded DSN in-process, removes the raw variable from the application process, and runs migrations only in the API container.
+
+Validate the configured non-root IDs against the data directory before Compose:
+
+```bash
+export CRYPTO_DATA_ROOT=/srv/crypto-research/data
+export CRYPTO_ENV_FILE=/srv/crypto-research/config/runtime.env
+runtime_uid=$(awk -F= '$1 == "CRYPTO_RUNTIME_UID" {print $2}' "$CRYPTO_ENV_FILE")
+runtime_gid=$(awk -F= '$1 == "CRYPTO_RUNTIME_GID" {print $2}' "$CRYPTO_ENV_FILE")
+runtime_uid=${runtime_uid:-1000}
+runtime_gid=${runtime_gid:-1000}
+case "$runtime_uid" in ''|*[!0-9]*) exit 1 ;; esac
+case "$runtime_gid" in ''|*[!0-9]*) exit 1 ;; esac
+test "$runtime_uid" -gt 0
+test "$runtime_gid" -gt 0
+data_owner=$(stat -c '%u:%g' "$CRYPTO_DATA_ROOT")
+test "$data_owner" = "$runtime_uid:$runtime_gid"
+```
 
 Validate and start the server profile:
 

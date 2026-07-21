@@ -36,12 +36,14 @@ A later read-only Compose gate confirmed the exact smoke layout: installation ro
 
 The backup command attempted during this gate failed before any stop action. All old containers remained healthy, no `VERIFIED` marker was created, and an empty timestamped backup directory may remain. It is not a usable backup and was not removed. The existing stack remained untouched.
 
+A subsequent runtime gate completed a `VERIFIED` backup, then exposed a sanitized ownership failure. Host data `/home/keyubin/crypto-research-phase0-smoke/data` was mode `0750`, owner `1000:1000`, while the API/worker image process was root. The worker failed `_open_secure_root` with `ValueError: data root owner does not match the effective user`. The worker is stopped; API, Web, and PostgreSQL remain healthy. The VERIFIED backup exists. No further remote changes were made after collecting this evidence.
+
 ## Local verification
 
 Executed on 2026-07-22 in `/Users/kyle/Documents/crypto/.worktrees/phase-1-binance-data`:
 
 - focused Task 8 repository/config/entrypoint/healthcheck tests — passed;
-- `cd services/api && .venv/bin/pytest -q` — `615 passed, 1 skipped` after re-review remediation;
+- `cd services/api && .venv/bin/pytest -q` — `618 passed, 1 skipped` after re-review remediation;
 - `.venv/bin/ruff check src tests migrations ../../deploy/api-entrypoint.py ../../deploy/market-worker-healthcheck.py` — passed after the final hardening;
 - `.venv/bin/python scripts/export_schemas.py --check` — passed;
 - `source /Users/kyle/.nvm/nvm.sh && nvm use` — Node `v24.15.0`, npm `11.12.1`;
@@ -54,7 +56,8 @@ Executed on 2026-07-22 in `/Users/kyle/Documents/crypto/.worktrees/phase-1-binan
 Re-review focused verification:
 
 - canonical alias/control and operations documentation — 29 tests passed;
-- SymbolsPage/useSymbols canonical runtime fixtures — 46 tests passed.
+- SymbolsPage/useSymbols canonical runtime fixtures — 46 tests passed;
+- runtime-user/deployment documentation policy — 14 tests passed.
 
 Not executed locally:
 

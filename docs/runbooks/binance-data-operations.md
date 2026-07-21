@@ -27,13 +27,26 @@ export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
 Confirm the selection before every change:
 
 ```bash
+set -euo pipefail
 test -d "$CRYPTO_CHECKOUT"
 test -f "$CRYPTO_ENV_FILE"
 test -d "$CRYPTO_DATA_ROOT"
 test -f "$CRYPTO_COMPOSE_FILE"
 test "$(stat -c %a "$CRYPTO_ENV_FILE")" = 600
+runtime_uid=$(awk -F= '$1 == "CRYPTO_RUNTIME_UID" {print $2}' "$CRYPTO_ENV_FILE")
+runtime_gid=$(awk -F= '$1 == "CRYPTO_RUNTIME_GID" {print $2}' "$CRYPTO_ENV_FILE")
+runtime_uid=${runtime_uid:-1000}
+runtime_gid=${runtime_gid:-1000}
+case "$runtime_uid" in ''|*[!0-9]*) exit 1 ;; esac
+case "$runtime_gid" in ''|*[!0-9]*) exit 1 ;; esac
+test "$runtime_uid" -gt 0
+test "$runtime_gid" -gt 0
+data_owner=$(stat -c '%u:%g' "$CRYPTO_DATA_ROOT")
+test "$data_owner" = "$runtime_uid:$runtime_gid"
 docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" config --quiet
 ```
+
+Compose runs both API and `market-worker` as this validated non-root owner. The same UID is required for API DuckDB reads; do not fix a mismatch by making the data tree world-readable or by reverting either service to root.
 
 The read-only inventory captured on `2026-07-22T02:03+08:00` found installation root `/home/keyubin/crypto-research-phase0-smoke`, checkout `/home/keyubin/crypto-research-phase0-smoke/repo`, data `/home/keyubin/crypto-research-phase0-smoke/data`, and mode-`0600` environment `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env`. PostgreSQL/API/Web were healthy, only `127.0.0.1:8088` was exposed, the volume was `crypto-research_postgres-data`, the database was `7518kB`, and source identity was `0226feba8bbefec207c7eee5b40c93c68a22e922`. This evidence is not a backup. Before replacing or upgrading that stack, complete the `VERIFIED` backup gate in [Market Data Recovery](market-data-recovery.md).
 

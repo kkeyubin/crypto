@@ -48,6 +48,18 @@ def test_server_profile_supervises_worker_with_loopback_ports_and_shared_data() 
     assert worker["volumes"] == [expected_mount]
 
 
+def test_api_and_worker_share_the_validated_nonroot_data_owner() -> None:
+    services = read_compose()["services"]
+    expected_user = "${CRYPTO_RUNTIME_UID:-1000}:${CRYPTO_RUNTIME_GID:-1000}"
+
+    assert services["api"]["user"] == expected_user
+    assert services["market-worker"]["user"] == expected_user
+
+    example = read_text(".env.example")
+    assert "CRYPTO_RUNTIME_UID=1000" in example
+    assert "CRYPTO_RUNTIME_GID=1000" in example
+
+
 def test_api_and_host_worker_use_only_validated_database_endpoints() -> None:
     services = read_compose()["services"]
     api_environment = services["api"]["environment"]
@@ -188,6 +200,32 @@ def test_smoke_upgrade_uses_the_observed_install_checkout_env_and_data_layout() 
     for document in (operations, recovery, readme):
         assert f"export CRYPTO_CHECKOUT={checkout}" in document
         assert f"export CRYPTO_CHECKOUT={install_root}\n" not in document
+
+
+def test_runtime_docs_verify_configured_ids_match_the_data_root_owner() -> None:
+    operations = read_text("docs/runbooks/binance-data-operations.md")
+    recovery = read_text("docs/runbooks/market-data-recovery.md")
+    readme = read_text("README.md")
+
+    for document in (operations, recovery, readme):
+        assert "CRYPTO_RUNTIME_UID" in document
+        assert "CRYPTO_RUNTIME_GID" in document
+        assert 'stat -c \'%u:%g\' "$CRYPTO_DATA_ROOT"' in document
+        assert 'test "$data_owner" = "$runtime_uid:$runtime_gid"' in document
+
+    assert 'install -d -m 0750 -o "$runtime_uid" -g "$runtime_gid"' in readme
+
+
+def test_task8_report_records_the_sanitized_runtime_owner_failure_state() -> None:
+    report = read_text(".superpowers/sdd/task-8-report.md")
+
+    assert "/home/keyubin/crypto-research-phase0-smoke/data" in report
+    assert "0750" in report
+    assert "1000:1000" in report
+    assert "data root owner does not match the effective user" in report
+    assert "worker is stopped" in report
+    assert "API, Web, and PostgreSQL remain healthy" in report
+    assert "VERIFIED backup exists" in report
 
 
 def test_acceptance_candidates_require_all_official_checksums_before_posts() -> None:

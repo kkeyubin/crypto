@@ -29,14 +29,27 @@ export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
 Reject an ambiguous or unsafe selection:
 
 ```bash
+set -euo pipefail
 test -n "$CRYPTO_CHECKOUT" && test -d "$CRYPTO_CHECKOUT"
 test -n "$CRYPTO_ENV_FILE" && test -f "$CRYPTO_ENV_FILE"
 test -n "$CRYPTO_DATA_ROOT" && test "$CRYPTO_DATA_ROOT" != / && test -d "$CRYPTO_DATA_ROOT"
 test -n "$CRYPTO_BACKUP_ROOT" && test "$CRYPTO_BACKUP_ROOT" != /
 test -f "$CRYPTO_COMPOSE_FILE"
 test "$(stat -c %a "$CRYPTO_ENV_FILE")" = 600
+runtime_uid=$(awk -F= '$1 == "CRYPTO_RUNTIME_UID" {print $2}' "$CRYPTO_ENV_FILE")
+runtime_gid=$(awk -F= '$1 == "CRYPTO_RUNTIME_GID" {print $2}' "$CRYPTO_ENV_FILE")
+runtime_uid=${runtime_uid:-1000}
+runtime_gid=${runtime_gid:-1000}
+case "$runtime_uid" in ''|*[!0-9]*) exit 1 ;; esac
+case "$runtime_gid" in ''|*[!0-9]*) exit 1 ;; esac
+test "$runtime_uid" -gt 0
+test "$runtime_gid" -gt 0
+data_owner=$(stat -c '%u:%g' "$CRYPTO_DATA_ROOT")
+test "$data_owner" = "$runtime_uid:$runtime_gid"
 docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" config --quiet
 ```
+
+API and `market-worker` must both run as this same non-root owner. Stop before backup or restore if the configured IDs and host data owner differ.
 
 ## Verified Backup Gate Before Upgrade
 
