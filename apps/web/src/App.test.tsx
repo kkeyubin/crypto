@@ -1,8 +1,12 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
 import i18n from "./i18n";
+
+const styles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
 
 beforeEach(async () => {
   localStorage.clear();
@@ -42,4 +46,14 @@ test("keeps navigation accessible and marks the active shell view", () => {
 
   expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "总览", current: "page" })).toBeInTheDocument();
+});
+
+test("stacks header, navigation, and content into explicit mobile grid rows", () => {
+  const mobileStart = styles.indexOf("@media (max-width: 820px)");
+  const mobileEnd = styles.indexOf("@media (max-width: 480px)", mobileStart);
+  const mobileLayout = styles.slice(mobileStart, mobileEnd);
+
+  expect(mobileLayout).toContain("grid-template-rows: 64px auto minmax(0, 1fr);");
+  expect(mobileLayout).toContain("scrollbar-width: none;");
+  expect(styles).toContain(".sidebar::-webkit-scrollbar");
 });

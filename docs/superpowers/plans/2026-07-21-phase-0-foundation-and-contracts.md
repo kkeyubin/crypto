@@ -1701,7 +1701,7 @@ Merge the Web workspace and scripts into the existing root `package.json`, prese
     "contracts:types": "node contracts/generate-types.mjs",
     "contracts:check-types": "tsc -p contracts/tsconfig.json",
     "contracts:test-generation": "node contracts/test-generate-types.mjs",
-    "web:dev": "npm --workspace @crypto-research/web run dev",
+    "web:dev": "npm --workspace @crypto-research/web run dev --",
     "web:test": "npm --workspace @crypto-research/web run test --",
     "web:build": "npm --workspace @crypto-research/web run build"
   },
