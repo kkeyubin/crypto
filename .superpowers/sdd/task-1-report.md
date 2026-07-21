@@ -101,7 +101,20 @@ Results:
 
 ## Concerns
 
-- Repository behavior is exercised with an explicitly injected fake async session, as requested to avoid Docker/testcontainers. PostgreSQL constraint execution is validated through the generated Alembic SQL rather than a live database integration test.
+- The workstation had no local PostgreSQL/container runtime, so the implementer could run only fake-session tests and generated Alembic SQL. The controller resolved this after review with the isolated server-side PostgreSQL gate below.
+
+## Controller PostgreSQL gate
+
+After review, the controller ran the committed opt-in integration test against a fresh PostgreSQL 17 container on `keyubin@192.168.1.4`. The database and checkout were isolated from the existing Phase 0 smoke deployment, and PostgreSQL was published only on a temporary loopback port.
+
+```bash
+CRYPTO_TEST_DATABASE_URL='postgresql+asyncpg://crypto_test:[redacted]@127.0.0.1:55439/crypto_test' \
+  pytest -q tests/db/test_postgres_integration.py
+```
+
+Result: `1 passed in 1.17s`. This exercised the migration, UTC round-trip, repository naive-datetime rejection, source-object and partition unique constraints, and a database state check constraint.
+
+The controller also supplied a non-empty URL pointing to an unreachable loopback port. The same test failed during Alembic connection with exit code `1`, proving that configured-but-unreachable PostgreSQL does not become a skip. The temporary PostgreSQL container and exact temporary checkout directory were removed after validation; the existing deployment was not changed.
 
 ## Review remediation: persistence invariants
 
