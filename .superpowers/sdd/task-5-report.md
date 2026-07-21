@@ -150,10 +150,10 @@ The final verification commands are:
 ```text
 cd services/api
 .venv/bin/pytest -q tests/market
-# 290 passed
+# 307 passed
 
 .venv/bin/pytest -q
-# 519 passed, 1 skipped
+# 537 passed, 1 skipped
 
 .venv/bin/ruff check src tests migrations
 # All checks passed!
@@ -190,11 +190,36 @@ clock and explicit publish/renew synchronization. Its exact test was repeated
 30 times successfully before the two complete market-suite runs; production
 lease expiry behavior was not relaxed.
 
-The skipped test is the opt-in PostgreSQL integration suite because
-`CRYPTO_TEST_DATABASE_URL` was not set.
+The skipped test in the local matrix is the opt-in PostgreSQL integration suite
+because `CRYPTO_TEST_DATABASE_URL` was not set. The controller executed that
+suite against PostgreSQL 17 as recorded below.
 
-No real Binance endpoint, mutable production data, credential, live fund, LAN
-server, or production database was used.
+No real Binance endpoint, mutable production data, credential, live fund, or
+production database was used.
+
+## Controller PostgreSQL gate
+
+After the final immutable-batch fix, the controller pushed commit `8d6b453`,
+checked out that exact branch on `keyubin@192.168.1.4`, and ran the opt-in suite
+against a fresh PostgreSQL 17 container published only on temporary loopback
+port `55441`:
+
+```text
+CRYPTO_TEST_DATABASE_URL=postgresql+asyncpg://crypto_test:[redacted]@127.0.0.1:55441/crypto_test \
+  pytest -q tests/db/test_postgres_integration.py
+# 1 passed in 2.41s
+```
+
+This executed migrations `20260721_0001 -> 20260721_0004`, the Task 4 lease and
+catalog invariants, live-catalog idempotency and conflict checks, canonical
+range constraints, and two concurrent PostgreSQL sessions attempting to
+register different artifact sets for one batch. The second session waited for
+the advisory transaction lock and was rejected as immutable; only the first
+two artifacts remained. The temporary database container, checkout, and test
+environment were removed afterward. Existing Phase 0 containers were not
+changed.
+
+The final independent review approved Task 5 with no remaining findings.
 
 ## Remaining acceptance boundary
 
