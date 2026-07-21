@@ -13,13 +13,13 @@ This file preserves both committed and deferred work. A deferred item is not per
 
 ## Phase 1 — Binance Data Foundation
 
-**Status:** complete (2026-07-22; bounded server acceptance passed)
+**Status:** in progress (prior bounded server acceptance passed; review remediation and re-acceptance required)
 
 - Dynamic USDⓈ-M symbol watchlist.
 - Independent symbol onboarding, empirical volatility/liquidity/cost profile, and eligibility state.
 - Historical 1m klines, mark price, monthly-only funding, and selected aggTrades; onboarding uses complete UTC calendar months.
 - Live WebSocket klines, mark price, aggTrades, and best bid/ask.
-- Parquet partitioning, checksums, data catalog, gap detection, and REST repair.
+- Parquet partitioning, checksums, data catalog, gap detection, and catalog-approved gap reconciliation. The validated REST adapter remains inactive while both measured USDⓈ-M REST paths are unreachable; `rest_healthy=false` is intentional.
 - Liquidity eligibility and stale-data gate.
 
 Accepted evidence is retained in `.superpowers/sdd/task-8-report.md`: seven official archive objects and seven normalized Parquet objects matched their hashes; both symbols produced all four canonical live streams; restart identity and loopback-only exposure passed; and `PEPE`/`PEPEUSDT` resolved to `1000PEPEUSDT`.

@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "partition_id": {
+      "format": "uuid",
+      "title": "Partition Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "partition_id"
+  ],
+  "title": "BackfillRecheckRequest",
+  "type": "object"
+}

@@ -4,30 +4,37 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
 from crypto_research.config import Settings
 from crypto_research.contracts.data import (
     AddSymbolRequest,
+    BackfillRecheckDisposition,
+    BackfillRecheckRequest,
     BackfillRequest,
     EligibilityReasonCode,
+    GapReconcileRequest,
     SymbolDataStatus,
 )
 from crypto_research.contracts.manifest import DataType
 from crypto_research.db.repositories import (
     AddSymbolCommand,
+    ArchiveRecheckDecision,
     BackfillCommand,
     DataGap,
     DataPartition,
     IngestionJob,
     MutationIdentityConflict,
+    RepositoryNotFound,
     StreamState,
     SymbolOperationalSummary,
     SymbolState,
     WorkerHeartbeat,
 )
-from crypto_research.market.backfill import BackfillObject
+from crypto_research.market.backfill import BackfillObject, BackfillState
+from crypto_research.market.binance.archive_paths import DatasetKind, plan_archives
 from crypto_research.market.binance.streams import streams_for_symbols
 from crypto_research.market.control import (
     MarketDataConflict,
@@ -53,6 +60,7 @@ class Repository:
         self.audit_actions: list[str] = []
         self.heartbeat: WorkerHeartbeat | None = None
         self.planned: dict[str, BackfillObject] = {}
+        self.approved_objects: dict[tuple[str, str], BackfillObject] = {}
         self.health_aggregate_calls = 0
         self.summary_calls = 0
         self.bulk_summary_calls = 0
@@ -112,6 +120,55 @@ class Repository:
 
     async def get_backfill(self, job_id: str):
         return self.jobs.get(job_id)
+
+    async def retry_backfill_job(self, job_id: str, now: datetime):
+        del now
+        job = self.jobs[job_id]
+        self.audit_actions.append("backfill_retry_requested")
+        return replace(job, status="queued")
+
+    async def get_approved_backfill_object(self, job_id: str, partition_id: str):
+        return self.approved_objects.get((job_id, partition_id))
+
+    async def register_archive_recheck(self, **values):
+        original = self.approved_objects[(values["job_id"], values["partition_id"])]
+        checksum = values["observed_checksum"]
+        if checksum == original.source_checksum:
+            return ArchiveRecheckDecision(original, checksum, None, None, False)
+        replacement_job = IngestionJob(
+            "00000000-0000-0000-0000-000000000501",
+            "BTCUSDT",
+            "kline_1m",
+            "queued",
+            original.start,
+            original.end,
+            NOW,
+            NOW,
+        )
+        replacement_object = replace(
+            original,
+            object_id="00000000-0000-0000-0000-000000000502",
+            job_id=replacement_job.id,
+            state=BackfillState.PLANNED,
+            source_checksum=checksum,
+            raw_path=None,
+            normalized_path=None,
+            normalized_checksum=None,
+            row_count=None,
+            partition_id=None,
+            manifest_id=None,
+        )
+        return ArchiveRecheckDecision(
+            original, checksum, replacement_job, replacement_object, True
+        )
+
+    async def reconcile_gap(self, gap_id, partition_ids, attempted_at, source):
+        del partition_ids, attempted_at, source
+        for gaps in self.gaps.values():
+            for gap in gaps:
+                if gap.id == gap_id:
+                    return gap
+        raise RepositoryNotFound(f"gap does not exist: {gap_id}")
 
     async def plan(self, work: BackfillObject):
         return self.planned.setdefault(work.object_id, work)
@@ -207,6 +264,15 @@ class Profiles:
         )
 
 
+class ChecksumProbe:
+    def __init__(self, checksum: str) -> None:
+        self.checksum = checksum
+
+    async def checksum_for(self, archive):
+        del archive
+        return self.checksum
+
+
 def configured_repository() -> Repository:
     repository = Repository()
     repository.symbols = {
@@ -232,7 +298,12 @@ def configured_repository() -> Repository:
     return repository
 
 
-def service(repository: Repository, **settings_overrides: object):
+def service(
+    repository: Repository,
+    *,
+    checksum_probe: ChecksumProbe | None = None,
+    **settings_overrides: object,
+):
     settings = Settings(
         _env_file=None,
         allowed_hosts=["testserver"],
@@ -243,6 +314,7 @@ def service(repository: Repository, **settings_overrides: object):
         Profiles(),
         settings,
         clock=lambda: NOW,
+        archive_checksum_probe=checksum_probe,
     )
 
 
@@ -518,6 +590,82 @@ def test_ui_inclusive_days_map_to_a_complete_utc_day_archive_plan() -> None:
             and item.end.time().isoformat() == "00:00:00"
             for item in planned
         )
+
+    asyncio.run(scenario())
+
+
+def test_retry_and_recheck_orchestration_preserves_approved_identity() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+        job_id = "00000000-0000-0000-0000-000000000401"
+        partition_id = "00000000-0000-0000-0000-000000000402"
+        archive = plan_archives(
+            DatasetKind.KLINES, "BTCUSDT", START, END, as_of=NOW
+        )[0]
+        repository.jobs[job_id] = IngestionJob(
+            job_id, "BTCUSDT", "kline_1m", "source_pending", START, END, NOW, NOW
+        )
+        repository.approved_objects[(job_id, partition_id)] = BackfillObject(
+            object_id="00000000-0000-0000-0000-000000000403",
+            job_id=job_id,
+            source_url=archive.url,
+            start=archive.start,
+            end=archive.end,
+            state=BackfillState.CATALOG_APPROVED,
+            source_checksum="a" * 64,
+            raw_path="raw/a.zip",
+            normalized_path="normalized/a.parquet",
+            normalized_checksum="c" * 64,
+            row_count=1,
+            partition_id=partition_id,
+            manifest_id="00000000-0000-0000-0000-000000000404",
+        )
+
+        retry = await service(repository).retry_backfill(UUID(job_id))
+        unchanged = await service(
+            repository, checksum_probe=ChecksumProbe("a" * 64)
+        ).recheck_backfill(
+            UUID(job_id), BackfillRecheckRequest(partition_id=UUID(partition_id))
+        )
+        changed = await service(
+            repository, checksum_probe=ChecksumProbe("b" * 64)
+        ).recheck_backfill(
+            UUID(job_id), BackfillRecheckRequest(partition_id=UUID(partition_id))
+        )
+
+        assert retry.status.value == "queued"
+        assert unchanged.disposition is BackfillRecheckDisposition.UNCHANGED
+        assert changed.disposition is BackfillRecheckDisposition.REPLACEMENT_PLANNED
+        assert changed.replacement_job_id == UUID(
+            "00000000-0000-0000-0000-000000000501"
+        )
+
+    asyncio.run(scenario())
+
+
+def test_gap_reconcile_maps_missing_gap_to_not_found() -> None:
+    async def scenario() -> None:
+        with pytest.raises(MarketDataNotFound, match="gap does not exist"):
+            await service(configured_repository()).reconcile_gap(
+                UUID("00000000-0000-0000-0000-000000000999"),
+                GapReconcileRequest(
+                    partition_ids=(UUID("00000000-0000-0000-0000-000000000201"),)
+                ),
+            )
+
+    asyncio.run(scenario())
+
+
+def test_source_pending_job_keeps_symbol_in_backfilling_state() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+        repository.summaries["BTCUSDT"] = SymbolOperationalSummary(
+            job_statuses=("source_pending",),
+        )
+
+        view = await service(repository).get_symbol("BTCUSDT")
+
+        assert view.data_status is SymbolDataStatus.BACKFILLING
 
     asyncio.run(scenario())
 

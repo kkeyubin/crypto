@@ -41,6 +41,7 @@ from crypto_research.db.models import (
 )
 from crypto_research.db.repositories import (
     AddSymbolCommand,
+    ApprovedPartitionEvidenceNotFound,
     BackfillCommand,
     GapRecord,
     MutationIdentityConflict,
@@ -457,17 +458,18 @@ def test_postgres_persistence_invariants() -> None:
                         reason="partition_coverage",
                     )
                 )
-                still_open = await state_repository.reconcile_gap(
-                    fabricated_gap.id,
-                    ("00000000-0000-0000-0000-000000999999",),
-                    lease_start.replace(day=5),
-                    "catalog",
-                )
+                with pytest.raises(ApprovedPartitionEvidenceNotFound):
+                    await state_repository.reconcile_gap(
+                        fabricated_gap.id,
+                        ("00000000-0000-0000-0000-000000999999",),
+                        lease_start.replace(day=5),
+                        "catalog",
+                    )
                 await catalog_session.commit()
                 assert retry.partition_id == first.partition_id
                 assert replacement.version == first.version + 1
                 assert repaired_gap.status == "repaired"
-                assert still_open.status == "open"
+                assert fabricated_gap.status == "open"
                 approved = await catalog.approved(
                     "BTCUSDT", DataType.KLINE_1M, lease_start, lease_start.replace(day=4)
                 )
@@ -866,6 +868,164 @@ def test_postgres_task6_control_invariants() -> None:
                         )
                     )
                 await conflict_session.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_postgres_retry_and_recheck_are_concurrency_safe_and_immutable() -> None:
+    _upgrade_test_database()
+
+    async def scenario() -> None:
+        engine = create_async_engine(TEST_DATABASE_URL)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        suffix = uuid4().hex[:8].upper()
+        symbol = f"R{suffix}USDT"
+        start = datetime(2026, 3, 1, tzinfo=UTC)
+        end = start + timedelta(days=1)
+        retry_job_id = str(uuid4())
+        retry_object_id = str(uuid4())
+        approved_job_id = str(uuid4())
+        approved_object_id = str(uuid4())
+        try:
+            async with session_factory() as setup:
+                repository = SqlAlchemyDataStateRepository(setup)
+                await repository.add_symbol(AddSymbolCommand(symbol, start, end))
+                await repository.create_backfill(
+                    BackfillCommand(retry_job_id, symbol, "kline_1m", start, end)
+                )
+                await repository.plan(
+                    BackfillObject(
+                        retry_object_id,
+                        retry_job_id,
+                        f"https://data.binance.vision/{symbol}/retry.zip",
+                        start,
+                        end,
+                    )
+                )
+                await setup.execute(
+                    update(BackfillObjectRow)
+                    .where(BackfillObjectRow.id == retry_object_id)
+                    .values(state=BackfillState.SOURCE_PENDING.value)
+                )
+                await repository.create_backfill(
+                    BackfillCommand(approved_job_id, symbol, "kline_1m", start, end)
+                )
+                manifest = _task6_manifest(symbol, DataType.KLINE_1M, start)
+                approved = await SqlAlchemyCatalogRepository(setup).approve(
+                    CatalogCandidate(manifest, _validations())
+                )
+                await repository.plan(
+                    BackfillObject(
+                        approved_object_id,
+                        approved_job_id,
+                        manifest.source.resolved_url,
+                        start,
+                        end,
+                    )
+                )
+                await setup.execute(
+                    update(BackfillObjectRow)
+                    .where(BackfillObjectRow.id == approved_object_id)
+                    .values(
+                        state=BackfillState.CATALOG_APPROVED.value,
+                        source_checksum=manifest.source_checksum,
+                        raw_path=manifest.raw_path,
+                        normalized_path=manifest.normalized_path,
+                        normalized_checksum=manifest.normalized_checksum,
+                        row_count=manifest.row_count,
+                        partition_id=approved.partition_id,
+                        manifest_id=approved.manifest_id,
+                    )
+                )
+                summary = await repository.get_symbol_summary(symbol)
+                assert "source_pending" in summary.job_statuses
+                await setup.commit()
+
+            first = session_factory()
+            second = session_factory()
+            try:
+                first_repository = SqlAlchemyDataStateRepository(first)
+                second_repository = SqlAlchemyDataStateRepository(second)
+                await first_repository.retry_backfill_job(retry_job_id, end)
+                retry_task = asyncio.create_task(
+                    second_repository.retry_backfill_job(retry_job_id, end)
+                )
+                await asyncio.sleep(0.05)
+                assert not retry_task.done()
+                await first.commit()
+                assert (await asyncio.wait_for(retry_task, timeout=5)).status == "queued"
+                await second.commit()
+            finally:
+                await first.close()
+                await second.close()
+
+            replacement_checksum = "f" * 64
+            async with session_factory() as conflicts:
+                repository = SqlAlchemyDataStateRepository(conflicts)
+                with pytest.raises(MutationIdentityConflict, match="approved"):
+                    await repository.retry_backfill_job(approved_job_id, end)
+                await conflicts.rollback()
+                await conflicts.execute(
+                    update(IngestionJobRow)
+                    .where(IngestionJobRow.id == retry_job_id)
+                    .values(status="cancelled")
+                )
+                with pytest.raises(MutationIdentityConflict, match="cancelled"):
+                    await repository.retry_backfill_job(retry_job_id, end)
+                await conflicts.rollback()
+
+            first = session_factory()
+            second = session_factory()
+            try:
+                first_repository = SqlAlchemyDataStateRepository(first)
+                second_repository = SqlAlchemyDataStateRepository(second)
+                first_decision = await first_repository.register_archive_recheck(
+                    job_id=approved_job_id,
+                    object_id=approved_object_id,
+                    partition_id=approved.partition_id,
+                    observed_checksum=replacement_checksum,
+                    checked_at=end,
+                )
+                recheck_task = asyncio.create_task(
+                    second_repository.register_archive_recheck(
+                        job_id=approved_job_id,
+                        object_id=approved_object_id,
+                        partition_id=approved.partition_id,
+                        observed_checksum=replacement_checksum,
+                        checked_at=end,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                assert not recheck_task.done()
+                await first.commit()
+                second_decision = await asyncio.wait_for(recheck_task, timeout=5)
+                await second.commit()
+            finally:
+                await first.close()
+                await second.close()
+
+            assert first_decision.created is True
+            assert second_decision.created is False
+            assert first_decision.replacement_job == second_decision.replacement_job
+            assert first_decision.replacement_object == second_decision.replacement_object
+            async with session_factory() as verification:
+                original = await verification.get(BackfillObjectRow, approved_object_id)
+                assert original is not None
+                assert original.source_checksum == manifest.source_checksum
+                assert original.partition_id == approved.partition_id
+                assert await verification.scalar(
+                    select(func.count())
+                    .select_from(IngestionJobRow)
+                    .where(IngestionJobRow.id == first_decision.replacement_job.id)
+                ) == 1
+                replacement_row = await verification.get(
+                    BackfillObjectRow, first_decision.replacement_object.object_id
+                )
+                assert replacement_row is not None
+                assert replacement_row.source_checksum == replacement_checksum
+                assert replacement_row.state == BackfillState.PLANNED.value
         finally:
             await engine.dispose()
 

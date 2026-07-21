@@ -17,6 +17,7 @@ from crypto_research.market.binance.archive import (
     ArchiveSizeLimits,
     _parse_checksum,
     fetch_archive,
+    fetch_archive_checksum,
 )
 from crypto_research.market.binance.archive_paths import DatasetKind, plan_archives
 
@@ -106,6 +107,15 @@ def test_fetches_checksum_verified_single_csv_and_fsyncs_target(tmp_path: Path) 
         assert result.member_name == "BTCUSDT-1m-2024-01-01.csv"
         assert result.path.read_bytes() == body
         assert not (tmp_path / "download.zip.partial").exists()
+
+    asyncio.run(scenario())
+
+
+def test_checksum_probe_reads_only_the_structured_sibling_record() -> None:
+    async def scenario() -> None:
+        async with client_for(b"unused", checksum="a" * 64) as client:
+            checksum = await fetch_archive_checksum(object_for_test(), client)
+        assert checksum == "a" * 64
 
     asyncio.run(scenario())
 

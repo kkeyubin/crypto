@@ -10,6 +10,9 @@ from crypto_research.api import create_app
 from crypto_research.config import Settings
 from crypto_research.contracts.data import (
     AddSymbolRequest,
+    BackfillRecheckDisposition,
+    BackfillRecheckRequest,
+    BackfillRecheckView,
     BackfillRequest,
     DataGapStatus,
     DataGapView,
@@ -17,6 +20,7 @@ from crypto_research.contracts.data import (
     DataPartitionView,
     EligibilityReasonCode,
     EligibilityView,
+    GapReconcileRequest,
     IngestionJobStatus,
     IngestionJobView,
     MarketDataHealthView,
@@ -29,7 +33,12 @@ from crypto_research.contracts.data import (
     SymbolProfileView,
     SymbolView,
 )
-from crypto_research.contracts.manifest import DataType
+from crypto_research.contracts.manifest import (
+    ArchiveCadence,
+    ArchiveDataset,
+    BinanceArchiveSource,
+    DataType,
+)
 from crypto_research.market.control import MarketDataConflict, MarketDataNotFound
 
 NOW = datetime(2026, 7, 21, 10, tzinfo=UTC)
@@ -148,6 +157,39 @@ class FakeMarketDataControl:
             return self.jobs[job_id]
         except KeyError as error:
             raise MarketDataNotFound("backfill does not exist") from error
+
+    async def retry_backfill(self, job_id: UUID) -> IngestionJobView:
+        return await self.get_backfill(job_id)
+
+    async def recheck_backfill(
+        self, job_id: UUID, request: BackfillRecheckRequest
+    ) -> BackfillRecheckView:
+        await self.get_backfill(job_id)
+        return BackfillRecheckView(
+            job_id=job_id,
+            partition_id=request.partition_id,
+            object_id=UUID("00000000-0000-0000-0000-000000000401"),
+            source=BinanceArchiveSource(
+                kind="binance_archive",
+                cadence=ArchiveCadence.DAILY,
+                dataset=ArchiveDataset.KLINES,
+                symbol="BTCUSDT",
+                interval="1m",
+                period_start=START,
+            ),
+            previous_checksum="a" * 64,
+            observed_checksum="a" * 64,
+            disposition=BackfillRecheckDisposition.UNCHANGED,
+            checked_at=NOW,
+        )
+
+    async def reconcile_gap(
+        self, gap_id: UUID, request: GapReconcileRequest
+    ) -> DataGapView:
+        for gap in await self.list_gaps("1000PEPEUSDT", limit=100, offset=0):
+            if gap.gap_id == gap_id:
+                return gap
+        raise MarketDataNotFound("gap does not exist")
 
     async def list_partitions(
         self, symbol: str, *, limit: int, offset: int

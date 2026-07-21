@@ -53,6 +53,15 @@ class VerifiedArchive:
     uncompressed_bytes: int
 
 
+async def fetch_archive_checksum(obj: ArchiveObject, client: HttpClient) -> str:
+    response = await client.get(obj.checksum_url)
+    _raise_for_bad_status(response.status_code, obj.checksum_url)
+    return _parse_checksum(
+        response.text,
+        Path(urlparse(obj.url).path).name,
+    )
+
+
 async def fetch_archive(
     obj: ArchiveObject,
     target: Path,
@@ -83,12 +92,7 @@ async def fetch_archive(
                 output.flush()
                 os.fsync(output.fileno())
 
-        checksum_response = await client.get(obj.checksum_url)
-        _raise_for_bad_status(checksum_response.status_code, obj.checksum_url)
-        expected = _parse_checksum(
-            checksum_response.text,
-            Path(urlparse(obj.url).path).name,
-        )
+        expected = await fetch_archive_checksum(obj, client)
         actual = digest.hexdigest()
         if actual != expected:
             raise ArchiveChecksumError("official archive checksum mismatch")

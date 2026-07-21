@@ -44,7 +44,14 @@ const eligibilityReasons = new Set([
   "data_not_ready",
   "source_degraded",
 ]);
-const jobStatuses = new Set(["queued", "running", "succeeded", "failed", "cancelled"]);
+const jobStatuses = new Set([
+  "queued",
+  "running",
+  "source_pending",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
 
 function isString(value: unknown): value is string {
   return typeof value === "string";

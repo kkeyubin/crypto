@@ -1,7 +1,9 @@
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import case, func, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,6 +68,14 @@ class BackfillCommand:
 
 class MutationIdentityConflict(ValueError):
     """A concurrent idempotent mutation reused an immutable identity differently."""
+
+
+class RepositoryNotFound(LookupError):
+    """Required durable market-data evidence does not exist."""
+
+
+class ApprovedPartitionEvidenceNotFound(RepositoryNotFound):
+    """One or more requested partitions are not approved catalog evidence."""
 
 
 @dataclass(frozen=True)
@@ -144,6 +154,15 @@ class IngestionJob:
 
 
 @dataclass(frozen=True)
+class ArchiveRecheckDecision:
+    original: BackfillObject
+    observed_checksum: str
+    replacement_job: IngestionJob | None
+    replacement_object: BackfillObject | None
+    created: bool
+
+
+@dataclass(frozen=True)
 class DataPartition:
     id: str
     symbol: str
@@ -214,6 +233,24 @@ class DataStateRepository(Protocol):
 
     async def get_backfill(self, job_id: str) -> IngestionJob | None: ...
 
+    async def retry_backfill_job(
+        self, job_id: str, now: datetime
+    ) -> IngestionJob: ...
+
+    async def get_approved_backfill_object(
+        self, job_id: str, partition_id: str
+    ) -> BackfillObject | None: ...
+
+    async def register_archive_recheck(
+        self,
+        *,
+        job_id: str,
+        object_id: str,
+        partition_id: str,
+        observed_checksum: str,
+        checked_at: datetime,
+    ) -> ArchiveRecheckDecision: ...
+
     async def approve_partition(self, candidate: PartitionCandidate) -> DataPartition: ...
 
     async def record_gap(self, gap: GapRecord) -> DataGap: ...
@@ -277,10 +314,15 @@ class SqlAlchemyApprovedCoverageResolver:
                 DataPartitionRow.id.in_(set(partition_ids)),
                 DataPartitionRow.approval_status == "approved",
             )
-            .with_for_update()
         )
 
         rows = (await self._session.execute(statement)).all()
+        requested_ids = set(partition_ids)
+        resolved_ids = {partition.id for partition, _stored in rows}
+        if resolved_ids != requested_ids:
+            raise ApprovedPartitionEvidenceNotFound(
+                "one or more approved partition evidence records do not exist"
+            )
         coverage: list[ApprovedCoverage] = []
         for partition, stored in rows:
             validation = partition.validation_details or {}
@@ -460,6 +502,206 @@ class SqlAlchemyDataStateRepository:
         states = (await self._session.execute(statement)).scalars().all()
         return _ingestion_job(row, status=_effective_job_status(row.status, states))
 
+    async def retry_backfill_job(self, job_id: str, now: datetime) -> IngestionJob:
+        now = _require_utc(now)
+        await self._lock_identity(f"crypto-research:backfill-retry:{job_id}")
+        job = await self._session.get(IngestionJobRow, job_id, populate_existing=True)
+        if job is None:
+            raise RepositoryNotFound(f"backfill does not exist: {job_id}")
+        if job.status == "cancelled":
+            raise MutationIdentityConflict("cancelled backfills cannot be retried")
+        rows = (
+            await self._session.execute(
+                select(BackfillObjectRow)
+                .where(BackfillObjectRow.job_id == job_id)
+                .order_by(BackfillObjectRow.id)
+                .with_for_update()
+            )
+        ).scalars().all()
+        retryable = [
+            row
+            for row in rows
+            if row.state
+            in {BackfillState.FAILED.value, BackfillState.SOURCE_PENDING.value}
+        ]
+        if not retryable and rows and all(
+            row.state == BackfillState.CATALOG_APPROVED.value for row in rows
+        ):
+            raise MutationIdentityConflict("approved backfills cannot be retried")
+        for row in retryable:
+            row.state = BackfillState.PLANNED.value
+            row.updated_at = now
+            row.lease_owner = None
+            row.lease_expires_at = None
+        self._add_audit(
+            "backfill_retry_requested",
+            "ingestion_job",
+            job_id,
+            {"retried_object_ids": [row.id for row in retryable]},
+        )
+        await self._session.flush()
+        return _ingestion_job(
+            job,
+            status=_effective_job_status(job.status, [row.state for row in rows]),
+        )
+
+    async def get_approved_backfill_object(
+        self, job_id: str, partition_id: str
+    ) -> BackfillObject | None:
+        statement = (
+            select(BackfillObjectRow)
+            .join(DataPartitionRow, DataPartitionRow.id == BackfillObjectRow.partition_id)
+            .join(
+                DataManifestRow,
+                DataManifestRow.manifest_id == BackfillObjectRow.manifest_id,
+            )
+            .where(
+                BackfillObjectRow.job_id == job_id,
+                BackfillObjectRow.partition_id == partition_id,
+                BackfillObjectRow.state == BackfillState.CATALOG_APPROVED.value,
+                DataPartitionRow.approval_status == "approved",
+                DataManifestRow.partition_id == partition_id,
+            )
+        )
+        row = (await self._session.execute(statement)).scalars().first()
+        return None if row is None else _backfill_object(row)
+
+    async def register_archive_recheck(
+        self,
+        *,
+        job_id: str,
+        object_id: str,
+        partition_id: str,
+        observed_checksum: str,
+        checked_at: datetime,
+    ) -> ArchiveRecheckDecision:
+        checked_at = _require_utc(checked_at)
+        if re.fullmatch(r"[0-9a-f]{64}", observed_checksum) is None:
+            raise ValueError("observed source checksum is invalid")
+        await self._lock_identity(f"crypto-research:archive-recheck:{object_id}")
+        statement = (
+            select(BackfillObjectRow, IngestionJobRow)
+            .join(IngestionJobRow, IngestionJobRow.id == BackfillObjectRow.job_id)
+            .join(DataPartitionRow, DataPartitionRow.id == BackfillObjectRow.partition_id)
+            .join(
+                DataManifestRow,
+                DataManifestRow.manifest_id == BackfillObjectRow.manifest_id,
+            )
+            .where(
+                BackfillObjectRow.id == object_id,
+                BackfillObjectRow.job_id == job_id,
+                BackfillObjectRow.partition_id == partition_id,
+                BackfillObjectRow.state == BackfillState.CATALOG_APPROVED.value,
+                DataPartitionRow.approval_status == "approved",
+                DataManifestRow.partition_id == partition_id,
+            )
+            .with_for_update()
+        )
+        result = (await self._session.execute(statement)).first()
+        if result is None:
+            raise RepositoryNotFound("approved backfill evidence does not exist")
+        original_row, original_job = result
+        original = _backfill_object(original_row)
+        if original.source_checksum == observed_checksum:
+            self._add_audit(
+                "archive_recheck_unchanged",
+                "backfill_object",
+                object_id,
+                {"checksum": observed_checksum, "checked_at": checked_at.isoformat()},
+            )
+            await self._session.flush()
+            return ArchiveRecheckDecision(original, observed_checksum, None, None, False)
+
+        replacement_job_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"crypto-research:archive-replacement-job:{object_id}:{observed_checksum}",
+            )
+        )
+        replacement_object_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"crypto-research:archive-replacement-object:{object_id}:{observed_checksum}",
+            )
+        )
+        replacement_job = await self._session.get(
+            IngestionJobRow, replacement_job_id, populate_existing=True
+        )
+        replacement_row = await self._session.get(
+            BackfillObjectRow, replacement_object_id, populate_existing=True
+        )
+        if (replacement_job is None) != (replacement_row is None):
+            raise MutationIdentityConflict("archive replacement identity is incomplete")
+        created = replacement_job is None and replacement_row is None
+        replacement_details = {
+            "kind": "source_replacement",
+            "replacement_for_job_id": job_id,
+            "replacement_for_object_id": object_id,
+            "observed_checksum": observed_checksum,
+        }
+        if created:
+            replacement_job = IngestionJobRow(
+                id=replacement_job_id,
+                symbol=original_job.symbol,
+                dataset=original_job.dataset,
+                status="queued",
+                requested_start=original_row.start_at,
+                requested_end=original_row.end_at,
+                details=replacement_details,
+            )
+            self._session.add(replacement_job)
+            await self._session.flush()
+            replacement_row = BackfillObjectRow(
+                id=replacement_object_id,
+                job_id=replacement_job_id,
+                source_url=original_row.source_url,
+                source_checksum=observed_checksum,
+                start_at=original_row.start_at,
+                end_at=original_row.end_at,
+                state=BackfillState.PLANNED.value,
+                attempt_count=0,
+            )
+            self._session.add(replacement_row)
+            await self._session.flush()
+        else:
+            if replacement_job is None or replacement_row is None:
+                raise AssertionError("replacement identity pair was not loaded")
+            if (
+                replacement_job.symbol != original_job.symbol
+                or replacement_job.dataset != original_job.dataset
+                or replacement_job.requested_start != original_row.start_at
+                or replacement_job.requested_end != original_row.end_at
+                or replacement_job.details != replacement_details
+                or _backfill_identity(replacement_row)
+                != (
+                    replacement_job_id,
+                    original_row.source_url,
+                    original_row.start_at,
+                    original_row.end_at,
+                )
+                or replacement_row.source_checksum != observed_checksum
+            ):
+                raise MutationIdentityConflict("archive replacement identity is immutable")
+        self._add_audit(
+            "archive_replacement_planned" if created else "archive_replacement_reused",
+            "ingestion_job",
+            replacement_job_id,
+            {
+                "replacement_for_job_id": job_id,
+                "replacement_for_object_id": object_id,
+                "observed_checksum": observed_checksum,
+                "checked_at": checked_at.isoformat(),
+            },
+        )
+        await self._session.flush()
+        return ArchiveRecheckDecision(
+            original,
+            observed_checksum,
+            _ingestion_job(replacement_job),
+            _backfill_object(replacement_row),
+            created,
+        )
+
     async def list_partitions(
         self, symbol: str, *, limit: int, offset: int
     ) -> tuple[DataPartition, ...]:
@@ -590,7 +832,7 @@ class SqlAlchemyDataStateRepository:
     ) -> DataGap:
         row = await self._session.get(DataGapRow, gap_id, with_for_update=True)
         if row is None:
-            raise ValueError(f"gap does not exist: {gap_id}")
+            raise RepositoryNotFound(f"gap does not exist: {gap_id}")
         attempted_at = _require_utc(attempted_at)
         previous = row.repair_details or {}
         approved_ranges = await self._coverage_resolver.resolve(partition_ids)
@@ -1299,13 +1541,20 @@ class SqlAlchemyDataStateRepository:
             raise ValueError(f"backfill object does not exist: {object_id}")
         return row
 
-    def _add_audit(self, action: str, subject_type: str, subject_id: str) -> None:
+    def _add_audit(
+        self,
+        action: str,
+        subject_type: str,
+        subject_id: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         self._session.add(
             AuditEventRow(
                 id=new_id(),
                 action=action,
                 subject_type=subject_type,
                 subject_id=subject_id,
+                details=details or {},
             )
         )
 
@@ -1366,6 +1615,8 @@ def _effective_job_status(persisted: str, object_states: Any) -> str:
         return persisted
     if any(state == BackfillState.FAILED.value for state in states):
         return "failed"
+    if any(state == BackfillState.SOURCE_PENDING.value for state in states):
+        return "source_pending"
     if all(state == BackfillState.CATALOG_APPROVED.value for state in states):
         return "succeeded"
     active = {
@@ -1397,6 +1648,16 @@ def _object_status_stats():
                 case(
                     (
                         BackfillObjectRow.state
+                        == BackfillState.SOURCE_PENDING.value,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("source_pending_count"),
+            func.sum(
+                case(
+                    (
+                        BackfillObjectRow.state
                         == BackfillState.CATALOG_APPROVED.value,
                         1,
                     ),
@@ -1416,6 +1677,7 @@ def _effective_job_status_sql(object_stats):
     return case(
         (object_stats.c.object_count.is_(None), IngestionJobRow.status),
         (object_stats.c.failed_count > 0, "failed"),
+        (object_stats.c.source_pending_count > 0, "source_pending"),
         (
             object_stats.c.approved_count == object_stats.c.object_count,
             "succeeded",

@@ -2,6 +2,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
+
 from crypto_research.contracts.manifest import (
     ArchiveCadence,
     ArchiveDataset,
@@ -20,6 +22,8 @@ from crypto_research.db.models import (
     SymbolMetadataSnapshotRow,
 )
 from crypto_research.db.repositories import (
+    ApprovedPartitionEvidenceNotFound,
+    SqlAlchemyApprovedCoverageResolver,
     SqlAlchemyDataStateRepository,
     _effective_job_status,
 )
@@ -58,6 +62,15 @@ class CapturingSession:
                 include_agg_trades=False,
             )
         return None
+
+
+def test_approved_coverage_resolver_rejects_unknown_or_unapproved_ids() -> None:
+    async def scenario() -> None:
+        resolver = SqlAlchemyApprovedCoverageResolver(CapturingSession())  # type: ignore[arg-type]
+        with pytest.raises(ApprovedPartitionEvidenceNotFound):
+            await resolver.resolve(("00000000-0000-0000-0000-000000000999",))
+
+    asyncio.run(scenario())
 
 
 class ValuesResult(Result):
@@ -473,7 +486,7 @@ def test_effective_job_status_always_projects_durable_object_states() -> None:
     ) == "running"
     assert _effective_job_status(
         "running", ("planned", "source_pending", "catalog_approved")
-    ) == "queued"
+    ) == "source_pending"
     assert _effective_job_status("cancelled", ()) == "cancelled"
 
 

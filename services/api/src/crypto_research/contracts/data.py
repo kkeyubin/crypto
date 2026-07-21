@@ -5,8 +5,8 @@ from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
-from crypto_research.contracts.base import UTCModel
-from crypto_research.contracts.manifest import DataType
+from crypto_research.contracts.base import StrictFrozenModel, UTCModel
+from crypto_research.contracts.manifest import BinanceArchiveSource, DataType
 
 ContractSymbol = Annotated[str, Field(pattern=r"^[A-Z0-9]{3,32}$")]
 Checksum = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -31,6 +31,7 @@ class MetadataStatus(StrEnum):
 class IngestionJobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    SOURCE_PENDING = "source_pending"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -45,6 +46,12 @@ class DataPartitionStatus(StrEnum):
 class DataGapStatus(StrEnum):
     OPEN = "open"
     REPAIRED = "repaired"
+
+
+class BackfillRecheckDisposition(StrEnum):
+    UNCHANGED = "unchanged"
+    REPLACEMENT_PLANNED = "replacement_planned"
+    REPLACEMENT_EXISTS = "replacement_exists"
 
 
 class StreamStatus(StrEnum):
@@ -119,6 +126,23 @@ class BackfillRequest(_BoundedRangeModel):
         return self
 
 
+class BackfillRecheckRequest(StrictFrozenModel):
+    partition_id: UUID
+
+
+class GapReconcileRequest(StrictFrozenModel):
+    partition_ids: tuple[UUID, ...] = Field(min_length=1, max_length=100)
+
+    @field_validator("partition_ids")
+    @classmethod
+    def require_unique_partition_ids(
+        cls, value: tuple[UUID, ...]
+    ) -> tuple[UUID, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("partition_ids must be unique")
+        return value
+
+
 class SymbolView(_PastUTCModel):
     symbol: ContractSymbol
     enabled: bool
@@ -151,6 +175,29 @@ class IngestionJobView(_PastUTCModel):
     def validate_requested_range(self) -> "IngestionJobView":
         if self.requested_end <= self.requested_start:
             raise ValueError("requested end must be after requested start")
+        return self
+
+
+class BackfillRecheckView(_PastUTCModel):
+    job_id: UUID
+    partition_id: UUID
+    object_id: UUID
+    source: BinanceArchiveSource
+    previous_checksum: Checksum
+    observed_checksum: Checksum
+    disposition: BackfillRecheckDisposition
+    replacement_job_id: UUID | None = None
+    replacement_object_id: UUID | None = None
+    checked_at: datetime
+
+    @model_validator(mode="after")
+    def validate_replacement_identity(self) -> "BackfillRecheckView":
+        replacement_ids = (self.replacement_job_id, self.replacement_object_id)
+        if self.disposition is BackfillRecheckDisposition.UNCHANGED:
+            if any(value is not None for value in replacement_ids):
+                raise ValueError("replacement identity must be absent when unchanged")
+        elif any(value is None for value in replacement_ids):
+            raise ValueError("changed source requires complete replacement identity")
         return self
 
 

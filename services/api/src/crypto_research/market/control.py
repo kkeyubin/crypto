@@ -7,17 +7,22 @@ from pathlib import Path
 from typing import Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+import httpx2
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from crypto_research.config import Settings
 from crypto_research.contracts.data import (
     AddSymbolRequest,
+    BackfillRecheckDisposition,
+    BackfillRecheckRequest,
+    BackfillRecheckView,
     BackfillRequest,
     DataGapStatus,
     DataGapView,
     DataPartitionStatus,
     DataPartitionView,
     EligibilityView,
+    GapReconcileRequest,
     IngestionJobStatus,
     IngestionJobView,
     MarketDataHealthView,
@@ -34,11 +39,13 @@ from crypto_research.contracts.manifest import DataType
 from crypto_research.db.repositories import (
     ActiveStreamHealth,
     AddSymbolCommand,
+    ArchiveRecheckDecision,
     BackfillCommand,
     DataGap,
     DataPartition,
     IngestionJob,
     MutationIdentityConflict,
+    RepositoryNotFound,
     SqlAlchemyDataStateRepository,
     StreamState,
     SymbolOperationalSummary,
@@ -47,7 +54,8 @@ from crypto_research.db.repositories import (
 )
 from crypto_research.market.backfill import BackfillObject
 from crypto_research.market.backfill_planning import ArchiveBackfillPlanner
-from crypto_research.market.binance.archive_paths import DatasetKind, plan_archives
+from crypto_research.market.binance.archive import ArchiveError, fetch_archive_checksum
+from crypto_research.market.binance.archive_paths import ArchiveObject, DatasetKind, plan_archives
 from crypto_research.market.binance.streams import streams_for_symbols
 from crypto_research.market.catalog import SecureDuckDBCatalog, SqlAlchemyCatalogRepository
 from crypto_research.market.eligibility import (
@@ -89,6 +97,10 @@ class MarketDataValidationError(ValueError):
     """A domain limit is stricter than the reusable wire contract."""
 
 
+class MarketDataSourceUnavailable(RuntimeError):
+    """A bounded public source operation could not be completed safely."""
+
+
 class MarketDataRepository(Protocol):
     async def list_symbols(
         self, *, limit: int, offset: int
@@ -105,6 +117,26 @@ class MarketDataRepository(Protocol):
     async def create_backfill(self, command: BackfillCommand) -> IngestionJob: ...
 
     async def get_backfill(self, job_id: str) -> IngestionJob | None: ...
+
+    async def retry_backfill_job(
+        self, job_id: str, now: datetime
+    ) -> IngestionJob: ...
+
+    async def get_approved_backfill_object(
+        self, job_id: str, partition_id: str
+    ) -> BackfillObject | None: ...
+
+    async def register_archive_recheck(
+        self, **values: object
+    ) -> ArchiveRecheckDecision: ...
+
+    async def reconcile_gap(
+        self,
+        gap_id: str,
+        partition_ids: tuple[str, ...],
+        attempted_at: datetime,
+        source: str,
+    ) -> DataGap: ...
 
     async def list_partitions(
         self, symbol: str, *, limit: int, offset: int
@@ -152,6 +184,16 @@ class SymbolProfileProvider(Protocol):
     ) -> SymbolProfile: ...
 
 
+class ArchiveChecksumProbe(Protocol):
+    async def checksum_for(self, archive: ArchiveObject) -> str: ...
+
+
+class DirectArchiveChecksumProbe:
+    async def checksum_for(self, archive: ArchiveObject) -> str:
+        async with httpx2.AsyncClient(follow_redirects=False, timeout=30) as client:
+            return await fetch_archive_checksum(archive, client)
+
+
 class MarketDataControl(Protocol):
     async def list_symbols(self, *, limit: int, offset: int) -> tuple[SymbolView, ...]: ...
 
@@ -166,6 +208,16 @@ class MarketDataControl(Protocol):
     ) -> tuple[IngestionJobView, ...]: ...
 
     async def get_backfill(self, job_id: UUID) -> IngestionJobView: ...
+
+    async def retry_backfill(self, job_id: UUID) -> IngestionJobView: ...
+
+    async def recheck_backfill(
+        self, job_id: UUID, request: BackfillRecheckRequest
+    ) -> BackfillRecheckView: ...
+
+    async def reconcile_gap(
+        self, gap_id: UUID, request: GapReconcileRequest
+    ) -> DataGapView: ...
 
     async def list_partitions(
         self, symbol: str, *, limit: int, offset: int
@@ -196,11 +248,15 @@ class MarketDataControlService:
         settings: Settings,
         *,
         clock=lambda: datetime.now(UTC),
+        archive_checksum_probe: ArchiveChecksumProbe | None = None,
     ) -> None:
         self._repository = repository
         self._profiles = profiles
         self._settings = settings
         self._clock = clock
+        self._archive_checksum_probe = (
+            archive_checksum_probe or DirectArchiveChecksumProbe()
+        )
 
     async def list_symbols(self, *, limit: int, offset: int) -> tuple[SymbolView, ...]:
         states = await self._repository.list_symbols(limit=limit, offset=offset)
@@ -351,6 +407,85 @@ class MarketDataControlService:
         if job is None:
             raise MarketDataNotFound("backfill does not exist")
         return _job_view(job, fallback_now=self._clock())
+
+    async def retry_backfill(self, job_id: UUID) -> IngestionJobView:
+        if await self._repository.get_backfill(str(job_id)) is None:
+            raise MarketDataNotFound("backfill does not exist")
+        try:
+            job = await self._repository.retry_backfill_job(str(job_id), self._clock())
+        except MutationIdentityConflict as error:
+            raise MarketDataConflict(str(error)) from error
+        return _job_view(job, fallback_now=self._clock())
+
+    async def recheck_backfill(
+        self, job_id: UUID, request: BackfillRecheckRequest
+    ) -> BackfillRecheckView:
+        job = await self._repository.get_backfill(str(job_id))
+        if job is None:
+            raise MarketDataNotFound("backfill does not exist")
+        work = await self._repository.get_approved_backfill_object(
+            str(job_id), str(request.partition_id)
+        )
+        if work is None:
+            raise MarketDataNotFound("approved backfill evidence does not exist")
+        archive = _archive_for_recheck(job, work, self._clock())
+        try:
+            observed_checksum = await self._archive_checksum_probe.checksum_for(archive)
+        except (ArchiveError, httpx2.HTTPError, TimeoutError, OSError) as error:
+            raise MarketDataSourceUnavailable(
+                "official archive checksum is temporarily unavailable"
+            ) from error
+        checked_at = self._clock()
+        try:
+            decision = await self._repository.register_archive_recheck(
+                job_id=str(job_id),
+                object_id=work.object_id,
+                partition_id=str(request.partition_id),
+                observed_checksum=observed_checksum,
+                checked_at=checked_at,
+            )
+        except MutationIdentityConflict as error:
+            raise MarketDataConflict(str(error)) from error
+        replacement = decision.replacement_object
+        disposition = (
+            BackfillRecheckDisposition.UNCHANGED
+            if replacement is None
+            else (
+                BackfillRecheckDisposition.REPLACEMENT_PLANNED
+                if decision.created
+                else BackfillRecheckDisposition.REPLACEMENT_EXISTS
+            )
+        )
+        return BackfillRecheckView(
+            job_id=job_id,
+            partition_id=request.partition_id,
+            object_id=UUID(work.object_id),
+            source=archive.source,
+            previous_checksum=work.source_checksum,
+            observed_checksum=observed_checksum,
+            disposition=disposition,
+            replacement_job_id=(
+                None if decision.replacement_job is None else UUID(decision.replacement_job.id)
+            ),
+            replacement_object_id=(
+                None if replacement is None else UUID(replacement.object_id)
+            ),
+            checked_at=checked_at,
+        )
+
+    async def reconcile_gap(
+        self, gap_id: UUID, request: GapReconcileRequest
+    ) -> DataGapView:
+        try:
+            gap = await self._repository.reconcile_gap(
+                str(gap_id),
+                tuple(str(value) for value in request.partition_ids),
+                self._clock(),
+                "catalog_reconcile",
+            )
+        except RepositoryNotFound as error:
+            raise MarketDataNotFound(str(error)) from error
+        return _gap_view(gap, fallback_now=self._clock())
 
     async def list_partitions(
         self, symbol: str, *, limit: int, offset: int
@@ -599,7 +734,7 @@ def _data_status(
     if not state.enabled:
         return SymbolDataStatus.DISABLED
     statuses = set(summary.job_statuses)
-    if statuses & {"queued", "running"}:
+    if statuses & {"queued", "running", "source_pending"}:
         return SymbolDataStatus.BACKFILLING
     if _archive_coverage_complete(state, summary):
         if summary.open_gap_count or "failed" in statuses:
@@ -774,6 +909,21 @@ def _source_mode(streams: tuple[StreamState, ...]) -> SourceMode:
     if "direct" in modes:
         return SourceMode.DIRECT
     return SourceMode.DEGRADED
+
+
+def _archive_for_recheck(
+    job: IngestionJob, work: BackfillObject, as_of: datetime
+) -> ArchiveObject:
+    try:
+        dataset = _ARCHIVE_DATASET[DataType(job.dataset)]
+        planned = plan_archives(dataset, job.symbol, work.start, work.end, as_of=as_of)
+    except (KeyError, ValueError) as error:
+        raise MarketDataConflict(
+            "approved backfill source cannot be reconstructed"
+        ) from error
+    if len(planned) != 1 or planned[0].url != work.source_url:
+        raise MarketDataConflict("approved backfill source identity is invalid")
+    return planned[0]
 
 
 def _live_gate(

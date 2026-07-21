@@ -6,6 +6,9 @@ from pydantic import ValidationError
 
 from crypto_research.contracts.data import (
     AddSymbolRequest,
+    BackfillRecheckDisposition,
+    BackfillRecheckRequest,
+    BackfillRecheckView,
     BackfillRequest,
     DataGapStatus,
     DataGapView,
@@ -13,6 +16,7 @@ from crypto_research.contracts.data import (
     DataPartitionView,
     EligibilityReasonCode,
     EligibilityView,
+    GapReconcileRequest,
     IngestionJobStatus,
     IngestionJobView,
     MarketDataHealthView,
@@ -54,6 +58,62 @@ def test_add_symbol_request_accepts_a_bounded_uppercase_utc_history() -> None:
 
     assert request.symbol == "BTCUSDT"
     assert request.include_agg_trades is True
+
+
+def test_operator_command_contracts_are_bounded_and_source_free() -> None:
+    partition_ids = tuple(uuid4() for _ in range(100))
+
+    assert BackfillRecheckRequest(partition_id=partition_ids[0]).partition_id == partition_ids[0]
+    assert GapReconcileRequest(partition_ids=partition_ids).partition_ids == partition_ids
+
+    with pytest.raises(ValidationError):
+        GapReconcileRequest(partition_ids=())
+    with pytest.raises(ValidationError):
+        GapReconcileRequest(partition_ids=partition_ids + (uuid4(),))
+    with pytest.raises(ValidationError, match="unique"):
+        GapReconcileRequest(partition_ids=(partition_ids[0], partition_ids[0]))
+    with pytest.raises(ValidationError):
+        BackfillRecheckRequest(
+            partition_id=partition_ids[0],
+            source_url="https://example.invalid/archive.zip",
+        )
+
+
+def test_recheck_view_requires_replacement_identity_only_for_changed_source() -> None:
+    source = BinanceArchiveSource(
+        kind="binance_archive",
+        cadence=ArchiveCadence.DAILY,
+        dataset=ArchiveDataset.KLINES,
+        symbol="BTCUSDT",
+        interval="1m",
+        period_start=START,
+    )
+    base = {
+        "job_id": uuid4(),
+        "partition_id": uuid4(),
+        "object_id": uuid4(),
+        "source": source,
+        "previous_checksum": "a" * 64,
+        "observed_checksum": "b" * 64,
+        "checked_at": NOW,
+    }
+
+    with pytest.raises(ValidationError, match="replacement identity"):
+        BackfillRecheckView(
+            **base,
+            disposition=BackfillRecheckDisposition.REPLACEMENT_PLANNED,
+        )
+    with pytest.raises(ValidationError, match="must be absent"):
+        BackfillRecheckView(
+            **base,
+            disposition=BackfillRecheckDisposition.UNCHANGED,
+            replacement_job_id=uuid4(),
+            replacement_object_id=uuid4(),
+        )
+
+
+def test_ingestion_job_status_exposes_source_pending() -> None:
+    assert IngestionJobStatus("source_pending") is IngestionJobStatus.SOURCE_PENDING
 
 
 @pytest.mark.parametrize("symbol", ["btcusdt", "BTC-USDT", "BTC USDT"])

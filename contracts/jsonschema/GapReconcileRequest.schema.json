@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "partition_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Partition Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "partition_ids"
+  ],
+  "title": "GapReconcileRequest",
+  "type": "object"
+}

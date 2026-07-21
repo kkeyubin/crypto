@@ -151,6 +151,7 @@ const resources = {
       jobStatus: {
         queued: "排队中",
         running: "运行中",
+        source_pending: "等待上游归档",
         succeeded: "已完成",
         failed: "失败",
         cancelled: "已取消",
@@ -344,6 +345,7 @@ const resources = {
       jobStatus: {
         queued: "Queued",
         running: "Running",
+        source_pending: "Waiting for upstream archive",
         succeeded: "Completed",
         failed: "Failed",
         cancelled: "Cancelled",

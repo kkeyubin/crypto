@@ -8,7 +8,11 @@ from fastapi.testclient import TestClient
 from crypto_research.contracts.data import EligibilityReasonCode, MetadataStatus
 from crypto_research.db.repositories import StreamState
 from crypto_research.market.binance.streams import streams_for_symbols
-from crypto_research.market.control import _metadata_status, _profile_view
+from crypto_research.market.control import (
+    MarketDataSourceUnavailable,
+    _metadata_status,
+    _profile_view,
+)
 from crypto_research.market.eligibility import EligibilityDecision
 from crypto_research.market.profile import ProfileMetric, SymbolProfile
 
@@ -218,6 +222,72 @@ def test_get_backfill_is_isolated_and_returns_404(client: TestClient) -> None:
     assert existing.status_code == 200
     assert existing.json()["symbol"] == "BTCUSDT"
     assert missing.status_code == 404
+
+
+def test_retry_and_recheck_routes_are_bounded_and_source_free(client: TestClient) -> None:
+    retry = client.post(f"/api/backfills/{BTC_JOB}/retry", json={})
+    retry_extra = client.post(
+        f"/api/backfills/{BTC_JOB}/retry", json={"source_url": "https://example.invalid"}
+    )
+    recheck = client.post(
+        f"/api/backfills/{BTC_JOB}/recheck",
+        json={"partition_id": "00000000-0000-0000-0000-000000000201"},
+    )
+    recheck_extra = client.post(
+        f"/api/backfills/{BTC_JOB}/recheck",
+        json={
+            "partition_id": "00000000-0000-0000-0000-000000000201",
+            "source_url": "https://example.invalid",
+        },
+    )
+
+    assert retry.status_code == 200
+    assert retry_extra.status_code == 422
+    assert recheck.status_code == 200
+    assert recheck.json()["disposition"] == "unchanged"
+    assert recheck_extra.status_code == 422
+
+
+def test_recheck_upstream_failure_is_a_redacted_503(
+    client: TestClient, control, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unavailable(*_args, **_kwargs):
+        raise MarketDataSourceUnavailable("secret upstream detail")
+
+    monkeypatch.setattr(control, "recheck_backfill", unavailable)
+    response = client.post(
+        f"/api/backfills/{BTC_JOB}/recheck",
+        json={"partition_id": "00000000-0000-0000-0000-000000000201"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "public market-data source is unavailable"}
+    assert "secret" not in response.text
+
+
+def test_gap_reconcile_accepts_only_one_to_one_hundred_unique_partition_ids(
+    client: TestClient,
+) -> None:
+    gap_id = "00000000-0000-0000-0000-000000000301"
+    partition_id = "00000000-0000-0000-0000-000000000201"
+
+    response = client.post(
+        f"/api/gaps/{gap_id}/reconcile", json={"partition_ids": [partition_id]}
+    )
+    empty = client.post(f"/api/gaps/{gap_id}/reconcile", json={"partition_ids": []})
+    duplicate = client.post(
+        f"/api/gaps/{gap_id}/reconcile",
+        json={"partition_ids": [partition_id, partition_id]},
+    )
+    arbitrary_source = client.post(
+        f"/api/gaps/{gap_id}/reconcile",
+        json={"partition_ids": [partition_id], "source_url": "https://example.invalid"},
+    )
+
+    assert response.status_code == 200
+    assert empty.status_code == 422
+    assert duplicate.status_code == 422
+    assert arbitrary_source.status_code == 422
 
 
 def test_partitions_gaps_profile_eligibility_and_streams_are_symbol_scoped(

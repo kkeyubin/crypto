@@ -74,23 +74,23 @@ cd services/api
 - Produces: explicit `source_pending` API state; bounded idempotent `POST /api/backfills/{job_id}/retry`; bounded `POST /api/backfills/{job_id}/recheck` which retains version N when unchanged and creates an immutable N+1 attempt only after a changed official checksum is verified.
 - Consumes: deterministic job/source identities, `retry_backfill_object()`, archive `.CHECKSUM` verification, catalog versioning, and audit APIs.
 
-- [ ] **Step 1: Write RED lifecycle/API tests**
+- [x] **Step 1: Write RED lifecycle/API tests**
 
 Assert pending jobs return `source_pending`, failed/pending jobs can be retried without a duplicate active attempt, approved jobs reject ordinary retry, unchanged recheck is idempotent, and changed-checksum recheck produces a new object/manifest/partition version while version 1 remains queryable as history.
 
-- [ ] **Step 2: Expose exact source state**
+- [x] **Step 2: Expose exact source state**
 
 Add `source_pending` to the generated job-status enum or add a bounded per-object state collection to `IngestionJobView`; do not map it to `queued`. Regenerate TypeScript and add Chinese/English copy.
 
-- [ ] **Step 3: Wire retry and recheck commands**
+- [x] **Step 3: Wire retry and recheck commands**
 
 Add control-service methods and typed routes that lock the job, validate its symbol/range, audit the operator action, and call repository retry/recheck primitives. Recheck must obtain the sibling official checksum and compare it with the approved object before any mutation.
 
-- [ ] **Step 4: Implement immutable N+1 replacement**
+- [x] **Step 4: Implement immutable N+1 replacement**
 
 When the same approved URL has a different verified checksum, derive a new attempt/object identity including the checksum, run the normal download/normalize/validate/publish pipeline, and rely on catalog versioning for partition N+1. Never reset or overwrite the old approved object.
 
-- [ ] **Step 5: Run focused GREEN**
+- [x] **Step 5: Run focused GREEN**
 
 ```bash
 cd services/api
@@ -114,23 +114,23 @@ cd services/api
 - Produces: bounded `POST /api/gaps/{gap_id}/reconcile` that only closes a gap after catalog-approved partition evidence excludes all missing intervals; documentation that the unreachable REST adapter is inactive and `rest_healthy=false` is intentional.
 - Consumes: Task 1 safe coverage resolver, immutable Task 2 replacement partitions, and the existing gap repair history.
 
-- [ ] **Step 1: Write RED reconciliation route tests**
+- [x] **Step 1: Write RED reconciliation route tests**
 
 Submit one existing gap ID with a bounded tuple of approved partition UUIDs. Prove matching complete evidence repairs it, a manifest hole records `partial` and leaves it open, foreign-symbol/data-type evidence cannot repair it, unknown gaps/partitions fail, and arbitrary URLs/ranges are not accepted by the contract.
 
-- [ ] **Step 2: Add the typed bounded command**
+- [x] **Step 2: Add the typed bounded command**
 
 Add `GapReconcileRequest(partition_ids: tuple[UUID, ...])` with 1–100 unique IDs and no extra fields. Add the control method and route; lock/read the existing gap, call `reconcile_gap()` with source `catalog_reconcile`, commit its immutable history, and return `DataGapView`.
 
-- [ ] **Step 3: Keep the REST capability fail-closed**
+- [x] **Step 3: Keep the REST capability fail-closed**
 
 Do not instantiate repeated REST probes while both measured server paths return timeout/451. Retain the validated `PublicBinanceRestAdapter` as an inactive adapter boundary, keep `rest_healthy=false` and `metadata_unverified`, and document that activation requires a reachable public endpoint plus a new acceptance gate.
 
-- [ ] **Step 4: Correct roadmap and runbook scope**
+- [x] **Step 4: Correct roadmap and runbook scope**
 
 Replace the inaccurate “REST repair complete” claim with “catalog-approved repair/reconcile; REST adapter inactive while endpoint is unreachable.” Explain that Task 2 retry/recheck produces repair evidence and this route evaluates it; neither operation invents data or closes a manifest hole.
 
-- [ ] **Step 5: Run focused GREEN**
+- [x] **Step 5: Run focused GREEN**
 
 ```bash
 cd services/api

@@ -14,7 +14,7 @@ export type DataType = "kline_1m" | "mark_price" | "funding" | "agg_trade" | "be
 export type JobId = string;
 export type RequestedEnd = string;
 export type RequestedStart = string;
-export type IngestionJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type IngestionJobStatus = "queued" | "running" | "source_pending" | "succeeded" | "failed" | "cancelled";
 export type Symbol = string;
 export type UpdatedAt = string;
 

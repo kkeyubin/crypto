@@ -24,6 +24,7 @@ from crypto_research.contracts.manifest import (
 )
 from crypto_research.contracts.strategy import InstrumentRef
 from crypto_research.market.binance.archive import (
+    ArchiveChecksumError,
     ArchiveNotFoundError,
     HttpClient,
     fetch_archive,
@@ -433,6 +434,7 @@ class ArchiveBackfillStages:
         verified = await fetch_archive(
             obj, self._staging_root / staging_name, self._client
         )
+        _require_expected_source_checksum(work, verified.sha256)
         retained = await asyncio.to_thread(
             retain_raw_archive,
             verified.path,
@@ -745,6 +747,13 @@ def _require_utc_range(start: datetime, end: datetime) -> tuple[datetime, dateti
 
 def _planned_identity(work: BackfillObject) -> tuple[object, ...]:
     return (work.job_id, work.source_url, work.start, work.end)
+
+
+def _require_expected_source_checksum(work: BackfillObject, actual: str) -> None:
+    if work.source_checksum and work.source_checksum != actual:
+        raise ArchiveChecksumError(
+            "official archive checksum changed after replacement planning"
+        )
 
 
 def _optional_string(

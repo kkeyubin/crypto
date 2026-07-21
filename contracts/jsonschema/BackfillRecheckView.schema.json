@@ -1,0 +1,162 @@
+{
+  "$defs": {
+    "ArchiveCadence": {
+      "enum": [
+        "daily",
+        "monthly"
+      ],
+      "title": "ArchiveCadence",
+      "type": "string"
+    },
+    "ArchiveDataset": {
+      "enum": [
+        "klines",
+        "mark_price_klines",
+        "funding_rate",
+        "agg_trades"
+      ],
+      "title": "ArchiveDataset",
+      "type": "string"
+    },
+    "BackfillRecheckDisposition": {
+      "enum": [
+        "unchanged",
+        "replacement_planned",
+        "replacement_exists"
+      ],
+      "title": "BackfillRecheckDisposition",
+      "type": "string"
+    },
+    "BinanceArchiveSource": {
+      "additionalProperties": false,
+      "properties": {
+        "cadence": {
+          "$ref": "#/$defs/ArchiveCadence"
+        },
+        "dataset": {
+          "$ref": "#/$defs/ArchiveDataset"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "const": "1m",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval"
+        },
+        "kind": {
+          "const": "binance_archive",
+          "title": "Kind",
+          "type": "string"
+        },
+        "period_start": {
+          "format": "date-time",
+          "title": "Period Start",
+          "type": "string"
+        },
+        "resolved_url": {
+          "readOnly": true,
+          "title": "Resolved Url",
+          "type": "string"
+        },
+        "symbol": {
+          "pattern": "^[A-Z0-9]{3,32}$",
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "cadence",
+        "dataset",
+        "symbol",
+        "period_start",
+        "resolved_url"
+      ],
+      "title": "BinanceArchiveSource",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    },
+    "disposition": {
+      "$ref": "#/$defs/BackfillRecheckDisposition"
+    },
+    "job_id": {
+      "format": "uuid",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "object_id": {
+      "format": "uuid",
+      "title": "Object Id",
+      "type": "string"
+    },
+    "observed_checksum": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Observed Checksum",
+      "type": "string"
+    },
+    "partition_id": {
+      "format": "uuid",
+      "title": "Partition Id",
+      "type": "string"
+    },
+    "previous_checksum": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Previous Checksum",
+      "type": "string"
+    },
+    "replacement_job_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Replacement Job Id"
+    },
+    "replacement_object_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Replacement Object Id"
+    },
+    "source": {
+      "$ref": "#/$defs/BinanceArchiveSource"
+    }
+  },
+  "required": [
+    "job_id",
+    "partition_id",
+    "object_id",
+    "source",
+    "previous_checksum",
+    "observed_checksum",
+    "disposition",
+    "checked_at"
+  ],
+  "title": "BackfillRecheckView",
+  "type": "object"
+}

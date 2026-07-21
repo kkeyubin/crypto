@@ -9,7 +9,9 @@ from crypto_research.market.backfill import (
     ArchiveBackfillStages,
     BackfillObject,
     _missing_intervals_from_evidence,
+    _require_expected_source_checksum,
 )
+from crypto_research.market.binance.archive import ArchiveChecksumError
 from crypto_research.market.binance.archive_paths import DatasetKind, plan_archives
 from crypto_research.market.binance.normalization import KLINE_HEADERS, normalize_csv
 from crypto_research.market.catalog import InMemoryCatalogRepository
@@ -18,6 +20,21 @@ from crypto_research.market.storage import write_versioned_normalized_parquet
 
 DAY_START = datetime(2024, 1, 1, tzinfo=UTC)
 DAY_END = DAY_START + timedelta(days=1)
+
+
+def test_replacement_download_rejects_checksum_change_after_recheck() -> None:
+    work = BackfillObject(
+        object_id="replacement-object",
+        job_id="replacement-job",
+        source_url="https://data.binance.vision/replacement.zip",
+        start=DAY_START,
+        end=DAY_END,
+        source_checksum="b" * 64,
+    )
+
+    _require_expected_source_checksum(work, "b" * 64)
+    with pytest.raises(ArchiveChecksumError, match="changed after replacement planning"):
+        _require_expected_source_checksum(work, "c" * 64)
 
 
 def test_content_gap_is_serialized_and_published_as_missing_interval(

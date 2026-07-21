@@ -15,6 +15,7 @@ from crypto_research.market.control import (
     MarketDataConflict,
     MarketDataControl,
     MarketDataNotFound,
+    MarketDataSourceUnavailable,
     MarketDataValidationError,
     build_market_data_control,
 )
@@ -82,6 +83,15 @@ def create_app(
         _request: Request, error: MarketDataValidationError
     ) -> JSONResponse:
         return JSONResponse(status_code=422, content={"detail": str(error)})
+
+    @application.exception_handler(MarketDataSourceUnavailable)
+    async def market_data_source_unavailable(
+        _request: Request, _error: MarketDataSourceUnavailable
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "public market-data source is unavailable"},
+        )
 
     @application.exception_handler(OperationalError)
     async def persistent_state_unavailable(

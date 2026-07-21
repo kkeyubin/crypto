@@ -155,7 +155,26 @@ Never publish a mismatch. Quarantine conflicting bytes and record only sanitized
 
 A recent archive 404 is `source_pending`, not an empty partition. An older 404 fails and opens a gap. Recheck the exact official URL and `.CHECKSUM`; do not reset durable state with ad hoc SQL. A source replacement at the same URL requires new immutable raw data, Parquet, manifest, and partition versions. Never overwrite prior evidence.
 
+Use only the bounded operator commands. They accept no URL, checksum, or time range from the caller:
+
+```bash
+curl --fail-with-body -H 'Content-Type: application/json' -d '{}' \
+  -X POST "http://127.0.0.1:8088/api/backfills/$JOB_ID/retry"
+
+curl --fail-with-body -H 'Content-Type: application/json' \
+  -d "{\"partition_id\":\"$APPROVED_PARTITION_ID\"}" \
+  -X POST "http://127.0.0.1:8088/api/backfills/$JOB_ID/recheck"
+
+curl --fail-with-body -H 'Content-Type: application/json' \
+  -d "{\"partition_ids\":[\"$APPROVED_PARTITION_ID\"]}" \
+  -X POST "http://127.0.0.1:8088/api/gaps/$GAP_ID/reconcile"
+```
+
+Retry changes only failed or `source_pending` objects back to planned. Recheck reads the structured approved archive identity and official sibling checksum; unchanged bytes are a no-op, while a new checksum creates a separate immutable job/object and lets the catalog publish the next version. Reconcile accepts 1–100 unique approved partition IDs and leaves the gap open unless their validated coverage fully repairs it.
+
 After reconnect or restart, inspect `/api/operations/market-data`, per-symbol streams, and gaps. A disconnect gap is repaired only by continuity or approved replacement evidence; new messages alone are insufficient. Keep eligibility false while a required stream is stale/degraded or a required gap remains open. `metadata_unverified` caused by unavailable Binance REST metadata is a separate fail-closed gate and must never be filled with invented values.
+
+The `PublicBinanceRestAdapter` is retained as an inactive boundary. Current server acceptance observed direct timeout and proxy HTTP 451 for USDⓈ-M REST, so no repeated REST repair/metadata probe is enabled and `/api/operations/market-data` deliberately reports `rest_healthy=false`. Activation requires a reachable public endpoint and a separately reviewed acceptance gate.
 
 ## Restart, Exposure, and Acceptance Record
 

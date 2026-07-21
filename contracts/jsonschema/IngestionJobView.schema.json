@@ -15,6 +15,7 @@
       "enum": [
         "queued",
         "running",
+        "source_pending",
         "succeeded",
         "failed",
         "cancelled"

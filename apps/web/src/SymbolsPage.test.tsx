@@ -565,7 +565,7 @@ test("uses a returned canonical venue symbol for a complete-month backfill", asy
           job_id: `00000000-0000-0000-0000-00000000040${index}`,
           symbol: "1000PEPEUSDT",
           data_type: dataType,
-          status: index === 0 ? "running" : "queued",
+          status: index === 0 ? "source_pending" : "queued",
           requested_start: "2026-06-01T00:00:00Z",
           requested_end: "2026-07-01T00:00:00Z",
           created_at: "2026-07-21T10:00:00Z",
@@ -624,7 +624,7 @@ test("uses a returned canonical venue symbol for a complete-month backfill", asy
 
   const progress = await screen.findByRole("status", { name: "回填任务已创建" });
   expect(progress).toHaveTextContent("已创建 4 个回填任务");
-  expect(progress).toHaveTextContent("运行中");
+  expect(progress).toHaveTextContent("等待上游归档");
   expect(progress).toHaveTextContent("排队中");
   await waitFor(() => expect(listRequests).toBe(3));
   await user.click(within(progress).getByRole("button", { name: "刷新回填进度" }));

@@ -2,13 +2,16 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path
-from pydantic import ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, StrictBool
 
 from crypto_research.contracts.data import (
+    BackfillRecheckRequest,
+    BackfillRecheckView,
     BackfillRequest,
     DataGapView,
     DataPartitionView,
     EligibilityView,
+    GapReconcileRequest,
     IngestionJobView,
     StreamStateView,
     SymbolProfileView,
@@ -39,6 +42,18 @@ class BackfillBody(BackfillRequest):
     include_agg_trades: StrictBool = False
 
 
+class EmptyActionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class BackfillRecheckBody(BackfillRecheckRequest):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
+
+
+class GapReconcileBody(GapReconcileRequest):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
+
+
 @router.post(
     "/api/symbols/{symbol}/backfills",
     response_model=list[IngestionJobView],
@@ -59,6 +74,39 @@ async def create_backfills(
 )
 async def get_backfill(job_id: UUID, control: Control) -> IngestionJobView:
     return await control.get_backfill(job_id)
+
+
+@router.post(
+    "/api/backfills/{job_id}/retry",
+    response_model=IngestionJobView,
+    dependencies=[Depends(no_query)],
+)
+async def retry_backfill(
+    job_id: UUID, _request: EmptyActionBody, control: Control
+) -> IngestionJobView:
+    return await control.retry_backfill(job_id)
+
+
+@router.post(
+    "/api/backfills/{job_id}/recheck",
+    response_model=BackfillRecheckView,
+    dependencies=[Depends(no_query)],
+)
+async def recheck_backfill(
+    job_id: UUID, request: BackfillRecheckBody, control: Control
+) -> BackfillRecheckView:
+    return await control.recheck_backfill(job_id, request)
+
+
+@router.post(
+    "/api/gaps/{gap_id}/reconcile",
+    response_model=DataGapView,
+    dependencies=[Depends(no_query)],
+)
+async def reconcile_gap(
+    gap_id: UUID, request: GapReconcileBody, control: Control
+) -> DataGapView:
+    return await control.reconcile_gap(gap_id, request)
 
 
 @router.get(
