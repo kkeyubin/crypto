@@ -4,6 +4,8 @@ WORKDIR /app
 
 COPY services/api/pyproject.toml ./
 COPY services/api/src ./src
+COPY services/api/alembic.ini ./alembic.ini
+COPY services/api/migrations ./migrations
 COPY deploy/api-entrypoint.py /app/deploy/api-entrypoint.py
 
 RUN python -m pip install --no-cache-dir .

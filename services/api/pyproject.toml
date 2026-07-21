@@ -7,17 +7,22 @@ name = "crypto-research-api"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "alembic>=1.14,<2",
   "fastapi>=0.115,<1",
   "asyncpg>=0.30,<1",
+  "duckdb>=1.4,<2",
+  "httpx2>=2.7,<3",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
+  "polars>=1.30,<2",
+  "pyarrow>=19,<24",
   "sqlalchemy[asyncio]>=2.0,<3",
   "uvicorn[standard]>=0.34,<1",
+  "websockets>=15,<17",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "httpx2>=2.7,<3",
   "PyYAML>=6.0,<7",
   "pytest>=8.3,<9",
   "ruff>=0.9,<1",

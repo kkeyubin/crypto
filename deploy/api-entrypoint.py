@@ -1,7 +1,16 @@
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 from sqlalchemy import URL
+
+MIGRATION_CONFIG = Path("/app/alembic.ini")
+
+
+def run_migrations() -> None:
+    if MIGRATION_CONFIG.exists():
+        subprocess.run(["alembic", "-c", str(MIGRATION_CONFIG), "upgrade", "head"], check=True)
 
 
 def main(command: list[str]) -> None:
@@ -22,6 +31,7 @@ def main(command: list[str]) -> None:
         database="crypto_research",
     )
     os.environ["CRYPTO_DATABASE_URL"] = database_url.render_as_string(hide_password=False)
+    run_migrations()
     os.execvp(command[0], command)
 
 
