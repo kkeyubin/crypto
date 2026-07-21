@@ -30,6 +30,8 @@ Implemented only the Phase 0 React shell and API liveness presentation. The shel
 
 5. Controller ran `npm run web:dev -- --host 127.0.0.1 --port 4173`; the root npm script swallowed the arguments and started Vite on its default port `5173` instead of `4173`.
 
+6. Final controller verification found that the filesystem-backed layout assertion crossed the browser TypeScript boundary. `npm run web:build` failed with `TS2307` for `node:fs` and `node:path`, plus `TS2591` for `process`, because the browser `tsconfig` deliberately does not load Node ambient types.
+
 ## GREEN
 
 - Added a Chinese-first, responsive Evidence Lab shell with a normal desktop sidebar/main grid, a full-width bounded main content frame, narrow-screen stacked layout, keyboard focus styles, and reduced-motion overrides.
@@ -41,6 +43,7 @@ Implemented only the Phase 0 React shell and API liveness presentation. The shel
 - Isolated the generated-contract check in `contracts/tsconfig.json` with `types: []`, `lib: ["ES2015"]`, `strict`, and `noEmit`. `contracts:check-types` now runs `tsc -p contracts/tsconfig.json`; it neither needs DOM types nor suppresses declaration checking.
 - The mobile media rule now uses the three explicit grid rows `64px auto minmax(0, 1fr)`. The navigation remains horizontally scrollable while `scrollbar-width: none` and the WebKit scrollbar selector hide only the decorative native scrollbar.
 - Root `web:dev` now includes a trailing `--`, forwarding host and port options to the Web workspace's Vite process.
+- The layout test now consumes `styles.css?raw` through Vite rather than Node filesystem APIs. `vite/client` supplies the raw-asset module declaration, and Vitest enables its CSS transform for the static assertion. No Node types were added and tests remain included in the browser build type-check.
 
 ## Controller validation after the responsive fix
 
@@ -67,6 +70,21 @@ git diff --check
 ```
 
 Results: Web Vitest `4/4` passed; production Vite build emitted `apps/web/dist`; generated contract safety/type checks passed without drift; API regression suite `61 passed`; Ruff passed.
+
+Final browser-compatible regression verification reran:
+
+```bash
+npm --workspace @crypto-research/web exec -- vitest run src/App.test.tsx --reporter=verbose
+npm run web:build
+npm run contracts:test-generation
+npm run contracts:types
+npm run contracts:check-types
+services/api/.venv/bin/pytest services/api/tests -q
+services/api/.venv/bin/ruff check services/api/src services/api/tests
+git diff --check
+```
+
+All commands passed: focused Web tests `4/4`, Vite build, generated-contract safety/type checks, API `61 passed`, Ruff, and whitespace diff check.
 
 ## Files
 

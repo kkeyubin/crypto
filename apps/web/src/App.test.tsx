@@ -1,12 +1,9 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
 import i18n from "./i18n";
-
-const styles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+import styles from "./styles.css?raw";
 
 beforeEach(async () => {
   localStorage.clear();
