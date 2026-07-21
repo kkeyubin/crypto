@@ -4,6 +4,7 @@ import type {
   EligibilityView,
   IngestionJobView,
   MarketDataHealthView,
+  ProfileMetricView,
   StreamStateView,
   SymbolProfileView,
   SymbolView,
@@ -63,6 +64,32 @@ function isNonNegativeNumber(value: unknown): value is number {
 
 function isFraction(value: unknown): value is number {
   return isFiniteNumber(value) && value >= 0 && value <= 1;
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+}
+
+function isProfileMetric(value: unknown, allowNegative: boolean): value is ProfileMetricView {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["value", "sample_count", "coverage_fraction"]) ||
+    !Number.isInteger(value.sample_count) ||
+    !isFiniteNumber(value.sample_count) ||
+    value.sample_count < 0 ||
+    !isFraction(value.coverage_fraction)
+  ) {
+    return false;
+  }
+  if (value.sample_count === 0) {
+    return value.value === null && value.coverage_fraction === 0;
+  }
+  return (
+    isFiniteNumber(value.value) &&
+    (allowNegative || value.value >= 0) &&
+    value.coverage_fraction > 0
+  );
 }
 
 function isSymbolView(value: unknown): value is SymbolView {
@@ -177,15 +204,24 @@ function isProfile(value: unknown): value is SymbolProfileView {
     return false;
   }
   return (
+    hasExactKeys(value, [
+      "symbol",
+      "calculated_at",
+      "coverage_start",
+      "coverage_end",
+      "realized_volatility",
+      "jump_frequency",
+      "median_spread_bps",
+      "median_hourly_volume",
+      "funding_rate_mean",
+    ]) &&
     isString(value.symbol) && symbolPattern.test(value.symbol) &&
     isString(value.calculated_at) && isString(value.coverage_start) && isString(value.coverage_end) &&
-    Number.isInteger(value.sample_count) && isFiniteNumber(value.sample_count) && value.sample_count > 0 &&
-    isFraction(value.coverage_fraction) &&
-    isNonNegativeNumber(value.realized_volatility) &&
-    isNonNegativeNumber(value.jump_frequency) &&
-    isNonNegativeNumber(value.median_spread_bps) &&
-    isNonNegativeNumber(value.median_hourly_volume) &&
-    isFiniteNumber(value.funding_rate_mean)
+    isProfileMetric(value.realized_volatility, false) &&
+    isProfileMetric(value.jump_frequency, false) &&
+    isProfileMetric(value.median_spread_bps, false) &&
+    isProfileMetric(value.median_hourly_volume, false) &&
+    isProfileMetric(value.funding_rate_mean, true)
   );
 }
 

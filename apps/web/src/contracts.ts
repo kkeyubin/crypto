@@ -15,3 +15,5 @@ export type {
   SymbolProfileView,
   SymbolView,
 } from "../../../contracts/types/index";
+
+export type { ProfileMetricView } from "../../../contracts/types/SymbolProfileView";

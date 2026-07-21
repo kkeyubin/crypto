@@ -155,23 +155,23 @@ cd services/api
 - Produces: `ProfileMetricView(value, sample_count, coverage_fraction)` for realized volatility, jump frequency, median spread bps, median hourly volume, and funding-rate mean; terminal `metadata_status` derived from profile completion plus eligibility.
 - Consumes: existing `MetricEstimate` fields from `SymbolProfile` and centralized `EligibilityView`.
 
-- [ ] **Step 1: Write RED contract and UI tests**
+- [x] **Step 1: Write RED contract and UI tests**
 
 Assert each metric preserves its own sample count/coverage, `sample_count=0` may carry `value=null`, BTC and 1000PEPE render different values/evidence, insufficient evidence is explicit, and terminal metadata state becomes `eligible` or `ineligible` only after verified metadata/profile completion.
 
-- [ ] **Step 2: Implement nested metric contracts**
+- [x] **Step 2: Implement nested metric contracts**
 
 Replace five scalar fields plus shared evidence with five typed metric objects. Map every `MetricEstimate` independently in `_profile_view()`, regenerate JSON Schema/TypeScript, and make the Web decoder reject impossible combinations.
 
-- [ ] **Step 3: Render all profile evidence**
+- [x] **Step 3: Render all profile evidence**
 
 Add a compact profile section to each symbol card with localized labels, values/units, sample counts, and coverage. Do not infer PEPE values from BTC or show a genuine zero as “no data”.
 
-- [ ] **Step 4: Fix terminal metadata state**
+- [x] **Step 4: Fix terminal metadata state**
 
 Keep `metadata_unverified` when no validated snapshot exists; otherwise use `profile_building` until all required profile estimates exist, then derive `eligible`/`ineligible` from the central eligibility decision.
 
-- [ ] **Step 5: Run focused GREEN**
+- [x] **Step 5: Run focused GREEN**
 
 ```bash
 cd services/api

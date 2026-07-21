@@ -34,6 +34,14 @@ const baseSymbol = {
   updated_at: "2026-07-21T10:00:00Z",
 };
 
+function profileMetric(value: number | null, sampleCount: number, coverageFraction: number) {
+  return {
+    value,
+    sample_count: sampleCount,
+    coverage_fraction: coverageFraction,
+  };
+}
+
 function dashboardResponse(path: string): Response {
   const isBtc = path.includes("BTCUSDT");
   if (path.startsWith("/api/symbols?")) {
@@ -92,13 +100,11 @@ function dashboardResponse(path: string): Response {
       calculated_at: "2026-07-21T10:00:00Z",
       coverage_start: "2026-07-01T00:00:00Z",
       coverage_end: "2026-07-21T00:00:00Z",
-      sample_count: isBtc ? 120000 : 300,
-      coverage_fraction: isBtc ? 0.98 : 0.42,
-      realized_volatility: isBtc ? 0.12 : 0.91,
-      jump_frequency: isBtc ? 0.01 : 0.2,
-      median_spread_bps: isBtc ? 1.2 : 8.5,
-      median_hourly_volume: isBtc ? 1200000 : 1800,
-      funding_rate_mean: 0.0001,
+      realized_volatility: profileMetric(isBtc ? 0.12 : 0.91, isBtc ? 120000 : 300, isBtc ? 0.98 : 0.42),
+      jump_frequency: profileMetric(isBtc ? 0.01 : 0.2, isBtc ? 119999 : 299, isBtc ? 0.97 : 0.41),
+      median_spread_bps: profileMetric(isBtc ? 1.2 : 8.5, isBtc ? 14400 : 120, isBtc ? 0.5 : 0.2),
+      median_hourly_volume: profileMetric(isBtc ? 1200000 : 1800, isBtc ? 480 : 200, isBtc ? 1 : 0.42),
+      funding_rate_mean: profileMetric(isBtc ? 0.0001 : -0.0002, isBtc ? 60 : 24, isBtc ? 1 : 0.4),
     });
   }
   if (path.endsWith("/eligibility")) {
@@ -239,14 +245,22 @@ test("keeps BTC and PEPE evidence independent and separates data-health dimensio
   const pepe = await screen.findByRole("article", { name: "1000PEPEUSDT 数据证据" });
 
   expect(within(btc).getByText("符合数据启用条件")).toBeInTheDocument();
-  expect(within(btc).getByText("120,000")).toBeInTheDocument();
-  expect(within(btc).getByText("98%")).toBeInTheDocument();
+  expect(within(btc).getByRole("heading", { name: "币种画像" })).toBeInTheDocument();
+  expect(within(btc).getByText("已实现波动率")).toBeInTheDocument();
+  expect(within(btc).getByText("12.00%")).toBeInTheDocument();
+  expect(within(btc).getByText("120,000 个样本 · 98% 覆盖")).toBeInTheDocument();
+  expect(within(btc).getByText("1.20 bps")).toBeInTheDocument();
+  expect(within(btc).getByText("1,200,000")).toBeInTheDocument();
+  expect(within(btc).getByText("0.0100%")).toBeInTheDocument();
   expect(within(btc).getByText("无未修复缺口")).toBeInTheDocument();
   expect(within(btc).queryByText("覆盖不足")).not.toBeInTheDocument();
 
   expect(within(pepe).getByText("不符合数据启用条件")).toBeInTheDocument();
-  expect(within(pepe).getByText("300")).toBeInTheDocument();
-  expect(within(pepe).getByText("42%")).toBeInTheDocument();
+  expect(within(pepe).getByText("91.00%")).toBeInTheDocument();
+  expect(within(pepe).getByText("300 个样本 · 42% 覆盖")).toBeInTheDocument();
+  expect(within(pepe).getByText("8.50 bps")).toBeInTheDocument();
+  expect(within(pepe).getByText("1,800")).toBeInTheDocument();
+  expect(within(pepe).getByText("-0.0200%")).toBeInTheDocument();
   expect(within(pepe).getByText("1 个未修复缺口")).toBeInTheDocument();
   expect(within(pepe).getByText("覆盖不足")).toBeInTheDocument();
   expect(within(pepe).getByText("存在未修复缺口")).toBeInTheDocument();
@@ -262,6 +276,64 @@ test("keeps BTC and PEPE evidence independent and separates data-health dimensio
   expect(within(btc).getByText(/最旧必需事件/)).toHaveTextContent("2026");
   expect(within(pepe).getByText("缺少 1 条必需实时流（3/4）")).toBeInTheDocument();
   expect(within(pepe).getByText("必需流不完整，无法确认新鲜度")).toBeInTheDocument();
+
+  await act(async () => i18n.changeLanguage("en"));
+  expect(within(btc).getByRole("heading", { name: "Symbol profile" })).toBeInTheDocument();
+  expect(within(btc).getByText("Realized volatility")).toBeInTheDocument();
+  expect(within(btc).getByText("Jump frequency")).toBeInTheDocument();
+  expect(within(btc).getByText("Median bid-ask spread")).toBeInTheDocument();
+  expect(within(btc).getByText("Median hourly volume")).toBeInTheDocument();
+  expect(within(btc).getByText("Mean funding rate")).toBeInTheDocument();
+  expect(within(btc).getByText("120,000 samples · 98% coverage")).toBeInTheDocument();
+});
+
+test("shows explicit insufficient evidence without turning a genuine zero into missing data", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const response = dashboardResponse(path);
+      if (!path.endsWith("BTCUSDT/profile")) {
+        return response;
+      }
+      const body = await response.json() as Record<string, unknown>;
+      return jsonResponse({
+        ...body,
+        jump_frequency: profileMetric(0, 120000, 0.98),
+        median_spread_bps: profileMetric(null, 0, 0),
+      });
+    }),
+  );
+
+  render(<SymbolsPage />);
+
+  const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+  expect(within(btc).getByText("0.00%")).toBeInTheDocument();
+  expect(within(btc).getByText("证据不足")).toBeInTheDocument();
+  expect(within(btc).getByText("0 个样本 · 0% 覆盖")).toBeInTheDocument();
+});
+
+test("rejects an impossible zero-sample profile value at the decoder boundary", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const response = dashboardResponse(path);
+      if (!path.endsWith("BTCUSDT/profile")) {
+        return response;
+      }
+      const body = await response.json() as Record<string, unknown>;
+      return jsonResponse({
+        ...body,
+        median_spread_bps: profileMetric(0, 0, 0),
+      });
+    }),
+  );
+
+  render(<SymbolsPage />);
+
+  expect(await screen.findByRole("article", { name: "BTCUSDT 数据加载失败" })).toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "1000PEPEUSDT 数据证据" })).toBeInTheDocument();
 });
 
 test("publishes health and ready symbol evidence while another symbol request is still pending", async () => {
@@ -426,7 +498,7 @@ test("isolates a PEPE evidence failure and retries only that symbol", async () =
 
   const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
   const pepeError = await screen.findByRole("article", { name: "1000PEPEUSDT 数据加载失败" });
-  expect(within(btc).getByText("120,000")).toBeInTheDocument();
+  expect(within(btc).getByText("120,000 个样本 · 98% 覆盖")).toBeInTheDocument();
   expect(within(pepeError).getByText("暂时无法加载 1000PEPEUSDT 的数据证据。")).toBeInTheDocument();
 
   await user.click(within(pepeError).getByRole("button", { name: "重试 1000PEPEUSDT" }));
@@ -1645,7 +1717,7 @@ test("re-enables a disabled symbol with its immutable history identity and no au
     },
   }]);
   expect(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" })).toBeInTheDocument();
-  expect(within(btc).getByText("120,000")).toBeInTheDocument();
+  expect(within(btc).getByText("120,000 个样本 · 98% 覆盖")).toBeInTheDocument();
   expect(within(btc).getByText("符合数据启用条件")).toBeInTheDocument();
   expect(within(btc).queryByText("数据尚未就绪")).not.toBeInTheDocument();
 });

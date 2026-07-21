@@ -46,18 +46,21 @@ const pepeSymbol: SymbolView = {
 };
 
 function profile(sampleCount: number) {
+  const metric = (value: number) => ({
+    value,
+    sample_count: sampleCount,
+    coverage_fraction: 0.98,
+  });
   return {
     symbol: "BTCUSDT",
     calculated_at: "2026-07-21T10:00:00Z",
     coverage_start: "2026-07-01T00:00:00Z",
     coverage_end: "2026-07-21T00:00:00Z",
-    sample_count: sampleCount,
-    coverage_fraction: 0.98,
-    realized_volatility: 0.12,
-    jump_frequency: 0.01,
-    median_spread_bps: 1.2,
-    median_hourly_volume: 1200000,
-    funding_rate_mean: 0.0001,
+    realized_volatility: metric(0.12),
+    jump_frequency: metric(0.01),
+    median_spread_bps: metric(1.2),
+    median_hourly_volume: metric(1200000),
+    funding_rate_mean: metric(0.0001),
   };
 }
 
@@ -101,7 +104,9 @@ function readyProfileCount(state: ReturnType<typeof useSymbols>): number | null 
     return null;
   }
   const item = state.dashboard.items[0];
-  return item?.status === "ready" ? item.evidence.profile?.sample_count ?? null : null;
+  return item?.status === "ready"
+    ? item.evidence.profile?.realized_volatility.sample_count ?? null
+    : null;
 }
 
 function firstSymbolState(state: ReturnType<typeof useSymbols>) {
@@ -318,7 +323,7 @@ test("keeps a committed disabled override when a stale reload resolves after the
     const item = firstSymbolState(result.current);
     expect(item?.status).toBe("ready");
     expect(item?.symbol.enabled).toBe(false);
-    expect(item?.status === "ready" ? item.evidence.profile?.sample_count : null).toBe(333333);
+    expect(item?.status === "ready" ? item.evidence.profile?.realized_volatility.sample_count : null).toBe(333333);
   });
   expect(committedProfileSignal?.aborted).toBe(true);
   committedProfile.resolve(jsonResponse(profile(111111)));
@@ -363,7 +368,7 @@ test("lets a committed disabled mutation win when the stale reload resolves firs
   const item = firstSymbolState(result.current);
   expect(item?.status).toBe("ready");
   expect(item?.symbol.enabled).toBe(false);
-  expect(item?.status === "ready" ? item.evidence.profile?.sample_count : null).toBe(444444);
+  expect(item?.status === "ready" ? item.evidence.profile?.realized_volatility.sample_count : null).toBe(444444);
   expect(staleProfileSignal?.aborted).toBe(true);
   staleProfile.resolve(jsonResponse(profile(111111)));
 });

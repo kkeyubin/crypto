@@ -11,28 +11,27 @@ type DeepReadonly<T> =
 
 export type CalculatedAt = string;
 export type CoverageEnd = string;
-export type CoverageFraction = number;
 export type CoverageStart = string;
-export type FundingRateMean = number;
-export type JumpFrequency = number;
-export type MedianHourlyVolume = number;
-export type MedianSpreadBps = number;
-export type RealizedVolatility = number;
+export type CoverageFraction = number;
 export type SampleCount = number;
+export type Value = number | null;
 export type Symbol = string;
 
 interface SymbolProfileViewShape {
   calculated_at: CalculatedAt;
   coverage_end: CoverageEnd;
-  coverage_fraction: CoverageFraction;
   coverage_start: CoverageStart;
-  funding_rate_mean: FundingRateMean;
-  jump_frequency: JumpFrequency;
-  median_hourly_volume: MedianHourlyVolume;
-  median_spread_bps: MedianSpreadBps;
-  realized_volatility: RealizedVolatility;
-  sample_count: SampleCount;
+  funding_rate_mean: ProfileMetricView;
+  jump_frequency: ProfileMetricView;
+  median_hourly_volume: ProfileMetricView;
+  median_spread_bps: ProfileMetricView;
+  realized_volatility: ProfileMetricView;
   symbol: Symbol;
+}
+export interface ProfileMetricView {
+  coverage_fraction: CoverageFraction;
+  sample_count: SampleCount;
+  value: Value;
 }
 
 export type SymbolProfileView = DeepReadonly<SymbolProfileViewShape>;

@@ -1,8 +1,146 @@
-from datetime import timedelta
+import asyncio
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
+from crypto_research.contracts.data import EligibilityReasonCode, MetadataStatus
+from crypto_research.db.repositories import StreamState
+from crypto_research.market.binance.streams import streams_for_symbols
+from crypto_research.market.control import _metadata_status, _profile_view
+from crypto_research.market.eligibility import EligibilityDecision
+from crypto_research.market.profile import ProfileMetric, SymbolProfile
+
 from .conftest import BTC_JOB, END, START
+from .test_control import END as CONTROL_END
+from .test_control import NOW as CONTROL_NOW
+from .test_control import START as CONTROL_START
+from .test_control import configured_repository, service
+
+_REALIZED_METRIC = ProfileMetric(0.2, 100, 0.9)
+_JUMP_METRIC = ProfileMetric(0.01, 80, 0.8)
+_SPREAD_METRIC = ProfileMetric(1.2, 20, 0.5)
+_VOLUME_METRIC = ProfileMetric(50_000, 10, 0.75)
+_FUNDING_METRIC = ProfileMetric(-0.0001, 3, 0.25)
+
+
+def profile(
+    *,
+    realized: ProfileMetric = _REALIZED_METRIC,
+    jumps: ProfileMetric = _JUMP_METRIC,
+    spread: ProfileMetric = _SPREAD_METRIC,
+    volume: ProfileMetric = _VOLUME_METRIC,
+    funding: ProfileMetric = _FUNDING_METRIC,
+) -> SymbolProfile:
+    return SymbolProfile(
+        symbol="BTCUSDT",
+        calculated_at=datetime(2025, 1, 1, tzinfo=UTC),
+        coverage_start=datetime(2024, 12, 1, tzinfo=UTC),
+        coverage_end=datetime(2025, 1, 1, tzinfo=UTC),
+        realized_volatility=realized,
+        jump_frequency=jumps,
+        median_spread_bps=spread,
+        median_hourly_volume=volume,
+        funding_rate_mean=funding,
+    )
+
+
+def decision(eligible: bool) -> EligibilityDecision:
+    return EligibilityDecision(
+        symbol="BTCUSDT",
+        eligible=eligible,
+        reason_codes=(
+            () if eligible else (EligibilityReasonCode.UNREPAIRED_GAP,)
+        ),
+        evaluated_at=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+
+
+def test_profile_mapping_keeps_each_metric_evidence_independent() -> None:
+    view = _profile_view(profile())
+
+    assert view.realized_volatility.model_dump() == {
+        "value": 0.2,
+        "sample_count": 100,
+        "coverage_fraction": 0.9,
+    }
+    assert view.median_spread_bps.model_dump() == {
+        "value": 1.2,
+        "sample_count": 20,
+        "coverage_fraction": 0.5,
+    }
+    assert view.funding_rate_mean.value == -0.0001
+
+
+def test_profile_mapping_marks_a_zero_sample_metric_as_explicitly_missing() -> None:
+    view = _profile_view(profile(spread=ProfileMetric(0.0, 0, 0.0)))
+
+    assert view.median_spread_bps.value is None
+    assert view.median_spread_bps.sample_count == 0
+
+
+@pytest.mark.parametrize(
+    "metadata_verified,profile_value,eligible,expected",
+    [
+        (False, profile(), True, MetadataStatus.METADATA_UNVERIFIED),
+        (
+            True,
+            profile(spread=ProfileMetric(0.0, 0, 0.0)),
+            False,
+            MetadataStatus.PROFILE_BUILDING,
+        ),
+        (True, profile(), True, MetadataStatus.ELIGIBLE),
+        (True, profile(), False, MetadataStatus.INELIGIBLE),
+    ],
+)
+def test_metadata_status_reaches_terminal_state_only_after_profile_is_complete(
+    metadata_verified: bool,
+    profile_value: SymbolProfile,
+    eligible: bool,
+    expected: MetadataStatus,
+) -> None:
+    assert _metadata_status(
+        metadata_verified=metadata_verified,
+        profile=profile_value,
+        eligibility=decision(eligible),
+    ) is expected
+
+
+def test_symbol_view_derives_verified_terminal_metadata_status_from_eligibility() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+        repository.summaries["BTCUSDT"] = SimpleNamespace(
+            approved_data_types=("kline_1m", "mark_price", "funding"),
+            archive_intervals={
+                data_type: ((CONTROL_START, CONTROL_END),)
+                for data_type in ("kline_1m", "mark_price", "funding")
+            },
+            metadata_verified=True,
+            open_gap_count=0,
+            job_statuses=("succeeded",),
+        )
+        repository.streams["BTCUSDT"] = tuple(
+            StreamState(
+                "BTCUSDT",
+                stream.name,
+                CONTROL_NOW - timedelta(seconds=1),
+                "connected",
+                {"source_mode": "direct"},
+                CONTROL_NOW,
+            )
+            for stream in streams_for_symbols(("BTCUSDT",))
+        )
+        control = service(repository)
+
+        eligible = await control.get_symbol("BTCUSDT")
+        repository.summaries["BTCUSDT"].open_gap_count = 1
+        ineligible = await control.get_symbol("BTCUSDT")
+
+        assert eligible.metadata_status is MetadataStatus.ELIGIBLE
+        assert ineligible.metadata_status is MetadataStatus.INELIGIBLE
+
+    asyncio.run(scenario())
 
 
 def backfill_payload(symbol: str = "BTCUSDT") -> dict[str, object]:

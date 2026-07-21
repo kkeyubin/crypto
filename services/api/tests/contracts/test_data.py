@@ -17,6 +17,7 @@ from crypto_research.contracts.data import (
     IngestionJobView,
     MarketDataHealthView,
     MetadataStatus,
+    ProfileMetricView,
     SourceMode,
     StreamStateView,
     StreamStatus,
@@ -221,38 +222,93 @@ def test_data_manifest_rejects_numeric_strings(field: str) -> None:
     assert {item["loc"] for item in error.value.errors()} == {(field,)}
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "sample_count",
-        "coverage_fraction",
-        "realized_volatility",
-        "jump_frequency",
-        "median_spread_bps",
-        "median_hourly_volume",
-        "funding_rate_mean",
-    ],
-)
-def test_symbol_profile_view_rejects_numeric_strings(field: str) -> None:
-    payload: dict[str, object] = {
+def profile_metric_payload(
+    value: float | None,
+    sample_count: int,
+    coverage_fraction: float,
+) -> dict[str, object]:
+    return {
+        "value": value,
+        "sample_count": sample_count,
+        "coverage_fraction": coverage_fraction,
+    }
+
+
+def symbol_profile_payload() -> dict[str, object]:
+    return {
         "symbol": "BTCUSDT",
         "calculated_at": NOW,
         "coverage_start": START,
         "coverage_end": NOW,
-        "sample_count": 1,
-        "coverage_fraction": 1.0,
-        "realized_volatility": 0.1,
-        "jump_frequency": 0.0,
-        "median_spread_bps": 1.0,
-        "median_hourly_volume": 1.0,
-        "funding_rate_mean": 0.0,
+        "realized_volatility": profile_metric_payload(0.1, 100, 0.9),
+        "jump_frequency": profile_metric_payload(0.0, 100, 0.9),
+        "median_spread_bps": profile_metric_payload(1.0, 20, 0.5),
+        "median_hourly_volume": profile_metric_payload(1.0, 10, 0.75),
+        "funding_rate_mean": profile_metric_payload(-0.0001, 3, 0.25),
     }
+
+
+def test_symbol_profile_view_preserves_evidence_for_each_metric() -> None:
+    view = SymbolProfileView(**symbol_profile_payload())
+
+    assert view.realized_volatility == ProfileMetricView(
+        value=0.1, sample_count=100, coverage_fraction=0.9
+    )
+    assert view.median_spread_bps == ProfileMetricView(
+        value=1.0, sample_count=20, coverage_fraction=0.5
+    )
+    assert view.funding_rate_mean == ProfileMetricView(
+        value=-0.0001, sample_count=3, coverage_fraction=0.25
+    )
+
+
+def test_profile_metric_allows_explicit_missing_value_for_zero_samples() -> None:
+    metric = ProfileMetricView(value=None, sample_count=0, coverage_fraction=0)
+
+    assert metric.value is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        profile_metric_payload(0.0, 0, 0),
+        profile_metric_payload(None, 1, 0.5),
+        profile_metric_payload(None, 0, 0.5),
+    ],
+)
+def test_profile_metric_rejects_impossible_evidence_combinations(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        ProfileMetricView(**payload)
+
+
+@pytest.mark.parametrize("field", ["value", "sample_count", "coverage_fraction"])
+def test_profile_metric_view_rejects_numeric_strings(field: str) -> None:
+    payload = profile_metric_payload(1.0, 1, 1.0)
     payload[field] = "1"
 
     with pytest.raises(ValidationError) as error:
-        SymbolProfileView(**payload)
+        ProfileMetricView(**payload)
 
     assert {item["loc"] for item in error.value.errors()} == {(field,)}
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "realized_volatility",
+        "jump_frequency",
+        "median_spread_bps",
+        "median_hourly_volume",
+    ],
+)
+def test_symbol_profile_view_rejects_negative_unsigned_metrics(field: str) -> None:
+    payload = symbol_profile_payload()
+    payload[field] = profile_metric_payload(-0.1, 1, 1.0)
+
+    with pytest.raises(ValidationError, match="cannot be negative"):
+        SymbolProfileView(**payload)
 
 
 def test_data_gap_view_requires_positive_utc_interval() -> None:
@@ -271,20 +327,11 @@ def test_data_gap_view_requires_positive_utc_interval() -> None:
 
 @pytest.mark.parametrize("metric", [float("nan"), float("inf"), float("-inf")])
 def test_symbol_profile_view_rejects_non_finite_metrics(metric: float) -> None:
+    payload = symbol_profile_payload()
+    payload["realized_volatility"] = profile_metric_payload(metric, 1, 1.0)
+
     with pytest.raises(ValidationError) as error:
-        SymbolProfileView(
-            symbol="BTCUSDT",
-            calculated_at=NOW,
-            coverage_start=START,
-            coverage_end=NOW,
-            sample_count=1,
-            coverage_fraction=1.0,
-            realized_volatility=metric,
-            jump_frequency=0.0,
-            median_spread_bps=1.0,
-            median_hourly_volume=1.0,
-            funding_rate_mean=0.0,
-        )
+        SymbolProfileView(**payload)
 
     assert "finite_number" in {item["type"] for item in error.value.errors()}
 

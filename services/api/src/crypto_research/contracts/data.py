@@ -204,23 +204,48 @@ class DataGapView(_PastUTCModel):
         return self
 
 
+class ProfileMetricView(UTCModel):
+    value: float | None
+    sample_count: int = Field(ge=0)
+    coverage_fraction: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "ProfileMetricView":
+        if self.sample_count == 0:
+            if self.value is not None:
+                raise ValueError("zero-sample metrics require a null value")
+            if self.coverage_fraction != 0:
+                raise ValueError("zero-sample metrics require zero coverage")
+        elif self.value is None:
+            raise ValueError("sampled metrics require a value")
+        elif self.coverage_fraction <= 0:
+            raise ValueError("sampled metrics require positive coverage")
+        return self
+
+
 class SymbolProfileView(_PastUTCModel):
     symbol: ContractSymbol
     calculated_at: datetime
     coverage_start: datetime
     coverage_end: datetime
-    sample_count: int = Field(gt=0)
-    coverage_fraction: float = Field(ge=0, le=1)
-    realized_volatility: float = Field(ge=0)
-    jump_frequency: float = Field(ge=0)
-    median_spread_bps: float = Field(ge=0)
-    median_hourly_volume: float = Field(ge=0)
-    funding_rate_mean: float
+    realized_volatility: ProfileMetricView
+    jump_frequency: ProfileMetricView
+    median_spread_bps: ProfileMetricView
+    median_hourly_volume: ProfileMetricView
+    funding_rate_mean: ProfileMetricView
 
     @model_validator(mode="after")
     def validate_coverage_range(self) -> "SymbolProfileView":
         if self.coverage_end <= self.coverage_start:
             raise ValueError("coverage end must be after coverage start")
+        non_negative = (
+            self.realized_volatility,
+            self.jump_frequency,
+            self.median_spread_bps,
+            self.median_hourly_volume,
+        )
+        if any(metric.value is not None and metric.value < 0 for metric in non_negative):
+            raise ValueError("unsigned profile metric value cannot be negative")
         return self
 
 

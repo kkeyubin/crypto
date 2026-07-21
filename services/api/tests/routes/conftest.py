@@ -21,6 +21,7 @@ from crypto_research.contracts.data import (
     IngestionJobView,
     MarketDataHealthView,
     MetadataStatus,
+    ProfileMetricView,
     SourceMode,
     StreamStateView,
     StreamStatus,
@@ -196,18 +197,28 @@ class FakeMarketDataControl:
 
     async def get_profile(self, symbol: str) -> SymbolProfileView:
         await self.get_symbol(symbol)
+        sample_count = 10 if symbol == "BTCUSDT" else 3
+        coverage_fraction = 1.0 if symbol == "BTCUSDT" else 0.5
+
+        def metric(value: float) -> ProfileMetricView:
+            return ProfileMetricView(
+                value=value,
+                sample_count=sample_count,
+                coverage_fraction=coverage_fraction,
+            )
+
         return SymbolProfileView(
             symbol=symbol,
             calculated_at=NOW,
             coverage_start=START,
             coverage_end=END,
-            sample_count=10 if symbol == "BTCUSDT" else 3,
-            coverage_fraction=1 if symbol == "BTCUSDT" else 0.5,
-            realized_volatility=0.1 if symbol == "BTCUSDT" else 0.9,
-            jump_frequency=0.01 if symbol == "BTCUSDT" else 0.2,
-            median_spread_bps=1 if symbol == "BTCUSDT" else 8,
-            median_hourly_volume=1000 if symbol == "BTCUSDT" else 20,
-            funding_rate_mean=0.0001,
+            realized_volatility=metric(0.1 if symbol == "BTCUSDT" else 0.9),
+            jump_frequency=metric(0.01 if symbol == "BTCUSDT" else 0.2),
+            median_spread_bps=metric(1.0 if symbol == "BTCUSDT" else 8.0),
+            median_hourly_volume=metric(
+                1000.0 if symbol == "BTCUSDT" else 20.0
+            ),
+            funding_rate_mean=metric(0.0001),
         )
 
     async def get_eligibility(self, symbol: str) -> EligibilityView:

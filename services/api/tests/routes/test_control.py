@@ -532,8 +532,8 @@ def test_service_keeps_profile_and_eligibility_evidence_symbol_specific() -> Non
         btc = await control.get_eligibility("BTCUSDT")
         pepe = await control.get_eligibility("PEPEUSDT")
 
-        assert btc_profile.realized_volatility == 1.0
-        assert pepe_profile.realized_volatility == 9.0
+        assert btc_profile.realized_volatility.value == 1.0
+        assert pepe_profile.realized_volatility.value == 9.0
         assert "unrepaired_gap" not in btc.reason_codes
         assert "unrepaired_gap" in pepe.reason_codes
         assert btc.symbol == "BTCUSDT"

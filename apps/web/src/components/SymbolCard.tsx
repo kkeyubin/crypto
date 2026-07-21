@@ -59,6 +59,20 @@ export function SymbolCard({ evidence, focusToken, onDisable, onEnable, onMutati
   const freshness = summarizeFreshness(evidence);
   const numberFormat = new Intl.NumberFormat(i18n.language);
   const percentFormat = new Intl.NumberFormat(i18n.language, { style: "percent", maximumFractionDigits: 0 });
+  const metricPercentFormat = new Intl.NumberFormat(i18n.language, {
+    style: "percent",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const fundingPercentFormat = new Intl.NumberFormat(i18n.language, {
+    style: "percent",
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  });
+  const decimalFormat = new Intl.NumberFormat(i18n.language, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
   const dateTimeFormat = new Intl.DateTimeFormat(i18n.language, {
     dateStyle: "medium",
     timeStyle: "medium",
@@ -68,6 +82,33 @@ export function SymbolCard({ evidence, focusToken, onDisable, onEnable, onMutati
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? t("unknownValue") : `${dateTimeFormat.format(parsed)} UTC`;
   };
+  const profileMetrics = profile === null ? [] : [
+    {
+      key: "realizedVolatility",
+      metric: profile.realized_volatility,
+      format: (value: number) => metricPercentFormat.format(value),
+    },
+    {
+      key: "jumpFrequency",
+      metric: profile.jump_frequency,
+      format: (value: number) => metricPercentFormat.format(value),
+    },
+    {
+      key: "medianSpreadBps",
+      metric: profile.median_spread_bps,
+      format: (value: number) => `${decimalFormat.format(value)} bps`,
+    },
+    {
+      key: "medianHourlyVolume",
+      metric: profile.median_hourly_volume,
+      format: (value: number) => numberFormat.format(value),
+    },
+    {
+      key: "fundingRateMean",
+      metric: profile.funding_rate_mean,
+      format: (value: number) => fundingPercentFormat.format(value),
+    },
+  ] as const;
 
   useLayoutEffect(() => {
     if (confirmingDisable) {
@@ -131,14 +172,6 @@ export function SymbolCard({ evidence, focusToken, onDisable, onEnable, onMutati
 
       <dl className="evidence-metrics">
         <div>
-          <dt>{t("profileSamples")}</dt>
-          <dd>{profile === null ? t("profileBuilding") : numberFormat.format(profile.sample_count)}</dd>
-        </div>
-        <div>
-          <dt>{t("profileCoverage")}</dt>
-          <dd>{profile === null ? t("unknownValue") : percentFormat.format(profile.coverage_fraction)}</dd>
-        </div>
-        <div>
           <dt>{t("approvedCatalogRows")}</dt>
           <dd>{evidence.partitionsTruncated ? t("atLeastCount", { count: numberFormat.format(approvedRows) }) : numberFormat.format(approvedRows)}</dd>
         </div>
@@ -153,6 +186,28 @@ export function SymbolCard({ evidence, focusToken, onDisable, onEnable, onMutati
       {evidence.partitionsTruncated || evidence.gapsTruncated ? (
         <p className="bounded-page-note">{t("boundedEvidenceNotice")}</p>
       ) : null}
+
+      <div className="evidence-section">
+        <h3>{t("profileTitle")}</h3>
+        {profile === null ? (
+          <p className="muted compact-copy">{t("profileBuilding")}</p>
+        ) : (
+          <dl className="evidence-metrics">
+            {profileMetrics.map(({ key, metric, format }) => (
+              <div key={key}>
+                <dt>{t(`profileMetric.${key}`)}</dt>
+                <dd>{metric.value === null ? t("insufficientEvidence") : format(metric.value)}</dd>
+                <dd className="muted compact-copy">
+                  {t("profileMetricEvidence", {
+                    count: numberFormat.format(metric.sample_count),
+                    coverage: percentFormat.format(metric.coverage_fraction),
+                  })}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </div>
 
       <div className="evidence-section">
         <h3>{t("freshnessTitle")}</h3>

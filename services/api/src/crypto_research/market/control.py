@@ -22,6 +22,7 @@ from crypto_research.contracts.data import (
     IngestionJobView,
     MarketDataHealthView,
     MetadataStatus,
+    ProfileMetricView,
     SourceMode,
     StreamStateView,
     StreamStatus,
@@ -51,6 +52,7 @@ from crypto_research.market.binance.streams import streams_for_symbols
 from crypto_research.market.catalog import SecureDuckDBCatalog, SqlAlchemyCatalogRepository
 from crypto_research.market.eligibility import (
     EligibilityContext,
+    EligibilityDecision,
     SymbolEligibilityPolicy,
     evaluate_eligibility,
 )
@@ -58,7 +60,7 @@ from crypto_research.market.live_catalog import (
     SecureLiveDuckDBCatalog,
     SqlAlchemyLiveCatalogRepository,
 )
-from crypto_research.market.profile import CatalogProfileService, SymbolProfile
+from crypto_research.market.profile import CatalogProfileService, ProfileMetric, SymbolProfile
 
 _SYMBOL = re.compile(r"[A-Z0-9]{3,32}")
 _REQUIRED_ARCHIVE_TYPES = frozenset(
@@ -369,14 +371,26 @@ class MarketDataControlService:
     async def get_profile(self, symbol: str) -> SymbolProfileView:
         configured = await self._required_symbol(symbol)
         profile = await self._compute_profile(configured)
-        if profile is None:
-            raise MarketDataNotFound("approved profile evidence is not available")
         return _profile_view(profile)
 
     async def get_eligibility(self, symbol: str) -> EligibilityView:
         configured = await self._required_symbol(symbol)
         summary = await self._repository.get_symbol_summary(configured.symbol)
         profile = await self._compute_profile(configured)
+        decision = await self._eligibility_decision(configured, summary, profile)
+        return EligibilityView(
+            symbol=decision.symbol,
+            eligible=decision.eligible,
+            reason_codes=decision.reason_codes,
+            evaluated_at=decision.evaluated_at,
+        )
+
+    async def _eligibility_decision(
+        self,
+        configured: SymbolState,
+        summary: SymbolOperationalSummary,
+        profile: SymbolProfile,
+    ) -> EligibilityDecision:
         now = self._clock()
         streams = await self._repository.list_stream_states(
             configured.symbol, limit=100, offset=0
@@ -385,7 +399,7 @@ class MarketDataControlService:
             configured.symbol,
             streams,
         )
-        decision = evaluate_eligibility(
+        return evaluate_eligibility(
             EligibilityContext(
                 symbol=configured.symbol,
                 metadata_verified=summary.metadata_verified,
@@ -393,12 +407,10 @@ class MarketDataControlService:
                 history_end=_required_time(configured.history_end, "history_end"),
                 coverage_fraction=(
                     profile.realized_volatility.coverage_fraction
-                    if profile and _archive_coverage_complete(configured, summary)
+                    if _archive_coverage_complete(configured, summary)
                     else 0.0
                 ),
-                median_hourly_volume=(
-                    profile.median_hourly_volume.value if profile else 0.0
-                ),
+                median_hourly_volume=profile.median_hourly_volume.value,
                 live_last_event_at=live_last_event,
                 unrepaired_gap_count=summary.open_gap_count,
                 data_ready=_data_status(configured, summary)
@@ -415,12 +427,6 @@ class MarketDataControlService:
                 ),
             ),
             now=now,
-        )
-        return EligibilityView(
-            symbol=decision.symbol,
-            eligible=decision.eligible,
-            reason_codes=decision.reason_codes,
-            evaluated_at=decision.evaluated_at,
         )
 
     async def list_streams(
@@ -483,6 +489,12 @@ class MarketDataControlService:
     ) -> SymbolView:
         summary = summary or await self._repository.get_symbol_summary(state.symbol)
         now = self._clock()
+        profile: SymbolProfile | None = None
+        eligibility: EligibilityDecision | None = None
+        if summary.metadata_verified:
+            profile = await self._compute_profile(state)
+            if _profile_complete(profile):
+                eligibility = await self._eligibility_decision(state, summary, profile)
         return SymbolView(
             symbol=state.symbol,
             enabled=state.enabled,
@@ -490,25 +502,22 @@ class MarketDataControlService:
             history_end=_required_time(state.history_end, "history_end"),
             include_agg_trades=state.include_agg_trades,
             data_status=_data_status(state, summary),
-            metadata_status=(
-                MetadataStatus.PROFILE_BUILDING
-                if summary.metadata_verified
-                else MetadataStatus.METADATA_UNVERIFIED
+            metadata_status=_metadata_status(
+                metadata_verified=summary.metadata_verified,
+                profile=profile,
+                eligibility=eligibility,
             ),
             created_at=state.created_at or now,
             updated_at=state.updated_at or now,
         )
 
-    async def _compute_profile(self, state: SymbolState) -> SymbolProfile | None:
-        profile = await self._profiles.compute(
+    async def _compute_profile(self, state: SymbolState) -> SymbolProfile:
+        return await self._profiles.compute(
             state.symbol,
             _required_time(state.history_start, "history_start"),
             _required_time(state.history_end, "history_end"),
             calculated_at=self._clock(),
         )
-        if profile.realized_volatility.sample_count <= 0:
-            return None
-        return profile
 
     def _validate_history_range(self, start: datetime, end: datetime) -> None:
         maximum = timedelta(days=self._settings.history_max_days)
@@ -694,13 +703,51 @@ def _profile_view(profile: SymbolProfile) -> SymbolProfileView:
         calculated_at=profile.calculated_at,
         coverage_start=profile.coverage_start,
         coverage_end=profile.coverage_end,
-        sample_count=profile.realized_volatility.sample_count,
-        coverage_fraction=profile.realized_volatility.coverage_fraction,
-        realized_volatility=profile.realized_volatility.value,
-        jump_frequency=profile.jump_frequency.value,
-        median_spread_bps=profile.median_spread_bps.value,
-        median_hourly_volume=profile.median_hourly_volume.value,
-        funding_rate_mean=profile.funding_rate_mean.value,
+        realized_volatility=_profile_metric_view(profile.realized_volatility),
+        jump_frequency=_profile_metric_view(profile.jump_frequency),
+        median_spread_bps=_profile_metric_view(profile.median_spread_bps),
+        median_hourly_volume=_profile_metric_view(profile.median_hourly_volume),
+        funding_rate_mean=_profile_metric_view(profile.funding_rate_mean),
+    )
+
+
+def _profile_metric_view(metric: ProfileMetric) -> ProfileMetricView:
+    return ProfileMetricView(
+        value=None if metric.sample_count == 0 else metric.value,
+        sample_count=metric.sample_count,
+        coverage_fraction=metric.coverage_fraction,
+    )
+
+
+def _profile_complete(profile: SymbolProfile | None) -> bool:
+    if profile is None:
+        return False
+    return all(
+        metric.sample_count > 0
+        for metric in (
+            profile.realized_volatility,
+            profile.jump_frequency,
+            profile.median_spread_bps,
+            profile.median_hourly_volume,
+            profile.funding_rate_mean,
+        )
+    )
+
+
+def _metadata_status(
+    *,
+    metadata_verified: bool,
+    profile: SymbolProfile | None,
+    eligibility: EligibilityDecision | None,
+) -> MetadataStatus:
+    if not metadata_verified:
+        return MetadataStatus.METADATA_UNVERIFIED
+    if not _profile_complete(profile) or eligibility is None:
+        return MetadataStatus.PROFILE_BUILDING
+    return (
+        MetadataStatus.ELIGIBLE
+        if eligibility.eligible
+        else MetadataStatus.INELIGIBLE
     )
 
 
