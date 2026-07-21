@@ -51,7 +51,7 @@ def test_kline_parser_preserves_exact_decimal_strings_and_close_state(closed: bo
     assert parsed.dataset is LiveDataset.KLINES
     assert parsed.source_event_time == 1_753_099_200_999
     assert parsed.receive_time == RECEIVED_AT
-    assert parsed.source_id == "1753099200000"
+    assert parsed.source_id is None
     assert parsed.is_final is closed
     assert parsed.values["open"] == "001.2300"
     assert parsed.values["quote_asset_volume"] == "12.50000000"
@@ -76,12 +76,12 @@ def test_mark_price_parser_retains_funding_fields() -> None:
     )
 
     assert parsed.dataset is LiveDataset.MARK_PRICE
-    assert parsed.source_id == "1753099200999"
+    assert parsed.source_id is None
     assert parsed.values == {
         "mark_price": "117415.50000000",
         "index_price": "117400.10000000",
         "estimated_settle_price": "117390.00000000",
-        "funding_rate": "0.00010000",
+        "provisional_funding_rate": "0.00010000",
         "next_funding_time": 1_753_128_000_000,
     }
 

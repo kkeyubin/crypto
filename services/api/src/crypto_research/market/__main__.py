@@ -81,6 +81,13 @@ class SessionWorkerRepository:
         async with self._session_factory() as session, session.begin():
             await SqlAlchemyDataStateRepository(session).update_stream(state)
 
+    async def update_streams(self, states: tuple[StreamState, ...]) -> None:
+        """Commit one durable stream-state checkpoint for an entire live batch."""
+        async with self._session_factory() as session, session.begin():
+            repository = SqlAlchemyDataStateRepository(session)
+            for state in states:
+                await repository.update_stream(state)
+
     async def record_gap(self, gap: GapRecord) -> DataGap:
         async with self._session_factory() as session, session.begin():
             return await SqlAlchemyDataStateRepository(session).record_gap(gap)

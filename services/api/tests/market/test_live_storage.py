@@ -1,7 +1,10 @@
+import gzip
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+import subprocess
+import sys
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,6 +17,8 @@ from crypto_research.market.live_storage import (
     BOOK_TICKER_SCHEMA,
     MARK_PRICE_SCHEMA,
     LiveStorage,
+    LiveStorageError,
+    LiveWriterUnavailable,
 )
 
 RECEIVED_AT = datetime(2026, 7, 21, 12, 0, 1, tzinfo=UTC)
@@ -52,70 +57,160 @@ def kline(*, closed: bool):
     )
 
 
-def aggregate_trade():
+def aggregate_trade(identity: int = 42):
     return event(
         "pepeusdt@aggtrade",
         {
             "e": "aggTrade",
-            "E": 1_753_099_200_010,
+            "E": 1_753_099_200_010 + identity,
             "s": "PEPEUSDT",
-            "a": 42,
+            "a": identity,
             "p": "0.000012340000000000",
             "q": "1000000.000000000000000000",
-            "f": 100,
-            "l": 102,
-            "T": 1_753_099_200_009,
+            "f": identity,
+            "l": identity,
+            "T": 1_753_099_200_009 + identity,
             "m": True,
         },
     )
 
 
-def test_closed_kline_is_published_raw_first_and_with_archive_schema(tmp_path: Path) -> None:
+def test_batch_publishes_immutable_raw_ndjson_and_normalized_parquet_shards(
+    tmp_path: Path,
+) -> None:
     storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
 
-    result = storage.persist(kline(closed=True))
+    result = storage.persist_batch(lease, (kline(closed=True), aggregate_trade()))
 
-    assert result.raw.path.relative_to(storage.data_root).as_posix() == (
-        "raw/binance/usdm/BTCUSDT/klines/date=2025-07-21/live-events.parquet"
-    )
-    assert len(result.normalized) == 1
-    normalized = result.normalized[0]
-    assert normalized.path.relative_to(storage.data_root).as_posix() == (
-        "normalized/binance/usdm/BTCUSDT/klines/date=2025-07-21/live.parquet"
-    )
-    table = pq.ParquetFile(normalized.path).read()
+    assert len(result.raw) == 2
+    assert all(part.path.name.startswith("part-") for part in result.raw)
+    assert all(part.path.name.endswith(".ndjson.gz") for part in result.raw)
+    assert len(result.normalized) == 2
+    assert all(part.path.name.startswith("part-") for part in result.normalized)
+    assert all(part.path.name.endswith(".parquet") for part in result.normalized)
+    kline_part = next(part for part in result.normalized if "/klines/" in str(part.path))
+    table = pq.ParquetFile(kline_part.path).read()
     assert table.schema.equals(KLINE_SCHEMA, check_metadata=True)
     assert table.column("open").to_pylist() == [Decimal("1.230000000000000000")]
-    raw_table = pq.ParquetFile(result.raw.path).read()
-    assert raw_table.num_rows == 1
-    assert json.loads(raw_table.column("payload_json")[0].as_py())["e"] == "kline"
+    kline_raw = next(part for part in result.raw if "/klines/" in str(part.path))
+    rows = [json.loads(line) for line in gzip.decompress(kline_raw.path.read_bytes()).splitlines()]
+    assert rows[0]["payload"]["e"] == "kline"
+    assert not list(storage.data_root.rglob("live.parquet"))
+    lease.close()
 
 
-def test_in_progress_kline_is_retained_raw_but_not_normalized(tmp_path: Path) -> None:
-    result = LiveStorage(tmp_path / "market-data").persist(kline(closed=False))
-
-    assert result.raw.row_count == 1
-    assert result.normalized == ()
-
-
-def test_replaying_identical_event_is_idempotent(tmp_path: Path) -> None:
+def test_batch_keeps_in_progress_kline_raw_without_normalizing(tmp_path: Path) -> None:
     storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
+
+    result = storage.persist_batch(lease, (kline(closed=False),))
+
+    assert result.raw[0].row_count == 1
+    assert result.normalized == ()
+    lease.close()
+
+
+def test_replay_identity_ignores_receive_time_but_conflicting_payload_fails(
+    tmp_path: Path,
+) -> None:
+    storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
     parsed = aggregate_trade()
+    first = storage.persist_batch(lease, (parsed,))
+    replay = replace(parsed, receive_time=parsed.receive_time + timedelta(seconds=30))
 
-    first = storage.persist(parsed)
-    second = LiveStorage(storage.data_root).persist(parsed)
+    second = storage.persist_batch(lease, (replay,))
 
-    assert first.raw.sha256 == second.raw.sha256
-    assert first.normalized[0].sha256 == second.normalized[0].sha256
-    assert second.raw.row_count == 1
-    assert second.normalized[0].row_count == 1
-    assert pq.ParquetFile(second.normalized[0].path).read().schema.equals(
-        AGG_TRADE_SCHEMA, check_metadata=True
+    assert second.replayed_count == 1
+    assert second.raw == first.raw
+    conflicting_raw = {**parsed.raw, "p": "0.000099990000000000"}
+    conflicting = replace(parsed, raw=conflicting_raw)
+    with pytest.raises(LiveStorageError, match="conflicts"):
+        storage.persist_batch(lease, (conflicting,))
+    lease.close()
+
+
+def test_same_identity_repeated_inside_one_batch_is_written_once(tmp_path: Path) -> None:
+    storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
+    parsed = aggregate_trade()
+    replay = replace(parsed, receive_time=parsed.receive_time + timedelta(seconds=1))
+
+    result = storage.persist_batch(lease, (parsed, replay))
+
+    assert result.replayed_count == 1
+    assert result.raw[0].row_count == 1
+    assert pq.ParquetFile(result.normalized[0].path).read().num_rows == 1
+    lease.close()
+
+
+def test_one_authoritative_writer_is_enforced_across_storage_instances(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "market-data"
+    first_storage = LiveStorage(root)
+    second_storage = LiveStorage(root)
+    first = first_storage.acquire_writer("worker-a")
+
+    with pytest.raises(LiveWriterUnavailable, match="authoritative"):
+        second_storage.acquire_writer("worker-b")
+
+    first.close()
+    second = second_storage.acquire_writer("worker-b")
+    second.close()
+
+
+def test_authoritative_writer_lock_is_enforced_across_processes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "market-data"
+    storage = LiveStorage(root)
+    lease = storage.acquire_writer("parent-worker")
+    script = """
+import sys
+from pathlib import Path
+from crypto_research.market.live_storage import LiveStorage, LiveWriterUnavailable
+try:
+    LiveStorage(Path(sys.argv[1])).acquire_writer("child-worker")
+except LiveWriterUnavailable:
+    raise SystemExit(23)
+raise SystemExit(0)
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(root)],
+        check=False,
+        capture_output=True,
+        text=True,
     )
 
+    assert completed.returncode == 23, completed.stderr
+    lease.close()
 
-def test_mark_price_funding_and_book_ticker_remain_decimal_exact(tmp_path: Path) -> None:
+
+def test_batch_rolls_one_shard_per_partition_without_lost_rows(tmp_path: Path) -> None:
     storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
+    events = tuple(aggregate_trade(index) for index in range(24))
+
+    result = storage.persist_batch(lease, events)
+
+    assert len(result.raw) == 1
+    assert len(result.normalized) == 1
+    assert result.raw[0].row_count == 24
+    table = pq.ParquetFile(result.normalized[0].path).read()
+    assert table.schema.equals(AGG_TRADE_SCHEMA, check_metadata=True)
+    assert table.num_rows == 24
+    assert table.column("aggregate_trade_id").to_pylist() == list(range(24))
+    lease.close()
+
+
+def test_mark_and_book_ticker_remain_decimal_exact_in_separate_schemas(
+    tmp_path: Path,
+) -> None:
+    storage = LiveStorage(tmp_path / "market-data")
+    lease = storage.acquire_writer("worker-a")
     mark = event(
         "btcusdt@markprice@1s",
         {
@@ -144,63 +239,35 @@ def test_mark_price_funding_and_book_ticker_remain_decimal_exact(tmp_path: Path)
         },
     )
 
-    mark_result = storage.persist(mark).normalized[0]
-    ticker_result = storage.persist(ticker).normalized[0]
+    result = storage.persist_batch(lease, (mark, ticker))
 
-    mark_table = pq.ParquetFile(mark_result.path).read()
-    ticker_table = pq.ParquetFile(ticker_result.path).read()
+    mark_part = next(part for part in result.normalized if "/mark_price/" in str(part.path))
+    ticker_part = next(part for part in result.normalized if "/book_ticker/" in str(part.path))
+    mark_table = pq.ParquetFile(mark_part.path).read()
+    ticker_table = pq.ParquetFile(ticker_part.path).read()
     assert mark_table.schema.equals(MARK_PRICE_SCHEMA, check_metadata=True)
     assert ticker_table.schema.equals(BOOK_TICKER_SCHEMA, check_metadata=True)
-    assert mark_table.column("funding_rate").to_pylist() == [
-        Decimal("0.000100000000000000")
+    assert "provisional_funding_rate" in mark_table.column_names
+    assert "funding_rate" not in mark_table.column_names
+    assert not list(storage.data_root.rglob("funding_rate"))
+    assert mark_table.column("mark_price").to_pylist() == [
+        Decimal("117415.500000000000000000")
     ]
     assert ticker_table.column("bid_price").to_pylist() == [
         Decimal("117415.500000000000000000")
     ]
+    lease.close()
 
 
 def test_storage_api_accepts_no_caller_path_and_rejects_symlink_root(tmp_path: Path) -> None:
     storage = LiveStorage(tmp_path / "market-data")
     with pytest.raises(TypeError):
-        storage.persist(kline(closed=True), path="../../escape")  # type: ignore[call-arg]
+        storage.persist_batch(None, (kline(closed=True),), path="../../escape")  # type: ignore[call-arg]
 
     real = tmp_path / "real"
     real.mkdir(mode=0o700)
     symlink = tmp_path / "linked"
     os.symlink(real, symlink)
     with pytest.raises(ValueError, match="root"):
-        LiveStorage(symlink).persist(kline(closed=True))
+        LiveStorage(symlink).acquire_writer("worker-a")
     assert not (tmp_path / "escape").exists()
-
-
-def test_concurrent_distinct_events_do_not_lose_partition_rows(tmp_path: Path) -> None:
-    storage = LiveStorage(tmp_path / "market-data")
-    events = tuple(
-        event(
-            "pepeusdt@aggtrade",
-            {
-                "e": "aggTrade",
-                "E": 1_753_099_200_010 + index,
-                "s": "PEPEUSDT",
-                "a": index,
-                "p": "0.000012340000000000",
-                "q": "1000000.000000000000000000",
-                "f": index,
-                "l": index,
-                "T": 1_753_099_200_009 + index,
-                "m": True,
-            },
-        )
-        for index in range(24)
-    )
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        tuple(executor.map(storage.persist, events))
-
-    normalized = (
-        storage.data_root
-        / "normalized/binance/usdm/PEPEUSDT/agg_trades/date=2025-07-21/live.parquet"
-    )
-    table = pq.ParquetFile(normalized).read()
-    assert table.num_rows == len(events)
-    assert table.column("aggregate_trade_id").to_pylist() == list(range(24))

@@ -37,7 +37,6 @@ class StreamKind(StrEnum):
 class LiveDataset(StrEnum):
     KLINES = "klines"
     MARK_PRICE = "mark_price"
-    FUNDING_RATE = "funding_rate"
     AGG_TRADES = "agg_trades"
     BOOK_TICKER = "book_ticker"
 
@@ -257,7 +256,7 @@ def _parse_kline(
         receive_time,
         StreamKind.KLINE,
         LiveDataset.KLINES,
-        str(open_time),
+        None,
         values,
         is_final=is_final,
     )
@@ -266,12 +265,11 @@ def _parse_kline(
 def _parse_mark_price(
     event: Mapping[str, object], receive_time: datetime
 ) -> ParsedStreamEvent:
-    event_time = _integer(event, "E")
     values = {
         "mark_price": _decimal_text(event, "p"),
         "index_price": _decimal_text(event, "i"),
         "estimated_settle_price": _decimal_text(event, "P"),
-        "funding_rate": _decimal_text(event, "r"),
+        "provisional_funding_rate": _decimal_text(event, "r"),
         "next_funding_time": _integer(event, "T"),
     }
     return _base(
@@ -279,7 +277,7 @@ def _parse_mark_price(
         receive_time,
         StreamKind.MARK_PRICE,
         LiveDataset.MARK_PRICE,
-        str(event_time),
+        None,
         values,
     )
 

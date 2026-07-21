@@ -13,8 +13,11 @@ from crypto_research.market.binance.archive_paths import DatasetKind, plan_archi
 from crypto_research.market.binance.streams import group_streams, streams_for_symbols
 from crypto_research.market.worker import (
     ConnectionMode,
+    ConnectionPolicy,
     ManagedConnection,
     MarketWorker,
+    RoutedConnectionFactory,
+    StreamConnectionSupervisor,
     install_sigterm_handler,
 )
 
@@ -32,12 +35,18 @@ class Repository:
         self.heartbeats = []
         self.transitions = []
         self.checkpoints = 0
+        self.stream_batches = []
 
     async def list_active_symbols(self):
         return self.active
 
     async def update_stream(self, state) -> None:
         self.streams.append(state)
+
+    async def update_streams(self, states) -> None:
+        batch = tuple(states)
+        self.stream_batches.append(batch)
+        self.streams.extend(batch)
 
     async def record_gap(self, gap):
         self.gaps.setdefault(gap.id, gap)
@@ -75,9 +84,26 @@ class Supervisor:
 class Storage:
     def __init__(self) -> None:
         self.events = []
+        self.batches = []
+        self.lease_closed = False
 
-    def persist(self, event) -> None:
-        self.events.append(event)
+    def acquire_writer(self, owner):
+        storage = self
+
+        class Lease:
+            active = True
+
+            def close(self):
+                self.active = False
+                storage.lease_closed = True
+
+        return Lease()
+
+    def persist_batch(self, lease, events) -> None:
+        assert lease.active
+        batch = tuple(events)
+        self.batches.append(batch)
+        self.events.extend(batch)
 
 
 class Backfill:
@@ -138,6 +164,7 @@ def test_cycle_refreshes_independent_active_symbols_and_schedules_backfill() -> 
         market_worker = worker(repository, supervisor, Storage(), backfill)
 
         await market_worker.run_cycle()
+        await asyncio.sleep(0)
 
         groups = supervisor.refreshes[0][0]
         assert len(groups) == 2
@@ -149,11 +176,12 @@ def test_cycle_refreshes_independent_active_symbols_and_schedules_backfill() -> 
         assert repository.heartbeats[-1].status == "running"
         assert repository.heartbeats[-1].details["active_symbols"] == 2
         assert repository.checkpoints == 1
+        await market_worker._stop_backfill()
 
     asyncio.run(scenario())
 
 
-def test_event_is_stored_before_stream_freshness_update_and_then_marked_stale() -> None:
+def test_events_are_buffered_then_stored_and_committed_as_one_batch() -> None:
     async def scenario() -> None:
         repository = Repository()
         storage = Storage()
@@ -184,13 +212,25 @@ def test_event_is_stored_before_stream_freshness_update_and_then_marked_stale() 
         )
 
         await market_worker.handle_message(message)
-        assert len(storage.events) == 1
+        await market_worker.handle_message(message)
+        assert storage.events == []
+        assert repository.stream_batches == []
+
+        await market_worker.flush_events(force=True)
+
+        assert len(storage.batches) == 1
+        assert len(storage.events) == 2
+        assert len(repository.stream_batches) == 1
         assert repository.streams[-1].status == "connected"
+        assert "disconnected_at" not in repository.streams[-1].details
         assert repository.streams[-1].last_event_at == NOW
 
         await market_worker.update_stale_states(moments[1])
         assert repository.streams[-1].status == "degraded"
-        assert repository.streams[-1].details == {"reason": "stale_live_data"}
+        assert repository.streams[-1].details == {
+            "dataset": "agg_trades",
+            "reason": "stale_live_data",
+        }
 
     asyncio.run(scenario())
 
@@ -251,8 +291,8 @@ def test_disconnect_window_becomes_idempotent_per_stream_gap_on_reconnect() -> N
 
         assert len(repository.gaps) == 2
         assert {gap.dataset for gap in repository.gaps.values()} == {
-            "agg_trades",
-            "book_ticker",
+            "agg_trade",
+            "best_bid_ask",
         }
         assert all(gap.reason == "source_unknown_disconnect" for gap in repository.gaps.values())
         disconnected = [
@@ -264,6 +304,38 @@ def test_disconnect_window_becomes_idempotent_per_stream_gap_on_reconnect() -> N
             for state in disconnected
         )
         assert repository.streams[-1].status == "connected"
+        assert "disconnected_at" not in repository.streams[-1].details
+
+    asyncio.run(scenario())
+
+
+def test_planned_rotation_records_gap_with_authoritative_data_types() -> None:
+    async def scenario() -> None:
+        repository = Repository()
+        market_worker = worker(repository, Supervisor(), Storage(), Backfill())
+        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
+        connection = ManagedConnection(
+            group,
+            Socket(),
+            ConnectionMode.DIRECT,
+            NOW,
+            timedelta(hours=23, minutes=55),
+        )
+
+        await market_worker.note_disconnect(
+            connection,
+            NOW + timedelta(minutes=1),
+            reason="planned_pre_24_hour_rotation",
+        )
+        await market_worker.note_reconnect(group, NOW + timedelta(minutes=1, seconds=2))
+
+        assert {gap.dataset for gap in repository.gaps.values()} == {
+            "agg_trade",
+            "best_bid_ask",
+        }
+        assert {
+            gap.reason for gap in repository.gaps.values()
+        } == {"planned_pre_24_hour_rotation"}
 
     asyncio.run(scenario())
 
@@ -333,6 +405,7 @@ def test_run_consumes_managed_websocket_messages_before_shutdown() -> None:
 
         assert len(storage.events) == 1
         assert storage.events[0].source_id == "42"
+        assert storage.lease_closed is True
 
     asyncio.run(scenario())
 
@@ -456,6 +529,378 @@ def test_shutdown_interrupts_connection_backoff() -> None:
         market_worker.request_shutdown()
 
         await asyncio.wait_for(task, timeout=0.1)
+
+    asyncio.run(scenario())
+
+
+def test_bounded_event_buffer_applies_backpressure_until_a_batch_flushes() -> None:
+    async def scenario() -> None:
+        repository = Repository()
+        storage = Storage()
+        market_worker = worker(
+            repository,
+            Supervisor(),
+            storage,
+            Backfill(),
+            max_buffer_events=1,
+            batch_size=1,
+        )
+        message = json.dumps(
+            {
+                "stream": "btcusdt@aggtrade",
+                "data": {
+                    "e": "aggTrade",
+                    "E": 1_753_099_200_010,
+                    "s": "BTCUSDT",
+                    "a": 42,
+                    "p": "1",
+                    "q": "2",
+                    "f": 100,
+                    "l": 102,
+                    "T": 1_753_099_200_009,
+                    "m": True,
+                },
+            }
+        )
+
+        await market_worker.handle_message(message)
+        blocked = asyncio.create_task(market_worker.handle_message(message))
+        await asyncio.sleep(0)
+        assert not blocked.done()
+
+        await market_worker.flush_events(force=True)
+        await blocked
+        await market_worker.flush_events(force=True)
+        assert [len(batch) for batch in storage.batches] == [1, 1]
+
+    asyncio.run(scenario())
+
+
+def test_low_volume_events_roll_together_at_the_fixed_flush_deadline() -> None:
+    async def scenario() -> None:
+        repository = Repository()
+        supervisor = Supervisor()
+        storage = Storage()
+        market_worker = worker(
+            repository,
+            supervisor,
+            storage,
+            Backfill(),
+            flush_interval=0.05,
+        )
+        task = asyncio.create_task(market_worker.run())
+        while not supervisor.refreshes:
+            await asyncio.sleep(0)
+        base = {
+            "e": "aggTrade",
+            "s": "BTCUSDT",
+            "p": "1",
+            "q": "2",
+            "m": True,
+        }
+        for identity in (41, 42):
+            await market_worker.handle_message(
+                json.dumps(
+                    {
+                        "stream": "btcusdt@aggtrade",
+                        "data": {
+                            **base,
+                            "E": 1_753_099_200_000 + identity,
+                            "a": identity,
+                            "f": identity,
+                            "l": identity,
+                            "T": 1_753_099_200_000 + identity,
+                        },
+                    }
+                )
+            )
+
+        await asyncio.sleep(0.005)
+        assert storage.batches == []
+        await asyncio.sleep(0.07)
+        market_worker.request_shutdown()
+        await task
+
+        assert [len(batch) for batch in storage.batches] == [2]
+
+    asyncio.run(scenario())
+
+
+def test_stream_message_details_preserve_source_mode_after_batch_flush() -> None:
+    class BlockingSocket(Socket):
+        async def recv(self):
+            await asyncio.Event().wait()
+
+    async def scenario() -> None:
+        repository = Repository()
+        supervisor = Supervisor()
+        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
+        supervisor.connections = (
+            ManagedConnection(
+                group,
+                    BlockingSocket(),
+                ConnectionMode.PROXY,
+                NOW,
+                timedelta(hours=23, minutes=55),
+            ),
+        )
+        market_worker = worker(repository, supervisor, Storage(), Backfill())
+        await market_worker.run_cycle()
+        message = json.dumps(
+            {
+                "stream": "btcusdt@aggtrade",
+                "data": {
+                    "e": "aggTrade",
+                    "E": 1_753_099_200_010,
+                    "s": "BTCUSDT",
+                    "a": 42,
+                    "p": "1",
+                    "q": "2",
+                    "f": 100,
+                    "l": 102,
+                    "T": 1_753_099_200_009,
+                    "m": True,
+                },
+            }
+        )
+
+        await market_worker.handle_message(message)
+        await market_worker.flush_events(force=True)
+
+        assert repository.streams[-1].details == {
+            "source_mode": "proxy",
+            "dataset": "agg_trades",
+        }
+        await market_worker._stop_readers()
+        await market_worker._stop_backfill()
+
+    asyncio.run(scenario())
+
+
+def test_blocking_backfill_does_not_block_live_cycle_or_shutdown() -> None:
+    class BlockingBackfill:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def run_once(self, worker_id, lease_duration):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+    async def scenario() -> None:
+        backfill = BlockingBackfill()
+        market_worker = worker(Repository(), Supervisor(), Storage(), backfill)
+
+        await asyncio.wait_for(market_worker.run_cycle(), timeout=0.05)
+        await backfill.started.wait()
+        await market_worker._stop_backfill()
+
+        assert backfill.cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_transient_batch_checkpoint_failure_retries_without_losing_buffer() -> None:
+    class FlakyRepository(Repository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failures = 2
+
+        async def update_streams(self, states) -> None:
+            if self.failures:
+                self.failures -= 1
+                raise ConnectionError("database unavailable")
+            await super().update_streams(states)
+
+    async def scenario() -> None:
+        repository = FlakyRepository()
+        supervisor = Supervisor()
+        storage = Storage()
+        delays = []
+
+        async def sleep(delay: float) -> None:
+            delays.append(delay)
+
+        market_worker = worker(
+            repository,
+            supervisor,
+            storage,
+            Backfill(),
+            sleeper=sleep,
+            random_source=lambda: 0.5,
+            flush_interval=0.001,
+        )
+        task = asyncio.create_task(market_worker.run())
+        while not supervisor.refreshes:
+            await asyncio.sleep(0)
+        await market_worker.handle_message(
+            json.dumps(
+                {
+                    "stream": "btcusdt@aggtrade",
+                    "data": {
+                        "e": "aggTrade",
+                        "E": 1_753_099_200_010,
+                        "s": "BTCUSDT",
+                        "a": 42,
+                        "p": "1",
+                        "q": "2",
+                        "f": 100,
+                        "l": 102,
+                        "T": 1_753_099_200_009,
+                        "m": True,
+                    },
+                }
+            )
+        )
+        for _ in range(100):
+            if repository.stream_batches:
+                break
+            await asyncio.sleep(0)
+        market_worker.request_shutdown()
+        await task
+
+        assert len(repository.stream_batches) == 1
+        assert delays[:2] == [1.0, 2.0]
+        assert len(storage.batches) == 3
+
+    asyncio.run(scenario())
+
+
+def test_done_reader_is_removed_and_rebuilt_for_an_active_connection() -> None:
+    class FailingSocket(Socket):
+        def __init__(self) -> None:
+            self.receives = 0
+
+        async def recv(self):
+            self.receives += 1
+            raise ConnectionError("lost")
+
+    class StickySupervisor(Supervisor):
+        async def discard(self, connection, reason: str) -> None:
+            return None
+
+    async def scenario() -> None:
+        repository = Repository()
+        supervisor = StickySupervisor()
+        socket_ = FailingSocket()
+        group = group_streams(streams_for_symbols(("BTCUSDT",)))[0]
+        supervisor.connections = (
+            ManagedConnection(
+                group,
+                socket_,
+                ConnectionMode.DIRECT,
+                NOW,
+                timedelta(hours=23, minutes=55),
+            ),
+        )
+
+        async def sleep(_delay: float) -> None:
+            return None
+
+        market_worker = worker(
+            repository, supervisor, Storage(), Backfill(), sleeper=sleep
+        )
+        await market_worker.run_cycle()
+        for _ in range(20):
+            if socket_.receives:
+                break
+            await asyncio.sleep(0)
+        for _ in range(20):
+            await market_worker.run_cycle()
+            if socket_.receives >= 2:
+                break
+            await asyncio.sleep(0)
+
+        assert socket_.receives >= 2
+        await market_worker._stop_readers()
+        await market_worker._stop_backfill()
+
+    asyncio.run(scenario())
+
+
+def test_cleanup_failures_do_not_mask_primary_worker_failure() -> None:
+    class BrokenRepository(Repository):
+        async def update_worker_heartbeat(self, heartbeat) -> None:
+            if heartbeat.status == "stopped":
+                raise RuntimeError("heartbeat cleanup failed")
+            await super().update_worker_heartbeat(heartbeat)
+
+    class BrokenSupervisor(Supervisor):
+        async def refresh(self, groups, now) -> None:
+            raise ValueError("primary cycle failure")
+
+        async def shutdown(self) -> None:
+            raise RuntimeError("socket cleanup failed")
+
+    async def scenario() -> None:
+        market_worker = worker(
+            BrokenRepository(), BrokenSupervisor(), Storage(), Backfill()
+        )
+
+        with pytest.raises(ValueError, match="primary cycle failure"):
+            await market_worker.run()
+
+    asyncio.run(scenario())
+
+
+def test_real_supervisor_rotation_lifecycle_records_all_stream_gaps() -> None:
+    class BlockingSocket(Socket):
+        async def recv(self):
+            await asyncio.Event().wait()
+
+    class Connector:
+        async def __call__(self, uri, **kwargs):
+            return BlockingSocket()
+
+    async def scenario() -> None:
+        repository = Repository()
+        repository.active = (SymbolState("BTCUSDT", True, None, None, False),)
+        supervisor = StreamConnectionSupervisor(
+            RoutedConnectionFactory(
+                Connector(),
+                ConnectionPolicy(
+                    proxy_mode="direct",
+                    rotate_after=timedelta(hours=23, minutes=55),
+                ),
+            )
+        )
+        rotated_at = NOW + timedelta(hours=23, minutes=55)
+        moments = iter(
+            (
+                NOW,
+                rotated_at,
+                rotated_at + timedelta(seconds=1),
+                rotated_at + timedelta(seconds=1),
+            )
+        )
+        market_worker = worker(
+            repository,
+            supervisor,
+            Storage(),
+            Backfill(),
+            clock=lambda: next(moments),
+        )
+
+        await market_worker.run_cycle()
+        await market_worker.run_cycle()
+
+        assert {gap.dataset for gap in repository.gaps.values()} == {
+            "kline_1m",
+            "mark_price",
+            "agg_trade",
+            "best_bid_ask",
+        }
+        assert all(
+            gap.reason == "planned_pre_24_hour_rotation"
+            for gap in repository.gaps.values()
+        )
+        await market_worker._stop_readers()
+        await market_worker._stop_backfill()
+        await supervisor.shutdown()
 
     asyncio.run(scenario())
 

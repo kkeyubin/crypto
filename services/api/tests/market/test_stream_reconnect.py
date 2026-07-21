@@ -187,7 +187,8 @@ def test_backoff_is_exponential_bounded_and_jittered() -> None:
 
     assert policy.delay(0, random_fraction=0.0) == pytest.approx(0.8)
     assert policy.delay(3, random_fraction=0.5) == pytest.approx(8.0)
-    assert policy.delay(10, random_fraction=1.0) == pytest.approx(36.0)
+    assert policy.delay(10, random_fraction=1.0) == pytest.approx(30.0)
+    assert policy.delay(10_000, random_fraction=1.0) == pytest.approx(30.0)
 
 
 def test_protocol_ping_rotation_subscription_refresh_and_shutdown() -> None:
@@ -268,6 +269,41 @@ def test_supervisor_periodically_probes_existing_proxy_and_migrates_groups() -> 
     asyncio.run(scenario())
 
 
+def test_direct_recovery_keeps_replacement_when_old_proxy_close_fails() -> None:
+    class FailingCloseSocket(FakeSocket):
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            await super().close(code, reason)
+            raise ConnectionError("old proxy close failed")
+
+    async def scenario() -> None:
+        old_proxy = FailingCloseSocket()
+        recovered_direct = FakeSocket()
+        factory = RoutedConnectionFactory(
+            FakeConnector(
+                [TimeoutError("direct blocked"), old_proxy, recovered_direct]
+            ),
+            ConnectionPolicy(
+                proxy_mode="auto",
+                proxy_url=PROXY,
+                direct_probe_interval=timedelta(minutes=5),
+            ),
+            record_direct_failure=lambda _failure: None,
+            record_mode_transition=lambda _transition: None,
+        )
+        supervisor = StreamConnectionSupervisor(factory)
+        group = public_group()
+        await supervisor.refresh((group,), NOW)
+
+        await supervisor.refresh((group,), NOW + timedelta(minutes=5))
+
+        assert supervisor.connections[0].websocket is recovered_direct
+        assert supervisor.connections[0].mode is ConnectionMode.DIRECT
+        assert old_proxy.closes == [(1000, "direct recovery probe")]
+        assert recovered_direct.closes == []
+
+    asyncio.run(scenario())
+
+
 def test_proxy_configuration_must_be_loopback_and_auto_requires_recorder() -> None:
     with pytest.raises(ValueError, match="loopback"):
         ConnectionPolicy(proxy_mode="auto", proxy_url="http://proxy.example:17891")
@@ -275,3 +311,137 @@ def test_proxy_configuration_must_be_loopback_and_auto_requires_recorder() -> No
         RoutedConnectionFactory(
             FakeConnector(), ConnectionPolicy(proxy_mode="auto", proxy_url=PROXY)
         )
+
+
+def test_transition_audit_failure_closes_new_fallback_socket() -> None:
+    async def scenario() -> None:
+        fallback = FakeSocket()
+
+        async def fail_audit(_transition) -> None:
+            raise RuntimeError("audit unavailable")
+
+        factory = RoutedConnectionFactory(
+            FakeConnector([TimeoutError("blocked"), fallback]),
+            ConnectionPolicy(proxy_mode="auto", proxy_url=PROXY),
+            record_direct_failure=lambda _failure: None,
+            record_mode_transition=fail_audit,
+        )
+
+        with pytest.raises(RuntimeError, match="audit unavailable"):
+            await factory.open(public_group(), NOW)
+        assert fallback.closes == [(1000, "mode transition audit failed")]
+        assert factory.preferred_mode is ConnectionMode.DIRECT
+
+    asyncio.run(scenario())
+
+
+def test_recovery_audit_failure_closes_direct_probe_and_keeps_proxy_mode() -> None:
+    async def scenario() -> None:
+        proxy_socket = FakeSocket()
+        direct_probe = FakeSocket()
+        transitions = 0
+
+        async def audit(_transition) -> None:
+            nonlocal transitions
+            transitions += 1
+            if transitions == 2:
+                raise RuntimeError("recovery audit unavailable")
+
+        factory = RoutedConnectionFactory(
+            FakeConnector([TimeoutError("blocked"), proxy_socket, direct_probe]),
+            ConnectionPolicy(
+                proxy_mode="auto",
+                proxy_url=PROXY,
+                direct_probe_interval=timedelta(minutes=5),
+            ),
+            record_direct_failure=lambda _failure: None,
+            record_mode_transition=audit,
+        )
+        await factory.open(public_group(), NOW)
+
+        with pytest.raises(RuntimeError, match="recovery audit unavailable"):
+            await factory.open(public_group(), NOW + timedelta(minutes=5))
+
+        assert direct_probe.closes == [(1000, "mode transition audit failed")]
+        assert factory.preferred_mode is ConnectionMode.PROXY
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_and_discard_close_best_effort_and_remove_every_connection() -> None:
+    class FailingCloseSocket(FakeSocket):
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            await super().close(code, reason)
+            raise ConnectionError("close failed")
+
+    async def scenario() -> None:
+        failing = FailingCloseSocket()
+        healthy = FakeSocket()
+        supervisor = StreamConnectionSupervisor(
+            RoutedConnectionFactory(
+                FakeConnector([failing, healthy]), ConnectionPolicy(proxy_mode="direct")
+            )
+        )
+        groups = (public_group("BTCUSDT"), public_group("ETHUSDT"))
+        await supervisor.refresh(groups, NOW)
+
+        with pytest.raises(ExceptionGroup, match="shutdown"):
+            await supervisor.shutdown()
+
+        assert failing.closes == [(1000, "worker shutdown")]
+        assert healthy.closes == [(1000, "worker shutdown")]
+        assert supervisor.connections == ()
+
+    asyncio.run(scenario())
+
+
+def test_planned_rotation_exposes_exact_disconnect_reconnect_lifecycle() -> None:
+    async def scenario() -> None:
+        supervisor = StreamConnectionSupervisor(
+            RoutedConnectionFactory(
+                FakeConnector([FakeSocket(), FakeSocket()]),
+                ConnectionPolicy(proxy_mode="direct"),
+            )
+        )
+        group = public_group()
+        await supervisor.refresh((group,), NOW)
+        assert supervisor.drain_lifecycle_events() == ()
+
+        rotated_at = NOW + timedelta(hours=23, minutes=55)
+        await supervisor.refresh((group,), rotated_at)
+
+        events = supervisor.drain_lifecycle_events()
+        assert [(event.state, event.reason, event.at) for event in events] == [
+            ("disconnected", "planned_pre_24_hour_rotation", rotated_at),
+            ("connected", "planned_pre_24_hour_rotation", rotated_at),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_subscription_regroup_exposes_disconnect_and_reconnect_lifecycle() -> None:
+    async def scenario() -> None:
+        supervisor = StreamConnectionSupervisor(
+            RoutedConnectionFactory(
+                FakeConnector([FakeSocket(), FakeSocket()]),
+                ConnectionPolicy(proxy_mode="direct"),
+            )
+        )
+        btc = public_group("BTCUSDT")
+        combined = next(
+            group
+            for group in group_streams(streams_for_symbols(("BTCUSDT", "ETHUSDT")))
+            if group.route.value == "public"
+        )
+        await supervisor.refresh((btc,), NOW)
+
+        refreshed_at = NOW + timedelta(minutes=1)
+        await supervisor.refresh((combined,), refreshed_at)
+
+        events = supervisor.drain_lifecycle_events()
+        assert [(event.state, event.reason) for event in events] == [
+            ("disconnected", "subscription_refresh"),
+            ("connected", "subscription_refresh"),
+        ]
+
+    asyncio.run(scenario())
