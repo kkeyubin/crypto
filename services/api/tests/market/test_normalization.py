@@ -31,6 +31,17 @@ def test_normalizes_klines_with_string_derived_arrow_decimals_and_millisecond_ti
     assert normalized.table.column("close_time").to_pylist() == [1704067259999, 1704067319999]
 
 
+def test_rejects_non_official_kline_header_aliases() -> None:
+    csv = (FIXTURES / "klines.csv").read_bytes().replace(
+        b"quote_volume,count,taker_buy_volume,taker_buy_quote_volume",
+        b"quote_asset_volume,number_of_trades,taker_buy_base_asset_volume,"
+        b"taker_buy_quote_asset_volume",
+    )
+
+    with pytest.raises(NormalizationError, match="unexpected CSV header"):
+        normalize_csv(DatasetKind.KLINES, csv, START, END)
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [

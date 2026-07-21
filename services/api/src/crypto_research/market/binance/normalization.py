@@ -30,10 +30,10 @@ KLINE_HEADERS = (
     "close",
     "volume",
     "close_time",
-    "quote_asset_volume",
-    "number_of_trades",
-    "taker_buy_base_asset_volume",
-    "taker_buy_quote_asset_volume",
+    "quote_volume",
+    "count",
+    "taker_buy_volume",
+    "taker_buy_quote_volume",
     "ignore",
 )
 FUNDING_HEADERS = ("calc_time", "funding_interval_hours", "last_funding_rate")
