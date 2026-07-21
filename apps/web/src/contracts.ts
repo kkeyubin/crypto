@@ -1,7 +1,17 @@
 export type {
   AIAssessment,
+  AddSymbolRequest,
+  BackfillRequest,
+  DataGapView,
   DataManifest,
+  DataPartitionView,
+  EligibilityView,
+  IngestionJobView,
+  MarketDataHealthView,
   MarketSnapshot,
   StrategySpec,
   StrategySpecRecord,
+  StreamStateView,
+  SymbolProfileView,
+  SymbolView,
 } from "../../../contracts/types/index";

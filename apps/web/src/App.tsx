@@ -1,19 +1,32 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { StrategySpec } from "./contracts";
 import { setLocale } from "./i18n";
+import { SymbolsPage } from "./SymbolsPage";
 import { useHealth } from "./useHealth";
 
-const pendingNavigationKeys = ["symbols", "strategies", "backtests", "paper", "operations"] as const;
+const pendingNavigationKeys = ["strategies", "backtests", "paper", "operations"] as const;
 
 const noStrategyLoaded: StrategySpec | undefined = undefined;
 
 export function App() {
   const { i18n, t } = useTranslation();
+  const [view, setView] = useState<"overview" | "symbols">(
+    window.location.hash === "#symbols" ? "symbols" : "overview",
+  );
   const health = useHealth();
   const healthText = t(
     health === "healthy" ? "apiHealthy" : health === "loading" ? "apiLoading" : "apiUnavailable",
   );
   const healthStatus = healthText.replace(/^API\s/, "");
+
+  useEffect(() => {
+    const updateView = () => {
+      setView(window.location.hash === "#symbols" ? "symbols" : "overview");
+    };
+    window.addEventListener("hashchange", updateView);
+    return () => window.removeEventListener("hashchange", updateView);
+  }, []);
 
   return (
     <div className="app-shell">
@@ -43,7 +56,8 @@ export function App() {
 
       <aside className="sidebar">
         <nav aria-label={t("navigationLabel")}>
-          <a href="#overview" aria-current="page">{t("overview")}</a>
+          <a href="#overview" aria-current={view === "overview" ? "page" : undefined}>{t("overview")}</a>
+          <a href="#symbols" aria-current={view === "symbols" ? "page" : undefined}>{t("symbols")}</a>
           {pendingNavigationKeys.map((key) => (
             <button key={key} type="button" disabled aria-label={t("unavailableNavigation", { label: t(key) })}>
               {t(key)} <span className="sr-only">{t("notAvailable")}</span>
@@ -52,8 +66,8 @@ export function App() {
         </nav>
       </aside>
 
-      <main id="overview" className="main-content">
-        <div className="content-frame">
+      <main id={view} className="main-content">
+        {view === "symbols" ? <SymbolsPage /> : <div className="content-frame">
           <p className="eyebrow">{t("shellNotice")}</p>
           <h1>{t("commandCenter")}</h1>
           <p className="muted evidence-notice">{t("evidenceNotice")}</p>
@@ -75,7 +89,7 @@ export function App() {
               </p>
             </article>
           </section>
-        </div>
+        </div>}
       </main>
     </div>
   );
