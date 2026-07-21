@@ -7,15 +7,17 @@ This runbook operates Phase 1 public Binance USDⓈ-M data only. It does not aut
 Never mix a checkout, environment file, or data root from different installations. For the existing Phase 0 smoke stack use:
 
 ```bash
-export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase0-smoke
+export CRYPTO_INSTALL_ROOT=/home/keyubin/crypto-research-phase0-smoke
+export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase0-smoke/repo
 export CRYPTO_ENV_FILE=/home/keyubin/crypto-research-phase0-smoke/config/runtime.env
-export CRYPTO_DATA_ROOT="$CRYPTO_CHECKOUT/data"
+export CRYPTO_DATA_ROOT=/home/keyubin/crypto-research-phase0-smoke/data
 export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
 ```
 
 For a fresh formal installation use:
 
 ```bash
+export CRYPTO_INSTALL_ROOT=/srv/crypto-research
 export CRYPTO_CHECKOUT=/srv/crypto-research/repo
 export CRYPTO_ENV_FILE=/srv/crypto-research/config/runtime.env
 export CRYPTO_DATA_ROOT=/srv/crypto-research/data
@@ -33,7 +35,7 @@ test "$(stat -c %a "$CRYPTO_ENV_FILE")" = 600
 docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" config --quiet
 ```
 
-The read-only inventory captured on `2026-07-22T02:03+08:00` for the smoke stack found healthy PostgreSQL/API/Web containers, only `127.0.0.1:8088` exposed, volume `crypto-research_postgres-data`, `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env` mode `0600`, a `7518kB` database, and source identity `0226feba8bbefec207c7eee5b40c93c68a22e922`. This evidence is not a backup. Before replacing or upgrading that stack, complete the `VERIFIED` backup gate in [Market Data Recovery](market-data-recovery.md).
+The read-only inventory captured on `2026-07-22T02:03+08:00` found installation root `/home/keyubin/crypto-research-phase0-smoke`, checkout `/home/keyubin/crypto-research-phase0-smoke/repo`, data `/home/keyubin/crypto-research-phase0-smoke/data`, and mode-`0600` environment `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env`. PostgreSQL/API/Web were healthy, only `127.0.0.1:8088` was exposed, the volume was `crypto-research_postgres-data`, the database was `7518kB`, and source identity was `0226feba8bbefec207c7eee5b40c93c68a22e922`. This evidence is not a backup. Before replacing or upgrading that stack, complete the `VERIFIED` backup gate in [Market Data Recovery](market-data-recovery.md).
 
 ## Validate and Start Phase 1
 

@@ -32,7 +32,9 @@ The implementation now plans funding from complete monthly archives only and rej
 
 The runbooks now require live `.CHECKSUM` preflight for every candidate before any POST, parameterize checkout/environment/data paths, and separate a fresh installation from an existing smoke upgrade. Downloaded-object verification uses `set -euo pipefail`, requires a nonempty successful catalog query, and aborts on any official download, local hash, or comparison failure. The upgrade gate discovers and stops the full server profile, preserves the existing mode-`0600` `runtime.env` and `POSTGRES_PASSWORD`, dumps PostgreSQL, archives the data root, records sanitized volume/config/source identity, verifies all artifacts and checksums, and creates `VERIFIED` only after validation. Phase 1 recovery now covers data, gaps, audit evidence, and eligibility only; it makes no later-phase operational claims.
 
-A later read-only Compose gate confirmed the smoke environment file is `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env` at mode `0600`, not a checkout-root `runtime.env`. All smoke upgrade examples use the observed path. The Phase 1 candidate was staged separately; the existing stack remained untouched.
+A later read-only Compose gate confirmed the exact smoke layout: installation root `/home/keyubin/crypto-research-phase0-smoke`, checkout `/home/keyubin/crypto-research-phase0-smoke/repo`, mode-`0600` environment `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env`, data `/home/keyubin/crypto-research-phase0-smoke/data`, and Compose file `$CRYPTO_CHECKOUT/deploy/compose.yaml`. All smoke upgrade examples keep the installation root distinct from the checkout. The Phase 1 candidate was staged separately.
+
+The backup command attempted during this gate failed before any stop action. All old containers remained healthy, no `VERIFIED` marker was created, and an empty timestamped backup directory may remain. It is not a usable backup and was not removed. The existing stack remained untouched.
 
 ## Local verification
 

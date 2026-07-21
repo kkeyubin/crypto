@@ -165,18 +165,29 @@ def test_runbooks_parameterize_the_real_checkout_and_verify_private_backup_first
     assert '"/srv/crypto-research/data/${raw_path}"' not in operations
 
 
-def test_smoke_upgrade_uses_the_observed_private_environment_path_only() -> None:
+def test_smoke_upgrade_uses_the_observed_install_checkout_env_and_data_layout() -> None:
     operations = read_text("docs/runbooks/binance-data-operations.md")
     recovery = read_text("docs/runbooks/market-data-recovery.md")
     readme = read_text("README.md")
     report = read_text(".superpowers/sdd/task-8-report.md")
     documents = (operations, recovery, readme, report)
-    expected = "/home/keyubin/crypto-research-phase0-smoke/config/runtime.env"
+    install_root = "/home/keyubin/crypto-research-phase0-smoke"
+    checkout = f"{install_root}/repo"
+    environment = f"{install_root}/config/runtime.env"
+    data_root = f"{install_root}/data"
 
     for document in documents:
-        assert expected in document
-        assert "/home/keyubin/crypto-research-phase0-smoke/runtime.env" not in document
+        assert install_root in document
+        assert checkout in document
+        assert environment in document
+        assert data_root in document
+        assert f"{install_root}/runtime.env" not in document
         assert 'CRYPTO_ENV_FILE="$CRYPTO_CHECKOUT/runtime.env"' not in document
+        assert 'CRYPTO_DATA_ROOT="$CRYPTO_CHECKOUT/data"' not in document
+
+    for document in (operations, recovery, readme):
+        assert f"export CRYPTO_CHECKOUT={checkout}" in document
+        assert f"export CRYPTO_CHECKOUT={install_root}\n" not in document
 
 
 def test_acceptance_candidates_require_all_official_checksums_before_posts() -> None:

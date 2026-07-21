@@ -63,32 +63,40 @@ curl --fail http://127.0.0.1:8088/api/health/ready
 
 ## Existing Phase 0 smoke upgrade
 
-The verified smoke installation is `/home/keyubin/crypto-research-phase0-smoke`; it uses its own private `runtime.env`, bind-mounted data tree, and `crypto-research_postgres-data` volume. Upgrade it as existing state, not as a fresh installation:
+The verified smoke installation root is `/home/keyubin/crypto-research-phase0-smoke`, but its source checkout is the separate `/home/keyubin/crypto-research-phase0-smoke/repo` directory. It uses its own private environment, bind-mounted data tree, and `crypto-research_postgres-data` volume. Export the observed current layout before running the backup gate:
+
+```bash
+export CRYPTO_INSTALL_ROOT=/home/keyubin/crypto-research-phase0-smoke
+export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase0-smoke/repo
+export CRYPTO_ENV_FILE=/home/keyubin/crypto-research-phase0-smoke/config/runtime.env
+export CRYPTO_DATA_ROOT=/home/keyubin/crypto-research-phase0-smoke/data
+export CRYPTO_BACKUP_ROOT=/home/keyubin/crypto-research-backups
+export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
+```
+
+Upgrade it as existing state, not as a fresh installation:
 
 1. Export the exact current paths and execute the complete `VERIFIED` backup gate in [Market Data Recovery](docs/runbooks/market-data-recovery.md).
-2. Keep API/Web stopped after the backup; do not overwrite the old checkout.
+2. Keep worker/API/Web stopped after the backup; do not overwrite the old checkout.
 3. Clone the reviewed Phase 1 commit into a separate candidate directory.
 4. Reuse the existing `runtime.env` byte-for-byte, especially its `POSTGRES_PASSWORD`, and the existing data root. Never copy `.env.example` over it or generate replacement secrets for the existing database.
 5. Validate the candidate Compose model before using the same `crypto-research` project/volume identity.
 
 ```bash
-export CRYPTO_ENV_FILE=/home/keyubin/crypto-research-phase0-smoke/config/runtime.env
-export CRYPTO_DATA_ROOT=/home/keyubin/crypto-research-phase0-smoke/data
-export CRYPTO_BACKUP_ROOT=/home/keyubin/crypto-research-backups
-export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase1-candidate
-export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
+export CRYPTO_CANDIDATE_CHECKOUT=/home/keyubin/crypto-research-phase1-candidate
+export CRYPTO_CANDIDATE_COMPOSE_FILE="$CRYPTO_CANDIDATE_CHECKOUT/deploy/compose.yaml"
 backup_root=/home/keyubin/crypto-research-backups/20260722T000000Z  # replace with the exact verified snapshot
 
 test -f "$backup_root/VERIFIED"
 test "$(stat -c %a "$CRYPTO_ENV_FILE")" = 600
 test -d "$CRYPTO_DATA_ROOT"
-test -f "$CRYPTO_COMPOSE_FILE"
+test -f "$CRYPTO_CANDIDATE_COMPOSE_FILE"
 docker compose -p crypto-research --env-file "$CRYPTO_ENV_FILE" \
-  -f "$CRYPTO_COMPOSE_FILE" --profile server config --quiet
+  -f "$CRYPTO_CANDIDATE_COMPOSE_FILE" --profile server config --quiet
 docker compose -p crypto-research --env-file "$CRYPTO_ENV_FILE" \
-  -f "$CRYPTO_COMPOSE_FILE" --profile server build
+  -f "$CRYPTO_CANDIDATE_COMPOSE_FILE" --profile server build
 docker compose -p crypto-research --env-file "$CRYPTO_ENV_FILE" \
-  -f "$CRYPTO_COMPOSE_FILE" --profile server up -d
+  -f "$CRYPTO_CANDIDATE_COMPOSE_FILE" --profile server up -d
 curl --fail http://127.0.0.1:8088/api/health/ready
 ```
 

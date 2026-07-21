@@ -7,9 +7,10 @@ Phase 1 recovery covers public market data, PostgreSQL catalog evidence, immutab
 For the existing smoke stack:
 
 ```bash
-export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase0-smoke
+export CRYPTO_INSTALL_ROOT=/home/keyubin/crypto-research-phase0-smoke
+export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase0-smoke/repo
 export CRYPTO_ENV_FILE=/home/keyubin/crypto-research-phase0-smoke/config/runtime.env
-export CRYPTO_DATA_ROOT="$CRYPTO_CHECKOUT/data"
+export CRYPTO_DATA_ROOT=/home/keyubin/crypto-research-phase0-smoke/data
 export CRYPTO_BACKUP_ROOT=/home/keyubin/crypto-research-backups
 export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
 ```
@@ -17,6 +18,7 @@ export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
 For the formal installation:
 
 ```bash
+export CRYPTO_INSTALL_ROOT=/srv/crypto-research
 export CRYPTO_CHECKOUT=/srv/crypto-research/repo
 export CRYPTO_ENV_FILE=/srv/crypto-research/config/runtime.env
 export CRYPTO_DATA_ROOT=/srv/crypto-research/data
