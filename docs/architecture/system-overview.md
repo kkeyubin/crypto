@@ -34,6 +34,8 @@ PostgreSQL stores bounded structured state. Immutable raw objects and partitione
 
 BTCUSDT and canonical 1000PEPEUSDT have independent configuration, partitions, gaps, stream freshness, profile sample counts, and eligibility reasons. `PEPE` and `PEPEUSDT` are input aliases only. A healthy proxy-fed stream is not itself degraded; REST metadata failure is reported separately as `metadata_unverified`.
 
+Bounded acceptance on 2026-07-22 verified seven archive objects and normalized partitions, all four canonical live streams for both symbols, restart identity, Chinese-first browser output, and loopback-only exposure. The accepted environment still has explicit upstream/restart/proxy-disconnect gaps and unverified metadata, so both symbols remain ineligible for Phase 2 until repaired and stable over a sustained observation window.
+
 ## Failure and Recovery Semantics
 
 - Recent archive 404s become `source_pending`; older missing objects fail and open a gap.

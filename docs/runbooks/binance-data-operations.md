@@ -95,6 +95,8 @@ preflight_archive_checksum "$archive_root/monthly/fundingRate/1000PEPEUSDT/1000P
 
 These candidates were observed published on 2026-07-22, but the live probes remain mandatory. Daily `fundingRate` archives do not exist. `PEPEUSDT` is not the Binance USDⓈ-M venue symbol; inputs `PEPE`, `PEPEUSDT`, and `1000PEPEUSDT` all operate on canonical `1000PEPEUSDT` state. Intermediate Phase 1 alias-row builds were never deployed, so there is no legacy alias-row migration or fallback.
 
+The observed Binance kline/mark-price CSV header uses `quote_volume`, `count`, `taker_buy_volume`, and `taker_buy_quote_volume`; these are strict source fields and normalize to the repository's longer canonical names. Live stream identifiers are also case-sensitive: `aggTrade`, `bookTicker`, `kline_1m`, and `markPrice@1s`. Do not lowercase the suffixes. Routed connections use `/market` for aggTrade, kline, and mark price, and `/public` for bookTicker.
+
 **Do not POST any symbol or backfill request unless every probe succeeds.**
 
 ## Add Symbols and Request Bounded History
@@ -171,4 +173,12 @@ ss -lntp | grep -E ':(8088|55432)\b'
 
 Expected listeners are exactly `127.0.0.1:8088` and `127.0.0.1:55432`. From the Mac use `ssh -N -L 8088:127.0.0.1:8088 keyubin@192.168.1.4` and open `http://127.0.0.1:8088`.
 
-Record sanitized UTC timestamps, application commit, job/manifest/partition IDs, checksums, row ranges/counts, source mode, gaps, eligibility reasons, restart comparison, and listener output. Do not record secrets, proxy traffic, chat IDs, or bulk market data. Phase 1 remains in progress until every server acceptance gate passes.
+Record sanitized UTC timestamps, application commit, job/manifest/partition IDs, checksums, row ranges/counts, source mode, gaps, eligibility reasons, restart comparison, and listener output. Do not record secrets, proxy traffic, chat IDs, or bulk market data.
+
+## Observed Acceptance — 2026-07-22
+
+The accepted deployment preserved `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env` and `/home/keyubin/crypto-research-phase0-smoke/data`, used a verified backup at `/home/keyubin/crypto-research-backups/phase0-20260721T193438Z`, and staged candidates separately from the installation root. API/worker acceptance used candidate `4672152`; the browser-found canonical stream-name display fix used Web candidate `b7676c2`.
+
+Seven jobs, source objects, manifests, and archive partitions remained stable across restart. Fourteen archive/Parquet checksum comparisons passed, both BTCUSDT and 1000PEPEUSDT exposed all four required live streams, the scoped proxy was active after recorded direct failures, and listeners were exactly `127.0.0.1:55432` and `127.0.0.1:8088`. The full sanitized record is in `.superpowers/sdd/task-8-report.md`.
+
+Do not promote this accepted foundation directly into research replay. Open upstream, restart, and proxy-disconnect gaps plus `metadata_unverified` keep both symbols ineligible. Reconnect churn may make `bookTicker` transiently disconnected even when the latest snapshot is healthy; require a sustained stable observation window and repaired gaps before Phase 2.

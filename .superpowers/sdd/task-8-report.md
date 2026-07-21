@@ -2,7 +2,7 @@
 
 ## Status
 
-Local deployment wiring, CI gates, repository policy tests, and operator documentation are implemented. Phase 1 remains **in progress** because this Mac has no Docker CLI and the bounded server acceptance has not run. This report does not claim container builds or remote acceptance passed.
+Phase 1 implementation and bounded server acceptance are complete. The accepted deployment is loopback-only and records upstream/network incompleteness instead of treating it as tradable data. Phase 2 remains blocked until the recorded gaps and `metadata_unverified` state are repaired or resolved.
 
 ## TDD evidence
 
@@ -36,20 +36,44 @@ A later read-only Compose gate confirmed the exact smoke layout: installation ro
 
 The backup command attempted during this gate failed before any stop action. All old containers remained healthy, no `VERIFIED` marker was created, and an empty timestamped backup directory may remain. It is not a usable backup and was not removed. The existing stack remained untouched.
 
-A subsequent runtime gate completed a `VERIFIED` backup, then exposed a sanitized ownership failure. Host data `/home/keyubin/crypto-research-phase0-smoke/data` was mode `0750`, owner `1000:1000`, while the API/worker image process was root. The worker failed `_open_secure_root` with `ValueError: data root owner does not match the effective user`. The worker is stopped; API, Web, and PostgreSQL remain healthy. The VERIFIED backup exists. No further remote changes were made after collecting this evidence.
+A subsequent runtime gate completed a `VERIFIED` backup, then exposed a sanitized ownership failure. Host data `/home/keyubin/crypto-research-phase0-smoke/data` was mode `0750`, owner `1000:1000`, while the API/worker image process was root. The worker failed `_open_secure_root` with `ValueError: data root owner does not match the effective user`. This intermediate failure led to the non-root runtime fix and was superseded by the accepted deployment below.
+
+## Bounded server acceptance
+
+Acceptance ran on `keyubin@192.168.1.4` on 2026-07-22. The verified pre-upgrade backup is `/home/keyubin/crypto-research-backups/phase0-20260721T193438Z`. The accepted application source is API/worker commit `4672152` plus Web protocol-display fix `b7676c2`; all four containers were healthy. PostgreSQL and Web listened only on `127.0.0.1:55432` and `127.0.0.1:8088`; API had no host port and the worker opened no listener.
+
+Seven bounded jobs succeeded and reached `catalog_approved`: BTC funding `0bf1175e-7d97-595f-ab14-e949a726412c`, kline `ecdce6ba-3c85-56ad-85ad-116df2ce3330`, mark price `fec7bfa7-7986-5dbb-b7c3-6a6996105f2f`, aggTrades `394e33e3-289c-59ea-a75d-a7c4df88a14b`; 1000PEPE funding `780c682d-bc5d-5795-8ee0-3842951ef7c2`, kline `9b6c6bb7-9997-5ed6-b12b-a3428bd35a51`, and mark price `9033d888-2dce-56fb-b7fd-b974731fd96c`.
+
+Published archive SHA-256 values were preflighted and then compared with both downloaded ZIPs and normalized Parquet objects; all 14 comparisons passed:
+
+| Dataset | SHA-256 | Rows |
+|---|---|---:|
+| BTCUSDT June kline | `9b214199eb5063585c7ed0f59ba19323326d68ac024b85106713989399204490` | 43,200 |
+| BTCUSDT June mark price | `5d5d8b86efbe709e034409634347a161183e7c0df3854f8d96c9778dc1c923ba` | 41,760 |
+| BTCUSDT June funding | `cff97ce688329592bccbbf5873b5c7021649e093f5f5806e332c5b4fb7fd6a00` | 90 |
+| BTCUSDT 2026-06-14 aggTrades | `afcb1fbd4240c0d4f03e98e58817f73857da78f9260887431016c30a4513cdea` | 940,863 |
+| 1000PEPEUSDT May kline | `b4d7ccd09a324fb5aa9743f819ab3e0f4c922468412f408888b00850bfabf5e0` | 44,640 |
+| 1000PEPEUSDT May mark price | `1b0d8cd6acfe522eb37740acdcffed2a79be16ee105b884e7b05b6b0cba1ad06` | 44,640 |
+| 1000PEPEUSDT May funding | `a926a86a73eb373e920052bbc0c86103dc659b481f3e080fb512912c82ac0493` | 93 |
+
+The official BTC mark-price archive lacks 2026-06-29 and produced one explicit `missing_minute_open_time` gap; normalization did not discard hidden rows. Profiles remained independent: BTC had 43,199 return samples and realized volatility about `0.15369`; 1000PEPE had 44,639 samples and realized volatility about `0.19383`.
+
+Live acceptance observed canonical `aggTrade`, `bookTicker`, `kline_1m`, and `markPrice@1s` events for both symbols. Direct connection attempts timed out and the scoped proxy succeeded; the API reported `source_mode=proxy`, archive healthy, live healthy at the acceptance snapshot, and REST unhealthy. Browser verification through an SSH tunnel showed Chinese by default, separate BTC/1000PEPE evidence, and `4/4` required streams on both cards. A browser-found old-lowercase comparison defect was reproduced by a failing test and fixed in `b7676c2`.
+
+Restart checks preserved 7 jobs, 7 approved source objects, 7 manifests, and 7 archive partitions. Live shards continued increasing, while duplicate live IDs remained zero. The 2026-07-21T20:36Z snapshot contained 10,636 live partitions and explicit open gaps: each symbol had 26 `source_unknown_disconnect` and 13 `worker_restart` gaps; BTC also had the one upstream missing-minute gap. Proxy reconnects can transiently mark `bookTicker` disconnected, so eligibility correctly remains false with `unrepaired_gap`, `metadata_unverified`, and `data_not_ready`. These limitations are visible and are a hard gate before Phase 2, not an acceptance failure hidden by the UI.
 
 ## Local verification
 
 Executed on 2026-07-22 in `/Users/kyle/Documents/crypto/.worktrees/phase-1-binance-data`:
 
 - focused Task 8 repository/config/entrypoint/healthcheck tests — passed;
-- `cd services/api && .venv/bin/pytest -q` — `618 passed, 1 skipped` after re-review remediation;
+- `cd services/api && .venv/bin/pytest -q` — `620 passed, 1 skipped` after real-archive and manifest JSON-boundary remediation;
 - `.venv/bin/ruff check src tests migrations ../../deploy/api-entrypoint.py ../../deploy/market-worker-healthcheck.py` — passed after the final hardening;
 - `.venv/bin/python scripts/export_schemas.py --check` — passed;
 - `source /Users/kyle/.nvm/nvm.sh && nvm use` — Node `v24.15.0`, npm `11.12.1`;
 - `npm ci` — passed, 180 packages audited, 0 vulnerabilities;
 - contract generation/check/type drift gates — passed;
-- `npm run web:test -- --run` — 4 files, 60 tests passed;
+- `npm run web:test -- --run` — 4 files, 60 tests passed, including canonical routed stream casing;
 - `npm run web:build` — passed, 56 modules transformed;
 - `git diff --check` — passed.
 
@@ -59,16 +83,12 @@ Re-review focused verification:
 - SymbolsPage/useSymbols canonical runtime fixtures — 46 tests passed;
 - runtime-user/deployment documentation policy — 14 tests passed.
 
-Not executed locally:
-
-- `docker compose ... config --quiet` — blocked because `docker` is not installed on this Mac (`zsh: command not found: docker`);
-- API/Web image builds — same missing Docker CLI;
-- server deployment/acceptance — deliberately deferred until this local implementation is independently reviewed.
+Docker Compose validation and API/Web builds passed on the Docker-capable server. A direct npm image rebuild later stalled at registry access; the one retry used the documented loopback proxy only for the build and did not add runtime proxy variables.
 
 ## Read-only server baseline
 
 At `2026-07-22T02:03+08:00`, the existing `/home/keyubin/crypto-research-phase0-smoke` stack was inventoried without mutation. PostgreSQL/API/Web were healthy with `unless-stopped`; Web alone was bound to `127.0.0.1:8088`; API and PostgreSQL had no host port. The stack used `crypto-research_default`, volume `crypto-research_postgres-data`, and the API bind `/home/keyubin/crypto-research-phase0-smoke/data` → `/srv/crypto-research/data`. Data size was `4.0K`, database size `7518kB`, no `alembic_version` table existed, free space was `688G`, and `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env` was mode `0600` with only three key names recorded. The copied source identifies SHA `0226feba8bbefec207c7eee5b40c93c68a22e922`. Existing containers/data/configuration were not changed.
 
-## Pending completion gates
+## Remaining operational gate before Phase 2
 
-Run Compose config and both image builds in a Docker-capable environment. Then complete the verified backup gate and run bounded BTCUSDT/1000PEPEUSDT server acceptance with the preflighted complete-month objects: archive checksums/rows/manifests, one BTC aggTrades day, all four live types, recorded direct failure plus proxy source mode, `metadata_unverified`, restart idempotency, UI tunnel, and loopback-only listeners. Only then update the implementation plan/roadmap and use `docs: complete Phase 1 data foundation`.
+Phase 1 may be merged, but its output is intentionally not eligible for research replay. Repair or resolve all accepted upstream/restart/disconnect gaps, obtain verifiable instrument metadata, and demonstrate a sustained observation window without unexplained reconnect churn before any Phase 2 backtest consumes these partitions.

@@ -134,7 +134,7 @@ ssh -N -L 8088:127.0.0.1:8088 keyubin@192.168.1.4
 
 Then browse to `http://127.0.0.1:8088`. Operational onboarding, checksum verification, gap triage, backups, and rollback are in [Binance Data Operations](docs/runbooks/binance-data-operations.md) and [Market Data Recovery](docs/runbooks/market-data-recovery.md).
 
-The isolated smoke stack was inventoried at source SHA `0226feba8bbefec207c7eee5b40c93c68a22e922`. Phase 1 server acceptance is still a completion gate; see the roadmap.
+The isolated smoke stack was inventoried at source SHA `0226feba8bbefec207c7eee5b40c93c68a22e922`. Phase 1 bounded server acceptance passed on 2026-07-22; the accepted gaps, metadata limitation, and pre-Phase-2 stability gate are retained in [the Task 8 report](.superpowers/sdd/task-8-report.md) and [roadmap](docs/roadmap.md).
 
 ## Repository safety
 

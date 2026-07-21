@@ -13,16 +13,18 @@ This file preserves both committed and deferred work. A deferred item is not per
 
 ## Phase 1 — Binance Data Foundation
 
-**Status:** in progress (2026-07-22; local implementation complete, server acceptance pending)
+**Status:** complete (2026-07-22; bounded server acceptance passed)
 
 - Dynamic USDⓈ-M symbol watchlist.
 - Independent symbol onboarding, empirical volatility/liquidity/cost profile, and eligibility state.
 - Historical 1m klines, mark price, monthly-only funding, and selected aggTrades; onboarding uses complete UTC calendar months.
-- Live WebSocket klines, aggTrades, and best bid/ask.
+- Live WebSocket klines, mark price, aggTrades, and best bid/ask.
 - Parquet partitioning, checksums, data catalog, gap detection, and REST repair.
 - Liquidity eligibility and stale-data gate.
 
-Remaining server acceptance gate: verify bounded BTCUSDT/1000PEPEUSDT archive checksums and required live stream types, restart idempotency, explicit metadata degradation, and no non-loopback listener. Acceptance uses published complete-month funding objects; `PEPE`/`PEPEUSDT` must resolve to canonical `1000PEPEUSDT`. Phase 1 stays in progress until the sanitized acceptance record passes and is committed.
+Accepted evidence is retained in `.superpowers/sdd/task-8-report.md`: seven official archive objects and seven normalized Parquet objects matched their hashes; both symbols produced all four canonical live streams; restart identity and loopback-only exposure passed; and `PEPE`/`PEPEUSDT` resolved to `1000PEPEUSDT`.
+
+**Operational gate before Phase 2:** the accepted dataset remains ineligible. Resolve the upstream BTC mark-price gap, restart/disconnect gaps, recurring proxy reconnect churn, and `metadata_unverified`; then demonstrate a sustained stable observation window. Phase 2 must consume only approved, gap-free eligible partitions and must not bypass this gate.
 
 ## Phase 2 — Research and Backtesting
 

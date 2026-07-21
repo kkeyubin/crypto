@@ -250,7 +250,7 @@ Commit: `feat: orchestrate verified market backfills`
 
 **Step 1: Write failing deterministic stream tests**
 
-Use a fake WebSocket/session clock to cover `/public` and `/market` route selection, lowercase stream names, combined-event unwrapping, kline completed/in-progress semantics, mark price/funding, aggregate trades, `bookTicker`, malformed/unknown messages, ping/pong, planned pre-24-hour rotation, direct failure then proxy fallback, no proxy use when direct works, exponential backoff+jitter bounds, graceful shutdown, subscription refresh, disconnect gaps, stale state, and idempotent replay.
+Use a fake WebSocket/session clock to cover `/public` and `/market` route selection, lowercase symbol prefixes with protocol-case stream suffixes, combined-event unwrapping, kline completed/in-progress semantics, mark price/funding, aggregate trades, `bookTicker`, malformed/unknown messages, ping/pong, planned pre-24-hour rotation, direct failure then proxy fallback, no proxy use when direct works, exponential backoff+jitter bounds, graceful shutdown, subscription refresh, disconnect gaps, stale state, and idempotent replay.
 
 **Step 2: Implement transport and parsers**
 
@@ -412,9 +412,13 @@ Deploy to the existing loopback-only smoke location on `keyubin@192.168.1.4`. Pr
 
 Record sanitized commands, timestamps, row counts, manifest IDs, checksums, source modes, restart results, and remaining limitations in `docs/superpowers/plans/2026-07-21-phase-1-binance-data-foundation.md`. Never commit proxy logs, server secrets, chat IDs, or large data.
 
+**Acceptance result (2026-07-22): complete.** A `VERIFIED` Phase 0 backup preceded deployment. Seven bounded jobs produced seven approved source objects, manifests, and archive partitions; all seven official ZIP hashes and all seven normalized Parquet hashes matched. Both symbols delivered canonical `aggTrade`, `bookTicker`, `kline_1m`, and `markPrice@1s` events through the scoped proxy after recorded direct failures. Restart identities remained 7/7/7 with no duplicate live IDs, browser acceptance showed independent Chinese BTC/1000PEPE evidence and 4/4 streams, and only `127.0.0.1:55432` plus `127.0.0.1:8088` listened. Exact job IDs, hashes, rows, profiles, gaps, and limitations are retained in `.superpowers/sdd/task-8-report.md`.
+
+Acceptance does not mean the data is eligible for Phase 2. The official BTC mark-price archive contains one missing day; test restarts and recurring proxy reconnects are recorded as open gaps; REST instrument metadata remains unverified. Eligibility therefore stays false until those conditions are resolved and a sustained stable observation window passes.
+
 **Step 5: Complete roadmap and commit**
 
-Change Phase 1 to `complete` only after every acceptance item passes. Otherwise leave it `in progress` and list the exact failed gate.
+Phase 1 was changed to `complete` after the acceptance items passed with all upstream and reconnect limitations explicit and fail-closed.
 
 Commit: `docs: complete Phase 1 data foundation`
 

@@ -13,7 +13,8 @@ long-running operation remain Task 8 acceptance gates.
 
 - `RoutedStream` constructs only the committed structured Binance sources.
   Aggregate trade and best bid/ask use `/public`; kline and mark price use
-  `/market`. Stream names are canonical lowercase, combined groups are
+  `/market`. Stream symbol prefixes are lowercase while protocol suffixes retain
+  canonical case (`aggTrade`, `bookTicker`, `markPrice@1s`); combined groups are
   deterministic, and no group exceeds 1024 streams.
 - Pure parsers are transport-independent and fail closed for malformed JSON,
   unknown events, mismatched combined-stream identity, non-UTC receipt time,
