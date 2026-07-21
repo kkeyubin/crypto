@@ -2,11 +2,11 @@ import hashlib
 import json
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 
-from crypto_research.contracts.base import StrictFrozenModel, UTCModel
+from crypto_research.contracts.base import FrozenDict, StrictFrozenModel, UTCModel
 
 ParameterValue = bool | int | float | str
 
@@ -19,6 +19,11 @@ class StrategyFamily(StrEnum):
     SB = "SB"
     IRB = "IRB"
     ARB = "ARB"
+
+
+class StrategyMode(StrEnum):
+    EXECUTABLE = "executable"
+    OBSERVATION = "observation"
 
 
 class StrategyState(StrEnum):
@@ -54,8 +59,8 @@ class ProvenanceRef(StrictFrozenModel):
 
 
 class InstrumentRef(StrictFrozenModel):
-    venue: str = Field(pattern=r"^[A-Z0-9_]+$")
-    market: str = Field(pattern=r"^[A-Z0-9_]+$")
+    venue: Literal["BINANCE"]
+    market: Literal["USD_M_PERPETUAL"]
     symbol: str = Field(pattern=r"^[A-Z0-9]+$")
 
 
@@ -90,7 +95,7 @@ class NisonCondition(StrictFrozenModel):
 
 class VolmanRules(StrictFrozenModel):
     family: StrategyFamily
-    chronology: list[str] = Field(min_length=3)
+    chronology: tuple[str, ...] = Field(min_length=3)
     frozen_signal_line: str
     trigger: str
     clear_path: str
@@ -120,7 +125,16 @@ class RiskSpec(StrictFrozenModel):
 
 class ParameterFamily(StrictFrozenModel):
     fixed: dict[str, ParameterValue]
-    search_space: dict[str, list[ParameterValue]]
+    search_space: dict[str, tuple[ParameterValue, ...]]
+
+    @field_validator("fixed", "search_space", mode="after")
+    @classmethod
+    def freeze_mapping(
+        cls,
+        value: dict[str, ParameterValue]
+        | dict[str, tuple[ParameterValue, ...]],
+    ) -> FrozenDict[str, ParameterValue] | FrozenDict[str, tuple[ParameterValue, ...]]:
+        return FrozenDict(value)
 
 
 class EvidencePlan(UTCModel):
@@ -139,16 +153,31 @@ class EvidencePlan(UTCModel):
 
 class StrategySpec(StrictFrozenModel):
     schema_version: str = "1.0.0"
+    mode: StrategyMode
     identity: StrategyIdentity
-    provenance: Annotated[list[ProvenanceRef], Field(min_length=2)]
+    provenance: Annotated[tuple[ProvenanceRef, ...], Field(min_length=2)]
     instrument: InstrumentRef
     bar: BarSpec
-    nison_context: list[NisonCondition] = Field(default_factory=list)
+    nison_context: tuple[NisonCondition, ...] = ()
     volman: VolmanRules
-    execution: ExecutionSpec
-    risk: RiskSpec
+    execution: ExecutionSpec | None = None
+    risk: RiskSpec | None = None
     parameters: ParameterFamily
     evidence: EvidencePlan
+
+    @model_validator(mode="after")
+    def validate_mode_boundaries(self) -> "StrategySpec":
+        if self.mode is StrategyMode.EXECUTABLE:
+            if self.volman.family not in {StrategyFamily.BB, StrategyFamily.RB}:
+                raise ValueError("executable mode permits only BB or RB")
+            if self.execution is None or self.risk is None:
+                raise ValueError("executable mode requires execution and risk")
+        else:
+            if self.execution is not None or self.risk is not None:
+                raise ValueError("observation mode rejects execution and risk")
+            if self.identity.state is StrategyState.PAPER_ENABLED:
+                raise ValueError("observation mode cannot be paper_enabled")
+        return self
 
     @computed_field
     @property

@@ -13,8 +13,9 @@
 - The application runs on `keyubin@192.168.1.4`; local development uses NVM from `/Users/kyle/.nvm/nvm.sh`.
 - Default locale is `zh-CN`; `en` ships in the first release, while enums and event payloads remain English and stable.
 - Evidence Lab colors and Calm Precision motion values come verbatim from `docs/superpowers/specs/2026-07-21-personal-console-ux-design.md`.
-- An executable MVP `StrategySpec` targets exactly one Binance USDⓈ-M contract symbol.
-- Volman BB/RB are the only order-producing research families; DD/FB/SB/IRB/ARB are observation-only.
+- Every `StrategySpec` declares `executable` or `observation` mode and targets exactly one Binance USDⓈ-M contract symbol.
+- Executable mode permits only Volman BB/RB and requires execution/risk settings. Observation mode may represent any family, rejects execution/risk settings, and can never be `paper_enabled`.
+- Contract timestamps use UTC offset `+00:00`, and all collections nested under `StrategySpec` are deeply immutable.
 - Nison context is optional; Aronson evidence controls are mandatory.
 - AI assessments cannot create, cancel, resize, approve, or veto orders.
 - No exchange credentials, wallet material, `LiveBroker`, real-order route, or proxy-by-default behavior may be introduced.
@@ -385,14 +386,16 @@ git commit -m "feat: add validated API foundation"
 - Test: `services/api/tests/contracts/test_strategy.py`
 
 **Interfaces:**
-- Consumes: UTC-aware timestamps and one `InstrumentRef`.
-- Produces: computed `StrategySpec.content_hash -> str`, plus `StrategyFamily`, `StrategyState`, `EvidenceConclusion`, `InstrumentRef`, `BarSpec`, and nested frozen contract models.
+- Consumes: UTC `+00:00` timestamps and exactly one `InstrumentRef` fixed to venue `BINANCE` and market `USD_M_PERPETUAL`.
+- Produces: computed `StrategySpec.content_hash -> str`, plus `StrategyMode`, `StrategyFamily`, `StrategyState`, `EvidenceConclusion`, `InstrumentRef`, `BarSpec`, and deeply frozen nested contract models.
+- Contract boundary: `executable` mode permits only BB/RB and requires execution plus risk; `observation` mode permits all seven families, rejects execution/risk, and rejects `paper_enabled` state.
 
-- [ ] **Step 1: Write failing lifecycle, symbol, timing, and hash tests**
+- [ ] **Step 1: Write failing mode, strict instrument, UTC, immutability, timing, and hash tests**
 
 ```python
 # services/api/tests/contracts/test_strategy.py
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -408,14 +411,27 @@ from crypto_research.contracts.strategy import (
     RiskSpec,
     StrategyFamily,
     StrategyIdentity,
+    StrategyMode,
     StrategySpec,
+    StrategyState,
     VolmanRules,
 )
 
+DEFAULT_EXECUTION = ExecutionSpec()
+DEFAULT_RISK = RiskSpec()
 
-def build_spec() -> StrategySpec:
+
+def build_spec(
+    *,
+    mode: StrategyMode = StrategyMode.EXECUTABLE,
+    family: StrategyFamily = StrategyFamily.BB,
+    state: StrategyState = StrategyState.DRAFT,
+    execution: ExecutionSpec | None = DEFAULT_EXECUTION,
+    risk: RiskSpec | None = DEFAULT_RISK,
+) -> StrategySpec:
     return StrategySpec(
-        identity=StrategyIdentity(name="bb-btc-event", version="1.0.0"),
+        mode=mode,
+        identity=StrategyIdentity(name="bb-btc-event", version="1.0.0", state=state),
         provenance=[
             ProvenanceRef(skill="volman-forex-price-action-scalping", section="ch10"),
             ProvenanceRef(skill="aronson-evidence-based-technical-analysis", section="ch06"),
@@ -423,15 +439,15 @@ def build_spec() -> StrategySpec:
         instrument=InstrumentRef(venue="BINANCE", market="USD_M_PERPETUAL", symbol="BTCUSDT"),
         bar=BarSpec(kind=BarKind.EVENT, trade_count=70),
         volman=VolmanRules(
-            family=StrategyFamily.BB,
+            family=family,
             chronology=["box_known", "signal_line_frozen", "breakout"],
             frozen_signal_line="box_high_at_t",
             trigger="trade_price >= signal_line + breakout_bps",
             clear_path="target_distance_bps >= minimum_path_bps",
             invalidation="trade_price <= tipping_point",
         ),
-        execution=ExecutionSpec(),
-        risk=RiskSpec(),
+        execution=execution,
+        risk=risk,
         parameters=ParameterFamily(
             fixed={"side": "long"},
             search_space={"breakout_bps": [1.0, 2.0], "minimum_path_bps": [8.0, 12.0]},
@@ -467,19 +483,152 @@ def test_evidence_windows_are_strictly_ordered() -> None:
             benchmark="permutation",
             multiple_testing="maximum statistic",
         )
+
+
+@pytest.mark.parametrize(
+    ("venue", "market"),
+    [("COINBASE", "USD_M_PERPETUAL"), ("BINANCE", "SPOT")],
+)
+def test_instrument_is_strictly_binance_usd_m_perpetual(
+    venue: str, market: str
+) -> None:
+    with pytest.raises(ValidationError):
+        InstrumentRef(venue=venue, market=market, symbol="BTCUSDT")
+
+
+def test_instrument_accepts_exactly_one_symbol() -> None:
+    with pytest.raises(ValidationError):
+        InstrumentRef.model_validate(
+            {
+                "venue": "BINANCE",
+                "market": "USD_M_PERPETUAL",
+                "symbol": ["BTCUSDT", "ETHUSDT"],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        StrategyFamily.DD,
+        StrategyFamily.FB,
+        StrategyFamily.SB,
+        StrategyFamily.IRB,
+        StrategyFamily.ARB,
+    ],
+)
+def test_executable_mode_rejects_observation_only_families(
+    family: StrategyFamily,
+) -> None:
+    with pytest.raises(ValidationError, match="executable mode permits only BB or RB"):
+        build_spec(family=family)
+
+
+@pytest.mark.parametrize(
+    ("execution", "risk"), [(None, RiskSpec()), (ExecutionSpec(), None)]
+)
+def test_executable_mode_requires_execution_and_risk(
+    execution: ExecutionSpec | None, risk: RiskSpec | None
+) -> None:
+    with pytest.raises(ValidationError, match="requires execution and risk"):
+        build_spec(execution=execution, risk=risk)
+
+
+@pytest.mark.parametrize("family", list(StrategyFamily))
+def test_observation_mode_accepts_all_families_without_executable_settings(
+    family: StrategyFamily,
+) -> None:
+    spec = build_spec(
+        mode=StrategyMode.OBSERVATION,
+        family=family,
+        execution=None,
+        risk=None,
+    )
+    assert spec.volman.family is family
+
+
+@pytest.mark.parametrize(
+    ("execution", "risk"),
+    [(ExecutionSpec(), None), (None, RiskSpec()), (ExecutionSpec(), RiskSpec())],
+)
+def test_observation_mode_rejects_execution_and_risk(
+    execution: ExecutionSpec | None, risk: RiskSpec | None
+) -> None:
+    with pytest.raises(ValidationError, match="observation mode rejects execution and risk"):
+        build_spec(mode=StrategyMode.OBSERVATION, execution=execution, risk=risk)
+
+
+def test_observation_mode_cannot_be_paper_enabled() -> None:
+    with pytest.raises(ValidationError, match="observation mode cannot be paper_enabled"):
+        build_spec(
+            mode=StrategyMode.OBSERVATION,
+            state=StrategyState.PAPER_ENABLED,
+            execution=None,
+            risk=None,
+        )
+
+
+def test_strategy_nested_collections_are_deeply_immutable() -> None:
+    spec = build_spec()
+    original_hash = spec.content_hash
+
+    with pytest.raises(TypeError):
+        spec.parameters.fixed["side"] = "short"
+    with pytest.raises(TypeError):
+        spec.parameters.search_space["breakout_bps"] = (3.0,)
+    with pytest.raises(AttributeError):
+        spec.parameters.search_space["breakout_bps"].append(3.0)
+    with pytest.raises(TypeError):
+        spec.volman.chronology[0] = "mutated"
+
+    assert isinstance(spec.provenance, tuple)
+    assert isinstance(spec.nison_context, tuple)
+    assert spec.content_hash == original_hash
+
+
+def test_parameter_mappings_keep_object_schema_and_json_serialization() -> None:
+    spec = build_spec()
+    parameter_schema = StrategySpec.model_json_schema()["$defs"]["ParameterFamily"]
+
+    assert parameter_schema["properties"]["fixed"]["type"] == "object"
+    assert parameter_schema["properties"]["search_space"]["type"] == "object"
+    assert json.loads(spec.model_dump_json())["parameters"]["fixed"] == {"side": "long"}
+
+
+def test_evidence_plan_rejects_naive_timestamps() -> None:
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        EvidencePlan(
+            train_end=datetime(2024, 1, 1),
+            validation_end=datetime(2024, 7, 1, tzinfo=UTC),
+            test_end=datetime(2025, 1, 1, tzinfo=UTC),
+            benchmark="permutation",
+            multiple_testing="maximum statistic",
+        )
+
+
+def test_evidence_plan_rejects_non_utc_offsets() -> None:
+    with pytest.raises(ValidationError, match=r"UTC offset \+00:00"):
+        EvidencePlan(
+            train_end=datetime(2024, 1, 1, tzinfo=timezone(timedelta(hours=8))),
+            validation_end=datetime(2024, 7, 1, tzinfo=UTC),
+            test_end=datetime(2025, 1, 1, tzinfo=UTC),
+            benchmark="permutation",
+            multiple_testing="maximum statistic",
+        )
 ```
 
-- [ ] **Step 2: Run the contract test and verify import failure**
+- [ ] **Step 2: Run the contract test and verify boundary failures**
 
 Run: `cd services/api && .venv/bin/pytest tests/contracts/test_strategy.py -q`
 
-Expected: FAIL because `crypto_research.contracts.strategy` does not exist.
+Expected: FAIL because strict mode, instrument, deep immutability, and UTC-offset behavior are not implemented yet.
 
-- [ ] **Step 3: Implement strict frozen base types**
+- [ ] **Step 3: Implement deeply frozen base types and exact UTC validation**
 
 ```python
 # services/api/src/crypto_research/contracts/base.py
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import NoReturn, TypeVar
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -488,12 +637,38 @@ class StrictFrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+Key = TypeVar("Key")
+Value = TypeVar("Value")
+
+
+class FrozenDict(dict[Key, Value]):
+    """A JSON-serializable mapping that rejects in-place mutation."""
+
+    @staticmethod
+    def _immutable(*args: object, **kwargs: object) -> NoReturn:
+        del args, kwargs
+        raise TypeError("FrozenDict is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
+
+
 class UTCModel(StrictFrozenModel):
     @field_validator("*", mode="after")
     @classmethod
     def require_utc_datetimes(cls, value: object) -> object:
-        if isinstance(value, datetime) and (value.tzinfo is None or value.utcoffset() is None):
+        if isinstance(value, datetime) and (
+            value.tzinfo is None or value.utcoffset() is None
+        ):
             raise ValueError("timestamps must be timezone-aware")
+        if isinstance(value, datetime) and value.utcoffset() != timedelta(0):
+            raise ValueError("timestamps must use UTC offset +00:00")
         return value
 ```
 
@@ -505,11 +680,11 @@ import hashlib
 import json
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 
-from crypto_research.contracts.base import StrictFrozenModel, UTCModel
+from crypto_research.contracts.base import FrozenDict, StrictFrozenModel, UTCModel
 
 ParameterValue = bool | int | float | str
 
@@ -522,6 +697,11 @@ class StrategyFamily(StrEnum):
     SB = "SB"
     IRB = "IRB"
     ARB = "ARB"
+
+
+class StrategyMode(StrEnum):
+    EXECUTABLE = "executable"
+    OBSERVATION = "observation"
 
 
 class StrategyState(StrEnum):
@@ -557,8 +737,8 @@ class ProvenanceRef(StrictFrozenModel):
 
 
 class InstrumentRef(StrictFrozenModel):
-    venue: str = Field(pattern=r"^[A-Z0-9_]+$")
-    market: str = Field(pattern=r"^[A-Z0-9_]+$")
+    venue: Literal["BINANCE"]
+    market: Literal["USD_M_PERPETUAL"]
     symbol: str = Field(pattern=r"^[A-Z0-9]+$")
 
 
@@ -589,7 +769,7 @@ class NisonCondition(StrictFrozenModel):
 
 class VolmanRules(StrictFrozenModel):
     family: StrategyFamily
-    chronology: list[str] = Field(min_length=3)
+    chronology: tuple[str, ...] = Field(min_length=3)
     frozen_signal_line: str
     trigger: str
     clear_path: str
@@ -619,7 +799,16 @@ class RiskSpec(StrictFrozenModel):
 
 class ParameterFamily(StrictFrozenModel):
     fixed: dict[str, ParameterValue]
-    search_space: dict[str, list[ParameterValue]]
+    search_space: dict[str, tuple[ParameterValue, ...]]
+
+    @field_validator("fixed", "search_space", mode="after")
+    @classmethod
+    def freeze_mapping(
+        cls,
+        value: dict[str, ParameterValue]
+        | dict[str, tuple[ParameterValue, ...]],
+    ) -> FrozenDict[str, ParameterValue] | FrozenDict[str, tuple[ParameterValue, ...]]:
+        return FrozenDict(value)
 
 
 class EvidencePlan(UTCModel):
@@ -638,16 +827,31 @@ class EvidencePlan(UTCModel):
 
 class StrategySpec(StrictFrozenModel):
     schema_version: str = "1.0.0"
+    mode: StrategyMode
     identity: StrategyIdentity
-    provenance: Annotated[list[ProvenanceRef], Field(min_length=2)]
+    provenance: Annotated[tuple[ProvenanceRef, ...], Field(min_length=2)]
     instrument: InstrumentRef
     bar: BarSpec
-    nison_context: list[NisonCondition] = Field(default_factory=list)
+    nison_context: tuple[NisonCondition, ...] = ()
     volman: VolmanRules
-    execution: ExecutionSpec
-    risk: RiskSpec
+    execution: ExecutionSpec | None = None
+    risk: RiskSpec | None = None
     parameters: ParameterFamily
     evidence: EvidencePlan
+
+    @model_validator(mode="after")
+    def validate_mode_boundaries(self) -> "StrategySpec":
+        if self.mode is StrategyMode.EXECUTABLE:
+            if self.volman.family not in {StrategyFamily.BB, StrategyFamily.RB}:
+                raise ValueError("executable mode permits only BB or RB")
+            if self.execution is None or self.risk is None:
+                raise ValueError("executable mode requires execution and risk")
+        else:
+            if self.execution is not None or self.risk is not None:
+                raise ValueError("observation mode rejects execution and risk")
+            if self.identity.state is StrategyState.PAPER_ENABLED:
+                raise ValueError("observation mode cannot be paper_enabled")
+        return self
 
     @computed_field
     @property
@@ -678,13 +882,14 @@ cd services/api
 .venv/bin/ruff check src tests
 ```
 
-Expected: all tests pass and Ruff reports no errors.
+Expected: focused contract tests report `28 passed`, the full suite reports `34 passed`, no warnings are emitted, and Ruff reports `All checks passed!`.
 
-- [ ] **Step 6: Commit the strategy contract**
+- [ ] **Step 6: Commit the corrected strategy contract and durable plan**
 
 ```bash
-git add services/api/src/crypto_research/contracts services/api/tests/contracts
-git commit -m "feat: define canonical strategy contract"
+git add docs/superpowers/plans/2026-07-21-phase-0-foundation-and-contracts.md \
+  services/api/src/crypto_research/contracts services/api/tests/contracts
+git commit -m "fix: enforce strategy contract boundaries"
 ```
 
 ---
