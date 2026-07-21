@@ -1,15 +1,51 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { addSymbolWithBackfill, getBackfill } from "../apiClient";
+import { addSymbol, createBackfills, getBackfill, type AddSymbolInput } from "../apiClient";
 import type { IngestionJobView } from "../contracts";
 
 interface AddSymbolFormProps {
   onAdded: () => void;
 }
 
-function toUtcIso(value: string): string {
-  const normalized = value.length === 16 ? `${value}:00Z` : `${value}Z`;
-  return new Date(normalized).toISOString();
+const UTC_DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_HISTORY_DAYS = 366;
+
+type ArchiveRangeResult =
+  | { readonly ok: true; readonly start: string; readonly end: string }
+  | { readonly ok: false; readonly reason: "invalid" | "too_large" };
+
+function utcDayMillis(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) {
+    return null;
+  }
+  const millis = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return new Date(millis).toISOString().slice(0, 10) === value ? millis : null;
+}
+
+export function toArchiveUtcRange(
+  startDay: string,
+  inclusiveEndDay: string,
+  now = new Date(),
+): ArchiveRangeResult {
+  const startMillis = utcDayMillis(startDay);
+  const inclusiveEndMillis = utcDayMillis(inclusiveEndDay);
+  if (startMillis === null || inclusiveEndMillis === null || inclusiveEndMillis < startMillis) {
+    return { ok: false, reason: "invalid" };
+  }
+  const endMillis = inclusiveEndMillis + UTC_DAY_MS;
+  if (endMillis - startMillis > MAX_HISTORY_DAYS * UTC_DAY_MS) {
+    return { ok: false, reason: "too_large" };
+  }
+  const currentUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (endMillis > currentUtcMidnight) {
+    return { ok: false, reason: "invalid" };
+  }
+  return {
+    ok: true,
+    start: new Date(startMillis).toISOString(),
+    end: new Date(endMillis).toISOString(),
+  };
 }
 
 export function AddSymbolForm({ onAdded }: AddSymbolFormProps) {
@@ -23,21 +59,24 @@ export function AddSymbolForm({ onAdded }: AddSymbolFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<readonly IngestionJobView[]>([]);
   const [refreshingJobs, setRefreshingJobs] = useState(false);
+  const [configuredInput, setConfiguredInput] = useState<AddSymbolInput | null>(null);
+  const [backfillPending, setBackfillPending] = useState(false);
+
+  const startBackfills = async (input: AddSymbolInput) => {
+    try {
+      setJobs(await createBackfills(input));
+      setBackfillPending(false);
+    } catch {
+      setBackfillPending(true);
+    }
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
-    let start: string;
-    let end: string;
-    try {
-      start = toUtcIso(historyStart);
-      end = toUtcIso(historyEnd);
-    } catch {
-      setError(t("invalidUtcRange"));
-      return;
-    }
-    if (!/^[A-Z0-9]{3,32}$/.test(symbol) || Date.parse(end) <= Date.parse(start)) {
-      setError(t("invalidUtcRange"));
+    const range = toArchiveUtcRange(historyStart, historyEnd);
+    if (!/^[A-Z0-9]{3,32}$/.test(symbol) || !range.ok) {
+      setError(t(!range.ok && range.reason === "too_large" ? "utcRangeTooLarge" : "invalidUtcRange"));
       return;
     }
     if (symbolAggTrades && !backfillAggTrades) {
@@ -45,17 +84,32 @@ export function AddSymbolForm({ onAdded }: AddSymbolFormProps) {
       return;
     }
     setBusy(true);
+    const input = {
+      symbol,
+      historyStart: range.start,
+      historyEnd: range.end,
+      includeAggTrades: symbolAggTrades && backfillAggTrades,
+    };
     try {
-      const createdJobs = await addSymbolWithBackfill({
-        symbol,
-        historyStart: start,
-        historyEnd: end,
-        includeAggTrades: symbolAggTrades && backfillAggTrades,
-      });
-      setJobs(createdJobs);
+      await addSymbol(input);
+      setConfiguredInput(input);
       onAdded();
+      await startBackfills(input);
     } catch {
       setError(t("addSymbolError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retryBackfills = async () => {
+    if (configuredInput === null) {
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await startBackfills(configuredInput);
     } finally {
       setBusy(false);
     }
@@ -97,11 +151,11 @@ export function AddSymbolForm({ onAdded }: AddSymbolFormProps) {
         </label>
         <label>
           <span>{t("historyStartUtc")}</span>
-          <input name="history-start" type="datetime-local" required value={historyStart} onChange={(event) => setHistoryStart(event.target.value)} />
+          <input name="history-start" type="date" required value={historyStart} onChange={(event) => setHistoryStart(event.target.value)} />
         </label>
         <label>
           <span>{t("historyEndUtc")}</span>
-          <input name="history-end" type="datetime-local" required value={historyEnd} onChange={(event) => setHistoryEnd(event.target.value)} />
+          <input name="history-end" type="date" required value={historyEnd} onChange={(event) => setHistoryEnd(event.target.value)} />
         </label>
       </div>
 
@@ -133,9 +187,20 @@ export function AddSymbolForm({ onAdded }: AddSymbolFormProps) {
       </div>
 
       {error === null ? null : <p className="inline-error" role="alert">{error}</p>}
-      <button className="primary-action" type="submit" disabled={busy}>
-        {busy ? t("addingSymbol") : t("addAndBackfill")}
-      </button>
+      {configuredInput === null ? (
+        <button className="primary-action" type="submit" disabled={busy}>
+          {busy ? t("addingSymbol") : t("addAndBackfill")}
+        </button>
+      ) : null}
+
+      {backfillPending && configuredInput !== null ? (
+        <section className="partial-success" role="status" aria-label={t("partialBackfillLabel")}>
+          <p>{t("partialBackfillNotice", { symbol: configuredInput.symbol })}</p>
+          <button type="button" disabled={busy} onClick={() => void retryBackfills()}>
+            {busy ? t("retryingBackfill") : t("retryBackfillOnly")}
+          </button>
+        </section>
+      ) : null}
 
       {jobs.length === 0 ? null : (
         <section className="backfill-progress" role="status" aria-label={t("backfillCreatedLabel")}>

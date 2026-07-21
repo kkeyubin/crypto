@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AddSymbolForm } from "./components/AddSymbolForm";
-import { disableSymbol } from "./apiClient";
+import { disableSymbol, enableSymbol } from "./apiClient";
+import type { SymbolView } from "./contracts";
 import { DataStatus } from "./components/DataStatus";
 import { SymbolCard } from "./components/SymbolCard";
 import { useSymbols } from "./useSymbols";
@@ -11,18 +12,36 @@ export function SymbolsPage() {
   const symbols = useSymbols();
   const [showAddForm, setShowAddForm] = useState(false);
   const [filter, setFilter] = useState("");
-  const [actionNotice, setActionNotice] = useState<{ kind: "success" | "error"; symbol?: string } | null>(null);
+  const [actionNotice, setActionNotice] = useState<{
+    kind: "disabled" | "enabled" | "disableError" | "enableError";
+    symbol?: string;
+  } | null>(null);
 
   const handleDisable = async (symbol: string) => {
     setActionNotice(null);
     try {
-      await disableSymbol(symbol);
-      setActionNotice({ kind: "success", symbol });
-      symbols.reload();
+      const disabled = await disableSymbol(symbol);
+      symbols.replaceSymbol(disabled);
+      setActionNotice({ kind: "disabled", symbol });
     } catch {
-      setActionNotice({ kind: "error" });
+      setActionNotice({ kind: "disableError" });
     }
   };
+
+  const handleEnable = async (symbol: SymbolView) => {
+    setActionNotice(null);
+    try {
+      const enabled = await enableSymbol(symbol);
+      symbols.replaceSymbol(enabled);
+      setActionNotice({ kind: "enabled", symbol: symbol.symbol });
+    } catch {
+      setActionNotice({ kind: "enableError" });
+    }
+  };
+  const normalizedFilter = filter.trim().toUpperCase();
+  const visibleItems = symbols.status === "ready"
+    ? symbols.dashboard.items.filter((item) => item.symbol.symbol.includes(normalizedFilter))
+    : [];
 
   return (
     <div className="content-frame symbols-page">
@@ -42,13 +61,11 @@ export function SymbolsPage() {
         </div>
       </div>
       {showAddForm ? <AddSymbolForm onAdded={symbols.reload} /> : null}
-      {actionNotice === null ? null : actionNotice.kind === "success" ? (
-        <p className="action-notice" role="status" aria-label={t("symbolDisabledLabel")}>
-          {t("symbolDisabledNotice", { symbol: actionNotice.symbol })}
+      {actionNotice === null ? null : actionNotice.kind === "disabled" || actionNotice.kind === "enabled" ? (
+        <p className="action-notice" role="status" aria-label={t(actionNotice.kind === "disabled" ? "symbolDisabledLabel" : "symbolEnabledLabel")}>
+          {t(actionNotice.kind === "disabled" ? "symbolDisabledNotice" : "symbolEnabledNotice", { symbol: actionNotice.symbol })}
         </p>
-      ) : (
-        <p className="inline-error" role="alert">{t("disableSymbolError")}</p>
-      )}
+      ) : <p className="inline-error" role="alert">{t(actionNotice.kind === "disableError" ? "disableSymbolError" : "enableSymbolError")}</p>}
       {symbols.status === "loading" ? (
         <p className="page-state" role="status" aria-label={t("symbolsLoading")}>
           {t("symbolsLoading")}
@@ -65,10 +82,38 @@ export function SymbolsPage() {
         </div>
       ) : symbols.status === "ready" ? (
         <>
-          <DataStatus dashboard={symbols.dashboard} />
+          {symbols.dashboard.health.status === "ready" ? (
+            <DataStatus health={symbols.dashboard.health.health} />
+          ) : symbols.dashboard.health.status === "loading" ? (
+            <p className="health-load-state" role="status">{t("healthLoading")}</p>
+          ) : (
+            <div className="health-error" role="alert" aria-label={t("healthLoadErrorLabel")}>
+              <p>{t("healthLoadError")}</p>
+              <button type="button" onClick={() => void symbols.retryHealth()}>{t("retryHealth")}</button>
+            </div>
+          )}
+          {symbols.dashboard.symbolsTruncated ? (
+            <p className="bounded-page-note" role="status">{t("boundedSymbolsNotice")}</p>
+          ) : null}
+          {normalizedFilter.length > 0 && visibleItems.length === 0 ? (
+            <section className="page-state filtered-empty" role="status" aria-label={t("filteredEmptyTitle")}>
+              <h2>{t("filteredEmptyTitle")}</h2>
+              <p>{t("filteredEmptyDescription")}</p>
+              <button type="button" onClick={() => setFilter("")}>{t("clearFilter")}</button>
+            </section>
+          ) : null}
           <section className="symbol-grid" aria-label={t("monitoredSymbols")}>
-            {symbols.dashboard.items.filter((evidence) => evidence.symbol.symbol.includes(filter.trim().toUpperCase())).map((evidence) => (
-              <SymbolCard key={evidence.symbol.symbol} evidence={evidence} onDisable={handleDisable} />
+            {visibleItems.map((item) => item.status === "ready" ? (
+              <SymbolCard key={item.symbol.symbol} evidence={item.evidence} onDisable={handleDisable} onEnable={handleEnable} />
+            ) : item.status === "loading" ? (
+              <article className="symbol-card symbol-card--state" aria-label={t("symbolEvidenceLoadingLabel", { symbol: item.symbol.symbol })} key={item.symbol.symbol}>
+                <p role="status">{t("symbolEvidenceLoading", { symbol: item.symbol.symbol })}</p>
+              </article>
+            ) : (
+              <article className="symbol-card symbol-card--state" aria-label={t("symbolEvidenceErrorLabel", { symbol: item.symbol.symbol })} key={item.symbol.symbol}>
+                <p>{t("symbolEvidenceError", { symbol: item.symbol.symbol })}</p>
+                <button type="button" onClick={() => void symbols.retrySymbol(item.symbol.symbol)}>{t("retrySymbolEvidence", { symbol: item.symbol.symbol })}</button>
+              </article>
             ))}
           </section>
         </>

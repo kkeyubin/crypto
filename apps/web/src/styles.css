@@ -321,6 +321,30 @@ body {
   color: var(--red);
 }
 
+.health-error,
+.health-load-state,
+.bounded-page-note {
+  padding: 12px 14px;
+  margin: 0 0 18px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.health-error {
+  color: var(--amber);
+}
+
+.health-error p {
+  margin-bottom: 9px;
+}
+
+.bounded-page-note {
+  color: var(--muted);
+}
+
 .data-health {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -378,6 +402,13 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
+}
+
+.symbol-card--state {
+  display: grid;
+  min-height: 180px;
+  align-content: center;
+  gap: 12px;
 }
 
 .symbol-card__header {
@@ -461,6 +492,20 @@ body {
   font-size: 0.84rem;
 }
 
+.freshness-state {
+  margin-bottom: 7px;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.freshness-state--healthy {
+  color: var(--green);
+}
+
+.freshness-state--caution {
+  color: var(--amber);
+}
+
 .compact-copy,
 .timestamp-value,
 .reason-list,
@@ -497,6 +542,17 @@ body {
   justify-content: flex-end;
   padding-top: 16px;
   border-top: 1px solid var(--border);
+}
+
+.card-actions--stacked {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.card-actions--stacked .disabled-note {
+  padding-top: 0;
+  border-top: 0;
 }
 
 .add-symbol-form {
@@ -578,6 +634,24 @@ body {
   background: var(--raised);
   border: 1px solid var(--border);
   border-radius: 9px;
+}
+
+.partial-success {
+  padding: 14px;
+  margin-top: 16px;
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 8%, var(--raised));
+  border: 1px solid color-mix(in srgb, var(--amber) 38%, var(--border));
+  border-radius: 9px;
+}
+
+.partial-success p {
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+.filtered-empty {
+  text-align: left;
 }
 
 .backfill-progress ul {

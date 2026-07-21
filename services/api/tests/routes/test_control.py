@@ -364,6 +364,38 @@ def test_service_creates_deterministic_per_dataset_jobs_and_requires_symbol_opt_
     asyncio.run(scenario())
 
 
+def test_ui_inclusive_days_map_to_a_complete_utc_day_archive_plan() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+        control = service(repository)
+        ui_start = datetime(2026, 7, 1, tzinfo=UTC)
+        ui_inclusive_end_as_half_open = datetime(2026, 7, 21, tzinfo=UTC)
+
+        await control.create_backfills(
+            "BTCUSDT",
+            BackfillRequest(
+                symbol="BTCUSDT",
+                data_types=(DataType.KLINE_1M,),
+                start=ui_start,
+                end=ui_inclusive_end_as_half_open,
+            ),
+        )
+
+        planned = tuple(repository.planned.values())
+        assert planned
+        assert min(item.start for item in planned) == ui_start
+        assert max(item.end for item in planned) == ui_inclusive_end_as_half_open
+        assert all(
+            item.start.tzinfo is UTC
+            and item.end.tzinfo is UTC
+            and item.start.time().isoformat() == "00:00:00"
+            and item.end.time().isoformat() == "00:00:00"
+            for item in planned
+        )
+
+    asyncio.run(scenario())
+
+
 def test_service_keeps_profile_and_eligibility_evidence_symbol_specific() -> None:
     async def scenario() -> None:
         repository = configured_repository()

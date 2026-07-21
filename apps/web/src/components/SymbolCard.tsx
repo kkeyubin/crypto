@@ -5,30 +5,50 @@ import type { SymbolEvidence } from "../apiClient";
 interface SymbolCardProps {
   evidence: SymbolEvidence;
   onDisable: (symbol: string) => Promise<void>;
+  onEnable: (symbol: SymbolEvidence["symbol"]) => Promise<void>;
 }
 
-function latestEvent(evidence: SymbolEvidence): string | null {
-  return evidence.streams.reduce<string | null>((latest, stream) => {
-    if (stream.last_event_at === null) {
-      return latest;
-    }
-    if (latest === null || Date.parse(stream.last_event_at) > Date.parse(latest)) {
-      return stream.last_event_at;
-    }
-    return latest;
-  }, null);
+const REQUIRED_STREAM_SUFFIXES = ["aggtrade", "bookticker", "kline_1m", "markprice@1s"] as const;
+
+function summarizeFreshness(evidence: SymbolEvidence) {
+  const requiredNames = REQUIRED_STREAM_SUFFIXES.map((suffix) => `${evidence.symbol.symbol.toLowerCase()}@${suffix}`);
+  const byName = new Map(evidence.streams
+    .filter((stream) => requiredNames.includes(stream.stream_name as (typeof requiredNames)[number]))
+    .map((stream) => [stream.stream_name, stream]));
+  const required = requiredNames.flatMap((name) => {
+    const stream = byName.get(name);
+    return stream === undefined ? [] : [stream];
+  });
+  const complete = required.length === requiredNames.length && required.every((stream) => stream.last_event_at !== null);
+  const connected = complete && required.every((stream) => stream.status === "connected");
+  const oldestEventAt = complete
+    ? required.reduce<string>((oldest, stream) => Date.parse(stream.last_event_at as string) < Date.parse(oldest)
+      ? stream.last_event_at as string
+      : oldest, required[0].last_event_at as string)
+    : null;
+  return {
+    observed: required.length,
+    complete,
+    connected,
+    oldestEventAt,
+    stale: evidence.eligibility.reason_codes.includes("stale_live_data"),
+  };
 }
 
-export function SymbolCard({ evidence, onDisable }: SymbolCardProps) {
+export function SymbolCard({ evidence, onDisable, onEnable }: SymbolCardProps) {
   const { i18n, t } = useTranslation();
   const { symbol, profile, eligibility } = evidence;
   const [confirmingDisable, setConfirmingDisable] = useState(false);
   const [disabling, setDisabling] = useState(false);
+  const [enabling, setEnabling] = useState(false);
   const confirmButton = useRef<HTMLButtonElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const actionButton = useRef<HTMLButtonElement>(null);
+  const dialogWasOpen = useRef(false);
   const openGaps = evidence.gaps.filter((gap) => gap.status === "open");
   const approvedPartitions = evidence.partitions.filter((partition) => partition.status === "approved");
   const approvedRows = approvedPartitions.reduce((total, partition) => total + partition.row_count, 0);
-  const lastEventAt = latestEvent(evidence);
+  const freshness = summarizeFreshness(evidence);
   const numberFormat = new Intl.NumberFormat(i18n.language);
   const percentFormat = new Intl.NumberFormat(i18n.language, { style: "percent", maximumFractionDigits: 0 });
   const dateTimeFormat = new Intl.DateTimeFormat(i18n.language, {
@@ -43,9 +63,15 @@ export function SymbolCard({ evidence, onDisable }: SymbolCardProps) {
 
   useEffect(() => {
     if (confirmingDisable) {
+      dialogWasOpen.current = true;
       confirmButton.current?.focus();
+    } else if (dialogWasOpen.current) {
+      dialogWasOpen.current = false;
+      actionButton.current?.focus();
     }
   }, [confirmingDisable]);
+
+  const closeConfirmation = () => setConfirmingDisable(false);
 
   const confirmDisable = async () => {
     setDisabling(true);
@@ -54,6 +80,15 @@ export function SymbolCard({ evidence, onDisable }: SymbolCardProps) {
       setConfirmingDisable(false);
     } finally {
       setDisabling(false);
+    }
+  };
+
+  const reenable = async () => {
+    setEnabling(true);
+    try {
+      await onEnable(symbol);
+    } finally {
+      setEnabling(false);
     }
   };
 
@@ -80,19 +115,38 @@ export function SymbolCard({ evidence, onDisable }: SymbolCardProps) {
           <dd>{profile === null ? t("unknownValue") : percentFormat.format(profile.coverage_fraction)}</dd>
         </div>
         <div>
-          <dt>{t("approvedArchiveRows")}</dt>
-          <dd>{numberFormat.format(approvedRows)}</dd>
+          <dt>{t("approvedCatalogRows")}</dt>
+          <dd>{evidence.partitionsTruncated ? t("atLeastCount", { count: numberFormat.format(approvedRows) }) : numberFormat.format(approvedRows)}</dd>
         </div>
         <div>
-          <dt>{t("openGaps")}</dt>
-          <dd>{openGaps.length === 0 ? t("noOpenGaps") : t("openGapCount", { count: openGaps.length })}</dd>
+          <dt>{t("visibleOpenGaps")}</dt>
+          <dd>{evidence.gapsTruncated
+            ? t("atLeastGapCount", { count: numberFormat.format(openGaps.length) })
+            : openGaps.length === 0 ? t("noOpenGaps") : t("openGapCount", { count: openGaps.length })}</dd>
         </div>
       </dl>
 
+      {evidence.partitionsTruncated || evidence.gapsTruncated ? (
+        <p className="bounded-page-note">{t("boundedEvidenceNotice")}</p>
+      ) : null}
+
       <div className="evidence-section">
         <h3>{t("freshnessTitle")}</h3>
+        <p className={`freshness-state freshness-state--${freshness.complete && freshness.connected && !freshness.stale ? "healthy" : "caution"}`}>
+          {freshness.observed < REQUIRED_STREAM_SUFFIXES.length
+            ? t("missingRequiredStreams", { missing: REQUIRED_STREAM_SUFFIXES.length - freshness.observed, observed: freshness.observed })
+            : !freshness.complete
+              ? t("requiredStreamsMissingEvents")
+              : !freshness.connected
+                ? t("requiredStreamsLimited")
+                : freshness.stale
+                  ? t("requiredStreamsStale")
+                  : t("requiredStreamsHealthy")}
+        </p>
         <p className="timestamp-value">
-          {t("lastEvent")}: {lastEventAt === null ? t("noLiveEvent") : formatDate(lastEventAt)}
+          {freshness.oldestEventAt === null
+            ? t("freshnessUnknown")
+            : `${t("oldestRequiredEvent")}: ${formatDate(freshness.oldestEventAt)}`}
         </p>
         <p className="muted compact-copy">
           {t("collectionState")}: {t(`dataStatus.${symbol.data_status}`)} · {t("metadataState")}: {t(`metadataStatus.${symbol.metadata_status}`)}
@@ -114,11 +168,19 @@ export function SymbolCard({ evidence, onDisable }: SymbolCardProps) {
 
       {symbol.enabled ? (
         <div className="card-actions">
-          <button className="danger-action" type="button" onClick={() => setConfirmingDisable(true)}>
+          <button ref={actionButton} className="danger-action" type="button" onClick={() => setConfirmingDisable(true)}>
             {t("disableCollection", { symbol: symbol.symbol })}
           </button>
         </div>
-      ) : <p className="disabled-note">{t("collectionDisabled")}</p>}
+      ) : (
+        <div className="card-actions card-actions--stacked">
+          <p className="disabled-note">{t("collectionDisabled")}</p>
+          <p className="muted compact-copy">{t("reenablePreservesIdentity")}</p>
+          <button ref={actionButton} type="button" disabled={enabling} onClick={() => void reenable()}>
+            {enabling ? t("reenabling") : t("reenableCollection", { symbol: symbol.symbol })}
+          </button>
+        </div>
+      )}
 
       {confirmingDisable ? (
         <div
@@ -128,14 +190,23 @@ export function SymbolCard({ evidence, onDisable }: SymbolCardProps) {
           aria-label={t("confirmDisableTitle", { symbol: symbol.symbol })}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
-              setConfirmingDisable(false);
+              event.preventDefault();
+              closeConfirmation();
+            } else if (event.key === "Tab") {
+              if (event.shiftKey && document.activeElement === cancelButton.current) {
+                event.preventDefault();
+                confirmButton.current?.focus();
+              } else if (!event.shiftKey && document.activeElement === confirmButton.current) {
+                event.preventDefault();
+                cancelButton.current?.focus();
+              }
             }
           }}
         >
           <h3>{t("confirmDisableTitle", { symbol: symbol.symbol })}</h3>
           <p>{t("disablePreservesHistory")}</p>
           <div className="confirmation-actions">
-            <button type="button" onClick={() => setConfirmingDisable(false)}>{t("cancel")}</button>
+            <button ref={cancelButton} type="button" onClick={closeConfirmation}>{t("cancel")}</button>
             <button ref={confirmButton} className="danger-action" type="button" disabled={disabling} onClick={() => void confirmDisable()}>
               {disabling ? t("disabling") : t("confirmDisable")}
             </button>

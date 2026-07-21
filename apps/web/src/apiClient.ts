@@ -189,10 +189,12 @@ function isEligibility(value: unknown): value is EligibilityView {
   if (!isRecord(value) || !Array.isArray(value.reason_codes)) {
     return false;
   }
+  const validReasons = value.reason_codes.every((reason) => isString(reason) && eligibilityReasons.has(reason));
   return (
     isString(value.symbol) && symbolPattern.test(value.symbol) &&
     typeof value.eligible === "boolean" &&
-    value.reason_codes.every((reason) => isString(reason) && eligibilityReasons.has(reason)) &&
+    validReasons &&
+    ((value.eligible && value.reason_codes.length === 0) || (!value.eligible && value.reason_codes.length > 0)) &&
     isString(value.evaluated_at)
   );
 }
@@ -267,14 +269,28 @@ export interface SymbolEvidence {
   readonly profile: SymbolProfileView | null;
   readonly eligibility: EligibilityView;
   readonly streams: readonly StreamStateView[];
+  readonly partitionsTruncated: boolean;
+  readonly gapsTruncated: boolean;
+  readonly streamsTruncated: boolean;
 }
+
+export type SymbolEvidenceState =
+  | { readonly status: "ready"; readonly symbol: SymbolView; readonly evidence: SymbolEvidence }
+  | { readonly status: "loading"; readonly symbol: SymbolView }
+  | { readonly status: "error"; readonly symbol: SymbolView };
+
+export type MarketDataHealthState =
+  | { readonly status: "ready"; readonly health: MarketDataHealthView }
+  | { readonly status: "loading" }
+  | { readonly status: "error" };
 
 export interface SymbolsDashboard {
-  readonly health: MarketDataHealthView;
-  readonly items: readonly SymbolEvidence[];
+  readonly health: MarketDataHealthState;
+  readonly items: readonly SymbolEvidenceState[];
+  readonly symbolsTruncated: boolean;
 }
 
-async function loadSymbolEvidence(symbol: SymbolView, signal?: AbortSignal): Promise<SymbolEvidence> {
+export async function loadSymbolEvidence(symbol: SymbolView, signal?: AbortSignal): Promise<SymbolEvidence> {
   const encodedSymbol = encodeURIComponent(symbol.symbol);
   const [partitions, gaps, profile, eligibilityPayload, streams] = await Promise.all([
     getJson(`/api/symbols/${encodedSymbol}/partitions?limit=100&offset=0`, signal),
@@ -304,16 +320,30 @@ async function loadSymbolEvidence(symbol: SymbolView, signal?: AbortSignal): Pro
     profile,
     eligibility: eligibilityPayload,
     streams: decodedStreams,
+    partitionsTruncated: decodedPartitions.length === 100,
+    gapsTruncated: decodedGaps.length === 100,
+    streamsTruncated: decodedStreams.length === 100,
   };
+}
+
+export async function loadMarketDataHealth(signal?: AbortSignal): Promise<MarketDataHealthView> {
+  return decodeHealth(await getJson("/api/operations/market-data", signal));
 }
 
 export async function loadSymbolsDashboard(signal?: AbortSignal): Promise<SymbolsDashboard> {
   const symbols = await listSymbols(signal);
-  const [healthPayload, items] = await Promise.all([
-    getJson("/api/operations/market-data", signal),
-    Promise.all(symbols.map((symbol) => loadSymbolEvidence(symbol, signal))),
-  ]);
-  return { health: decodeHealth(healthPayload), items };
+  const healthPromise = loadMarketDataHealth(signal).then(
+    (health): MarketDataHealthState => ({ status: "ready", health }),
+    (): MarketDataHealthState => ({ status: "error" }),
+  );
+  const items = await Promise.all(symbols.map(async (symbol): Promise<SymbolEvidenceState> => {
+    try {
+      return { status: "ready", symbol, evidence: await loadSymbolEvidence(symbol, signal) };
+    } catch {
+      return { status: "error", symbol };
+    }
+  }));
+  return { health: await healthPromise, items, symbolsTruncated: symbols.length === 100 };
 }
 
 export interface AddSymbolInput {
@@ -323,10 +353,10 @@ export interface AddSymbolInput {
   readonly includeAggTrades: boolean;
 }
 
-export async function addSymbolWithBackfill(
+export async function addSymbol(
   input: AddSymbolInput,
   signal?: AbortSignal,
-): Promise<readonly IngestionJobView[]> {
+): Promise<SymbolView> {
   if (!symbolPattern.test(input.symbol)) {
     throw new ApiClientError("response");
   }
@@ -337,6 +367,16 @@ export async function addSymbolWithBackfill(
     include_agg_trades: input.includeAggTrades,
   }, signal);
   if (!isSymbolView(symbolPayload) || symbolPayload.symbol !== input.symbol) {
+    throw new ApiClientError("response");
+  }
+  return symbolPayload;
+}
+
+export async function createBackfills(
+  input: AddSymbolInput,
+  signal?: AbortSignal,
+): Promise<readonly IngestionJobView[]> {
+  if (!symbolPattern.test(input.symbol)) {
     throw new ApiClientError("response");
   }
   const dataTypesForBackfill = ["kline_1m", "mark_price", "funding"];
@@ -366,6 +406,19 @@ export async function disableSymbol(symbol: string, signal?: AbortSignal): Promi
     throw new ApiClientError("response");
   }
   return payload;
+}
+
+export async function enableSymbol(symbol: SymbolView, signal?: AbortSignal): Promise<SymbolView> {
+  const enabled = await addSymbol({
+    symbol: symbol.symbol,
+    historyStart: symbol.history_start,
+    historyEnd: symbol.history_end,
+    includeAggTrades: symbol.include_agg_trades,
+  }, signal);
+  if (!enabled.enabled) {
+    throw new ApiClientError("response");
+  }
+  return enabled;
 }
 
 export async function getBackfill(jobId: string, signal?: AbortSignal): Promise<IngestionJobView> {

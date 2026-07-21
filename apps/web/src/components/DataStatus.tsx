@@ -1,13 +1,12 @@
 import { useTranslation } from "react-i18next";
-import type { SymbolsDashboard } from "../apiClient";
+import type { MarketDataHealthView } from "../contracts";
 
 interface DataStatusProps {
-  dashboard: SymbolsDashboard;
+  health: MarketDataHealthView;
 }
 
-export function DataStatus({ dashboard }: DataStatusProps) {
+export function DataStatus({ health }: DataStatusProps) {
   const { t } = useTranslation();
-  const { health } = dashboard;
   // Task 6 centralizes heartbeat, exact-stream, and freshness policy in source_mode.
   const liveHealthy = health.source_mode !== "degraded";
   const sourceTone = health.source_mode === "degraded" ? "caution" : "neutral";
