@@ -179,16 +179,17 @@ def test_postgres_persistence_invariants() -> None:
                 assert await session.scalar(
                     select(func.count()).select_from(LiveDataPartitionRow)
                 ) == 2
+                original_normalized = live_result.normalized[0]
+                conflicting_normalized = _live_part(
+                    original_normalized.layer,
+                    "c" * 64,
+                    original_normalized.schema_name,
+                    original_normalized.sort_keys,
+                    original_normalized.unique_keys,
+                )
                 conflicting_live = LiveWriteResult(
                     raw=live_result.raw,
-                    normalized=(
-                        StoredLivePartition(
-                            **{
-                                **live_result.normalized[0].__dict__,
-                                "sha256": "c" * 64,
-                            }
-                        ),
-                    ),
+                    normalized=(conflicting_normalized,),
                     batch_id=live_result.batch_id,
                 )
                 with pytest.raises(LiveCatalogError, match="immutable"):
