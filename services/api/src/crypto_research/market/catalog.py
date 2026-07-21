@@ -7,7 +7,7 @@ import stat
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
@@ -280,6 +280,8 @@ class SqlAlchemyCatalogRepository:
         end: datetime,
     ) -> tuple[CatalogPartition, ...]:
         start, end = _utc_range(start, end)
+        earliest_partition_date = start.replace(day=1).date().isoformat()
+        latest_partition_date = (end - timedelta(microseconds=1)).date().isoformat()
         statement = (
             select(DataPartitionRow, DataManifestRow)
             .join(DataManifestRow, DataManifestRow.partition_id == DataPartitionRow.id)
@@ -287,6 +289,8 @@ class SqlAlchemyCatalogRepository:
                 DataPartitionRow.symbol == symbol.strip().upper(),
                 DataPartitionRow.dataset == data_type.value,
                 DataPartitionRow.approval_status == "approved",
+                DataPartitionRow.partition_date >= earliest_partition_date,
+                DataPartitionRow.partition_date <= latest_partition_date,
             )
             .order_by(
                 DataPartitionRow.partition_date,

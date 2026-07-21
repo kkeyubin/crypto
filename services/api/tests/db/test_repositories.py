@@ -59,6 +59,9 @@ class FakeAsyncSession:
     async def flush(self) -> None:
         return None
 
+    async def execute(self, _statement: object):
+        return None
+
 
 class FakeCoverageResolver:
     def __init__(self, coverage: tuple[ApprovedCoverage, ...]) -> None:
@@ -94,6 +97,62 @@ def test_add_disable_symbol_is_idempotent_and_audited() -> None:
         assert disabled_again == disabled
         assert [row.symbol for row in session.rows if isinstance(row, SymbolRow)] == ["BTCUSDT"]
         assert len([row for row in session.rows if isinstance(row, AuditEventRow)]) == 2
+
+    asyncio.run(scenario())
+
+
+def test_mutations_take_transaction_advisory_locks_before_identity_reads() -> None:
+    class LockingSession(FakeAsyncSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.statements: list[object] = []
+
+        async def execute(self, statement: object):
+            self.statements.append(statement)
+            return None
+
+    async def scenario() -> None:
+        session = LockingSession()
+        repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
+        start = datetime(2026, 7, 1, tzinfo=UTC)
+        await repository.add_symbol(
+            AddSymbolCommand("BTCUSDT", start, start + timedelta(days=1))
+        )
+        await repository.set_symbol_enabled("BTCUSDT", False)
+        await repository.set_symbol_enabled("BTCUSDT", True)
+        await repository.create_backfill(
+            BackfillCommand(
+                id="00000000-0000-0000-0000-000000000501",
+                symbol="BTCUSDT",
+                dataset="kline_1m",
+                requested_start=start,
+                requested_end=start + timedelta(days=1),
+            )
+        )
+        await repository.plan(
+            BackfillObject(
+                object_id="00000000-0000-0000-0000-000000000502",
+                job_id="00000000-0000-0000-0000-000000000501",
+                source_url="https://data.binance.vision/day.zip",
+                start=start,
+                end=start + timedelta(days=1),
+            )
+        )
+
+        assert len(session.statements) == 6
+        assert all(
+            "pg_advisory_xact_lock" in str(statement)
+            and "hashtextextended" in str(statement)
+            for statement in session.statements
+        )
+        parameters = [
+            str(value)
+            for statement in session.statements
+            for value in statement.compile().params.values()
+        ]
+        assert parameters.count("crypto-research:symbol:BTCUSDT") == 4
+        assert "crypto-research:backfill-job:00000000-0000-0000-0000-000000000501" in parameters
+        assert "crypto-research:backfill-object:00000000-0000-0000-0000-000000000502" in parameters
 
     asyncio.run(scenario())
 
@@ -531,6 +590,10 @@ def test_postgres_claim_statement_uses_skip_locked() -> None:
         assert len(session.statements) == 2
         for_update = session.statements[0]._for_update_arg  # type: ignore[attr-defined]
         assert for_update.skip_locked is True
+        claim_sql = str(session.statements[0])
+        assert "JOIN ingestion_jobs" in claim_sql
+        assert "JOIN symbols" in claim_sql
+        assert "symbols.enabled" in claim_sql
 
     asyncio.run(scenario())
 

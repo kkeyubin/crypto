@@ -40,7 +40,7 @@ async def list_symbols(
     )
 
 
-@router.post("", response_model=SymbolView)
+@router.post("", response_model=SymbolView, dependencies=[Depends(no_query)])
 async def add_symbol(request: AddSymbolBody, control: Control) -> SymbolView:
     return await control.add_symbol(request)
 

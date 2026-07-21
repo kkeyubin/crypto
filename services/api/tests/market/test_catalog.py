@@ -361,6 +361,37 @@ def test_catalog_rejects_sub_millisecond_query_boundaries() -> None:
     asyncio.run(scenario())
 
 
+def test_sql_catalog_prefilters_approved_rows_by_symbol_dataset_and_date() -> None:
+    class EmptyResult:
+        def all(self):
+            return []
+
+    class CapturingSession:
+        def __init__(self) -> None:
+            self.statements: list[object] = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            return EmptyResult()
+
+    async def scenario() -> None:
+        session = CapturingSession()
+        repository = SqlAlchemyCatalogRepository(session)  # type: ignore[arg-type]
+
+        assert await repository.approved(
+            "BTCUSDT", DataType.KLINE_1M, START, END
+        ) == ()
+
+        sql = str(session.statements[0])
+        assert "data_partitions.symbol =" in sql
+        assert "data_partitions.dataset =" in sql
+        assert "data_partitions.approval_status =" in sql
+        assert "data_partitions.partition_date >=" in sql
+        assert "data_partitions.partition_date <=" in sql
+
+    asyncio.run(scenario())
+
+
 def test_sql_catalog_flushes_source_then_partition_then_manifest() -> None:
     class EmptyResult:
         def first(self):

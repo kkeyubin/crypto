@@ -121,3 +121,19 @@ def test_data_lists_use_bounded_pagination_and_reject_arbitrary_queries(
     )
     assert response.status_code == 422
     assert "user:secret" not in response.text
+
+
+def test_create_backfill_rejects_unknown_query_without_echoing_it(
+    client: TestClient,
+) -> None:
+    secret = "https://user:secret@example.invalid/?token=secret"
+
+    response = client.post(
+        "/api/symbols/BTCUSDT/backfills",
+        params={"source_url": secret},
+        json=backfill_payload(),
+    )
+
+    assert response.status_code == 422
+    assert secret not in response.text
+    assert "user:secret" not in response.text

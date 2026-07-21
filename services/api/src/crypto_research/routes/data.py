@@ -40,7 +40,9 @@ class BackfillBody(BackfillRequest):
 
 
 @router.post(
-    "/api/symbols/{symbol}/backfills", response_model=list[IngestionJobView]
+    "/api/symbols/{symbol}/backfills",
+    response_model=list[IngestionJobView],
+    dependencies=[Depends(no_query)],
 )
 async def create_backfills(
     symbol: SymbolPath,

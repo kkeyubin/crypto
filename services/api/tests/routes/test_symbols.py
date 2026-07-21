@@ -88,3 +88,17 @@ def test_symbol_mutation_rejects_non_utc_range_and_aggregate_extras(
     assert arbitrary_source.status_code == 422
     assert string_boolean.status_code == 422
     assert secret not in arbitrary_source.text
+
+
+def test_add_symbol_rejects_unknown_query_without_echoing_it(
+    client: TestClient,
+) -> None:
+    secret = "https://user:secret@example.invalid/?token=secret"
+
+    response = client.post(
+        "/api/symbols", params={"source_url": secret}, json=payload()
+    )
+
+    assert response.status_code == 422
+    assert secret not in response.text
+    assert "user:secret" not in response.text

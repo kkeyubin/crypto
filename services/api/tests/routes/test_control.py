@@ -3,11 +3,17 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from crypto_research.config import Settings
-from crypto_research.contracts.data import AddSymbolRequest, BackfillRequest
+from crypto_research.contracts.data import (
+    AddSymbolRequest,
+    BackfillRequest,
+    EligibilityReasonCode,
+    SymbolDataStatus,
+)
 from crypto_research.contracts.manifest import DataType
 from crypto_research.db.repositories import (
     AddSymbolCommand,
@@ -15,12 +21,14 @@ from crypto_research.db.repositories import (
     DataGap,
     DataPartition,
     IngestionJob,
+    MutationIdentityConflict,
     StreamState,
     SymbolOperationalSummary,
     SymbolState,
     WorkerHeartbeat,
 )
 from crypto_research.market.backfill import BackfillObject
+from crypto_research.market.binance.streams import streams_for_symbols
 from crypto_research.market.control import (
     MarketDataConflict,
     MarketDataControlService,
@@ -45,10 +53,20 @@ class Repository:
         self.audit_actions: list[str] = []
         self.heartbeat: WorkerHeartbeat | None = None
         self.planned: dict[str, BackfillObject] = {}
+        self.health_aggregate_calls = 0
+        self.summary_calls = 0
+        self.bulk_summary_calls = 0
 
     async def list_symbols(self, *, limit: int, offset: int):
         ordered = tuple(self.symbols[key] for key in sorted(self.symbols))
         return ordered[offset : offset + limit]
+
+    async def list_active_symbols(self):
+        return tuple(
+            self.symbols[key]
+            for key in sorted(self.symbols)
+            if self.symbols[key].enabled
+        )
 
     async def get_symbol(self, symbol: str):
         return self.symbols.get(symbol)
@@ -114,7 +132,7 @@ class Repository:
         )
         return values[offset : offset + limit]
 
-    async def list_active_stream_states(self, *, limit: int, offset: int):
+    async def list_active_stream_states(self):
         enabled = {symbol for symbol, state in self.symbols.items() if state.enabled}
         values = tuple(
             item
@@ -122,10 +140,47 @@ class Repository:
             if symbol in enabled
             for item in self.streams[symbol]
         )
-        return values[offset : offset + limit]
+        return values
+
+    async def get_active_stream_health(
+        self, *, checked_at: datetime, stale_after: timedelta
+    ):
+        self.health_aggregate_calls += 1
+        active = await self.list_active_symbols()
+        streams = await self.list_active_stream_states()
+        expected_names = {
+            stream.name
+            for state in active
+            for stream in streams_for_symbols((state.symbol,))
+        }
+        matching = tuple(
+            stream for stream in streams if stream.stream_name in expected_names
+        )
+        healthy = tuple(
+            stream
+            for stream in matching
+            if stream.status == "connected"
+            and stream.last_event_at is not None
+            and checked_at - stale_after <= stream.last_event_at <= checked_at
+        )
+        return SimpleNamespace(
+            expected_count=len(expected_names),
+            observed_count=len(matching),
+            healthy_count=len(healthy),
+        )
 
     async def get_symbol_summary(self, symbol: str):
+        self.summary_calls += 1
         return self.summaries.get(symbol, SymbolOperationalSummary())
+
+    async def list_symbol_summaries(self, symbols: tuple[SymbolState, ...]):
+        self.bulk_summary_calls += 1
+        return {
+            state.symbol: self.summaries.get(
+                state.symbol, SymbolOperationalSummary()
+            )
+            for state in symbols
+        }
 
     async def get_worker_heartbeat(self, worker_id: str):
         del worker_id
@@ -227,6 +282,39 @@ def test_service_owns_add_conflict_reenable_and_history_limit_rules() -> None:
     asyncio.run(scenario())
 
 
+def test_symbol_list_uses_one_bulk_summary_projection_without_n_plus_one() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+
+        values = await service(repository).list_symbols(limit=50, offset=0)
+
+        assert [item.symbol for item in values] == ["BTCUSDT", "PEPEUSDT"]
+        assert repository.bulk_summary_calls == 1
+        assert repository.summary_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_service_maps_concurrent_repository_identity_conflicts_to_domain_409() -> None:
+    class ConflictingRepository(Repository):
+        async def add_symbol(self, command: AddSymbolCommand):
+            del command
+            raise MutationIdentityConflict("concurrent symbol conflict")
+
+    async def scenario() -> None:
+        repository = ConflictingRepository()
+        with pytest.raises(MarketDataConflict, match="concurrent symbol conflict"):
+            await service(repository).add_symbol(
+                AddSymbolRequest(
+                    symbol="ETHUSDT",
+                    history_start=START,
+                    history_end=END,
+                )
+            )
+
+    asyncio.run(scenario())
+
+
 def test_service_creates_deterministic_per_dataset_jobs_and_requires_symbol_opt_in() -> None:
     async def scenario() -> None:
         repository = configured_repository()
@@ -296,13 +384,89 @@ def test_service_keeps_profile_and_eligibility_evidence_symbol_specific() -> Non
     asyncio.run(scenario())
 
 
+def test_service_requires_gapless_current_coverage_for_each_archive_dataset() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+        repository.summaries["BTCUSDT"] = SimpleNamespace(
+            approved_data_types=("kline_1m", "mark_price", "funding"),
+            archive_intervals={
+                "kline_1m": ((START, END),),
+                "mark_price": ((START, START + timedelta(days=10)),
+                               (START + timedelta(days=11), END)),
+                "funding": ((START, START + timedelta(days=15)),
+                            (START + timedelta(days=15), END)),
+            },
+            metadata_verified=True,
+            open_gap_count=0,
+            job_statuses=("succeeded",),
+        )
+        control = service(repository)
+
+        view = await control.get_symbol("BTCUSDT")
+        eligibility = await control.get_eligibility("BTCUSDT")
+
+        assert view.data_status is not SymbolDataStatus.DATA_READY
+        assert (
+            EligibilityReasonCode.INSUFFICIENT_COVERAGE
+            in eligibility.reason_codes
+        )
+
+    asyncio.run(scenario())
+
+
+def test_eligibility_requires_every_expected_stream_connected_and_fresh() -> None:
+    async def decision_for(streams: tuple[StreamState, ...]):
+        repository = configured_repository()
+        repository.summaries["BTCUSDT"] = SimpleNamespace(
+            approved_data_types=("kline_1m", "mark_price", "funding"),
+            archive_intervals={
+                data_type: ((START, END),)
+                for data_type in ("kline_1m", "mark_price", "funding")
+            },
+            metadata_verified=True,
+            open_gap_count=0,
+            job_statuses=("succeeded",),
+        )
+        repository.streams["BTCUSDT"] = streams
+        return await service(repository).get_eligibility("BTCUSDT")
+
+    async def scenario() -> None:
+        expected = streams_for_symbols(("BTCUSDT",))
+        healthy = tuple(
+            StreamState(
+                "BTCUSDT",
+                stream.name,
+                NOW - timedelta(seconds=1),
+                "connected",
+                {"source_mode": "direct"},
+                NOW,
+            )
+            for stream in expected
+        )
+
+        missing = await decision_for(healthy[:-1])
+        stale = await decision_for(
+            (*healthy[:-1], replace(healthy[-1], last_event_at=NOW - timedelta(seconds=121)))
+        )
+        degraded = await decision_for(
+            (*healthy[:-1], replace(healthy[-1], status="degraded"))
+        )
+
+        assert EligibilityReasonCode.STALE_LIVE_DATA in missing.reason_codes
+        assert EligibilityReasonCode.SOURCE_DEGRADED in missing.reason_codes
+        assert EligibilityReasonCode.STALE_LIVE_DATA in stale.reason_codes
+        assert EligibilityReasonCode.SOURCE_DEGRADED in degraded.reason_codes
+
+    asyncio.run(scenario())
+
+
 def test_service_health_uses_persisted_worker_and_redacted_stream_details() -> None:
     async def scenario() -> None:
         repository = configured_repository()
-        repository.streams["BTCUSDT"] = (
+        repository.streams["BTCUSDT"] = tuple(
             StreamState(
                 "BTCUSDT",
-                "btcusdt@kline_1m",
+                stream.name,
                 NOW - timedelta(seconds=1),
                 "connected",
                 {
@@ -310,7 +474,8 @@ def test_service_health_uses_persisted_worker_and_redacted_stream_details() -> N
                     "proxy_url": "http://user:secret@localhost:17891/?token=secret",
                 },
                 NOW,
-            ),
+            )
+            for stream in streams_for_symbols(("BTCUSDT",))
         )
         repository.symbols["PEPEUSDT"] = replace(
             repository.symbols["PEPEUSDT"], enabled=False
@@ -334,5 +499,50 @@ def test_service_health_uses_persisted_worker_and_redacted_stream_details() -> N
         assert health.archive_healthy is True
         assert health.rest_healthy is False
         assert "secret" not in health.model_dump_json()
+
+    asyncio.run(scenario())
+
+
+def test_operations_health_checks_all_expected_streams_and_worker_freshness() -> None:
+    async def scenario() -> None:
+        repository = Repository()
+        for number in range(26):
+            symbol = f"S{number:03d}USDT"
+            repository.symbols[symbol] = SymbolState(
+                symbol, True, START, END, False, NOW, NOW
+            )
+            repository.streams[symbol] = tuple(
+                StreamState(
+                    symbol,
+                    stream.name,
+                    NOW - timedelta(seconds=1),
+                    "connected",
+                    {"source_mode": "direct"},
+                    NOW,
+                )
+                for stream in streams_for_symbols((symbol,))
+            )
+        last_symbol = "S025USDT"
+        repository.streams[last_symbol] = repository.streams[last_symbol][:-1]
+        repository.heartbeat = WorkerHeartbeat("market-worker", "running", NOW, {})
+
+        incomplete = await service(repository).market_data_health()
+
+        assert repository.health_aggregate_calls == 1
+        assert len(incomplete.streams) == 103
+        assert incomplete.source_mode.value == "degraded"
+        assert incomplete.archive_healthy is True
+
+        for heartbeat in (
+            None,
+            WorkerHeartbeat("market-worker", "stopped", NOW, {}),
+            WorkerHeartbeat(
+                "market-worker", "running", NOW - timedelta(seconds=121), {}
+            ),
+        ):
+            repository.heartbeat = heartbeat
+            unhealthy = await service(repository).market_data_health()
+            assert unhealthy.source_mode.value == "degraded"
+            assert unhealthy.archive_healthy is False
 
     asyncio.run(scenario())

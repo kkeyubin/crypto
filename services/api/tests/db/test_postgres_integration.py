@@ -1,16 +1,19 @@
 import asyncio
+import hashlib
 import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from crypto_research.config import Settings
+from crypto_research.contracts.data import EligibilityReasonCode, SymbolDataStatus
 from crypto_research.contracts.manifest import (
     ArchiveCadence,
     ArchiveDataset,
@@ -22,6 +25,7 @@ from crypto_research.contracts.manifest import (
 )
 from crypto_research.contracts.strategy import InstrumentRef
 from crypto_research.db.models import (
+    AuditEventRow,
     BackfillObjectRow,
     DataPartitionRow,
     IngestionJobRow,
@@ -33,7 +37,9 @@ from crypto_research.db.repositories import (
     AddSymbolCommand,
     BackfillCommand,
     GapRecord,
+    MutationIdentityConflict,
     SqlAlchemyDataStateRepository,
+    StreamState,
 )
 from crypto_research.market.backfill import (
     BackfillObject,
@@ -43,15 +49,18 @@ from crypto_research.market.backfill import (
     NormalizeEvidence,
     PublishEvidence,
 )
+from crypto_research.market.binance.streams import streams_for_symbols
 from crypto_research.market.catalog import (
     CatalogCandidate,
     SqlAlchemyCatalogRepository,
 )
+from crypto_research.market.control import MarketDataControlService
 from crypto_research.market.live_catalog import (
     LiveCatalogError,
     SqlAlchemyLiveCatalogRepository,
 )
 from crypto_research.market.live_storage import LiveWriteResult, StoredLivePartition
+from crypto_research.market.profile import ProfileMetric, SymbolProfile
 
 TEST_DATABASE_URL = os.environ.get("CRYPTO_TEST_DATABASE_URL")
 if TEST_DATABASE_URL is None:
@@ -538,6 +547,385 @@ def test_postgres_persistence_invariants() -> None:
             await engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_postgres_task6_control_invariants() -> None:
+    _upgrade_test_database()
+
+    async def scenario() -> None:
+        engine = create_async_engine(TEST_DATABASE_URL)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        suffix = uuid4().hex[:8].upper()
+        symbol = f"T6{suffix}USDT"
+        coverage_symbol = f"C6{suffix}USDT"
+        start = datetime(2026, 4, 1, tzinfo=UTC)
+        end = start + timedelta(days=2)
+        command = AddSymbolCommand(symbol, start, end)
+        try:
+            first_session = session_factory()
+            second_session = session_factory()
+            try:
+                first_repository = SqlAlchemyDataStateRepository(first_session)
+                second_repository = SqlAlchemyDataStateRepository(second_session)
+                await first_repository.add_symbol(command)
+                second_task = asyncio.create_task(
+                    second_repository.add_symbol(command)
+                )
+                await asyncio.sleep(0.05)
+                assert not second_task.done()
+                await first_session.commit()
+                assert (await asyncio.wait_for(second_task, timeout=5)).symbol == symbol
+                await second_session.commit()
+            finally:
+                await first_session.close()
+                await second_session.close()
+
+            async with session_factory() as verification:
+                assert await verification.scalar(
+                    select(func.count())
+                    .select_from(SymbolRow)
+                    .where(SymbolRow.symbol == symbol)
+                ) == 1
+                assert await _audit_count(verification, "symbol_added", symbol) == 1
+
+            for enabled, action in (
+                (False, "symbol_disabled"),
+                (True, "symbol_enabled"),
+            ):
+                first_session = session_factory()
+                second_session = session_factory()
+                try:
+                    first_repository = SqlAlchemyDataStateRepository(first_session)
+                    second_repository = SqlAlchemyDataStateRepository(second_session)
+                    await first_repository.set_symbol_enabled(symbol, enabled)
+                    second_task = asyncio.create_task(
+                        second_repository.set_symbol_enabled(symbol, enabled)
+                    )
+                    await asyncio.sleep(0.05)
+                    assert not second_task.done()
+                    await first_session.commit()
+                    assert (
+                        await asyncio.wait_for(second_task, timeout=5)
+                    ).enabled is enabled
+                    await second_session.commit()
+                finally:
+                    await first_session.close()
+                    await second_session.close()
+                async with session_factory() as verification:
+                    assert await _audit_count(verification, action, symbol) == 1
+
+            job_id = str(uuid4())
+            job_command = BackfillCommand(
+                id=job_id,
+                symbol=symbol,
+                dataset=DataType.KLINE_1M.value,
+                requested_start=start,
+                requested_end=end,
+            )
+            first_session = session_factory()
+            second_session = session_factory()
+            try:
+                first_repository = SqlAlchemyDataStateRepository(first_session)
+                second_repository = SqlAlchemyDataStateRepository(second_session)
+                await first_repository.create_backfill(job_command)
+                second_task = asyncio.create_task(
+                    second_repository.create_backfill(job_command)
+                )
+                await asyncio.sleep(0.05)
+                assert not second_task.done()
+                await first_session.commit()
+                assert (await asyncio.wait_for(second_task, timeout=5)).id == job_id
+                await second_session.commit()
+            finally:
+                await first_session.close()
+                await second_session.close()
+
+            async with session_factory() as verification:
+                assert await verification.scalar(
+                    select(func.count())
+                    .select_from(IngestionJobRow)
+                    .where(IngestionJobRow.id == job_id)
+                ) == 1
+                assert await _audit_count(
+                    verification, "backfill_created", job_id
+                ) == 1
+
+            object_id = str(uuid4())
+            work = BackfillObject(
+                object_id=object_id,
+                job_id=job_id,
+                source_url=f"https://data.binance.vision/{symbol}/status.zip",
+                start=start,
+                end=end,
+            )
+            first_session = session_factory()
+            second_session = session_factory()
+            try:
+                first_repository = SqlAlchemyDataStateRepository(first_session)
+                second_repository = SqlAlchemyDataStateRepository(second_session)
+                await first_repository.plan(work)
+                second_task = asyncio.create_task(second_repository.plan(work))
+                await asyncio.sleep(0.05)
+                assert not second_task.done()
+                await first_session.commit()
+                assert (
+                    await asyncio.wait_for(second_task, timeout=5)
+                ).object_id == object_id
+                await second_session.commit()
+            finally:
+                await first_session.close()
+                await second_session.close()
+
+            async with session_factory() as status_session:
+                await status_session.execute(
+                    update(IngestionJobRow)
+                    .where(IngestionJobRow.id == job_id)
+                    .values(status="succeeded")
+                )
+                await status_session.execute(
+                    update(BackfillObjectRow)
+                    .where(BackfillObjectRow.id == object_id)
+                    .values(state=BackfillState.FAILED.value)
+                )
+                await status_session.commit()
+                repository = SqlAlchemyDataStateRepository(status_session)
+                projected = await repository.get_backfill(job_id)
+                assert projected is not None
+                assert projected.status == "failed"
+                assert await repository.count_failed_jobs() >= 1
+
+            claim_job_id = str(uuid4())
+            claim_object_id = str(uuid4())
+            async with session_factory() as setup_session:
+                repository = SqlAlchemyDataStateRepository(setup_session)
+                await repository.create_backfill(
+                    BackfillCommand(
+                        id=claim_job_id,
+                        symbol=symbol,
+                        dataset=DataType.FUNDING.value,
+                        requested_start=start,
+                        requested_end=end,
+                    )
+                )
+                await repository.plan(
+                    BackfillObject(
+                        object_id=claim_object_id,
+                        job_id=claim_job_id,
+                        source_url=(
+                            f"https://data.binance.vision/{symbol}/claim.zip"
+                        ),
+                        start=start,
+                        end=end,
+                    )
+                )
+                await setup_session.execute(
+                    update(BackfillObjectRow)
+                    .where(BackfillObjectRow.id == claim_object_id)
+                    .values(created_at=datetime(2000, 1, 1, tzinfo=UTC))
+                )
+                await repository.set_symbol_enabled(symbol, False)
+                await setup_session.commit()
+
+            async with session_factory() as disabled_session:
+                repository = SqlAlchemyDataStateRepository(disabled_session)
+                disabled_claim = await repository.claim(
+                    "task6-worker", datetime.now(UTC), timedelta(minutes=1)
+                )
+                assert disabled_claim is None or disabled_claim.object_id != claim_object_id
+                await disabled_session.rollback()
+
+            async with session_factory() as enabled_session:
+                repository = SqlAlchemyDataStateRepository(enabled_session)
+                await repository.set_symbol_enabled(symbol, True)
+                await enabled_session.commit()
+                claimed = await repository.claim(
+                    "task6-worker", datetime.now(UTC), timedelta(minutes=1)
+                )
+                assert claimed is not None
+                assert claimed.object_id == claim_object_id
+                assert claimed.attempt_count == 1
+                await enabled_session.commit()
+
+            async with session_factory() as coverage_session:
+                repository = SqlAlchemyDataStateRepository(coverage_session)
+                await repository.add_symbol(
+                    AddSymbolCommand(coverage_symbol, start, end)
+                )
+                catalog = SqlAlchemyCatalogRepository(coverage_session)
+                manifests: dict[tuple[DataType, int], DataManifest] = {}
+                for data_type in (
+                    DataType.KLINE_1M,
+                    DataType.MARK_PRICE,
+                    DataType.FUNDING,
+                ):
+                    for day in range(2):
+                        item = _task6_manifest(
+                            coverage_symbol,
+                            data_type,
+                            start + timedelta(days=day),
+                        )
+                        manifests[(data_type, day)] = item
+                        if data_type is not DataType.MARK_PRICE or day == 0:
+                            await catalog.approve(
+                                CatalogCandidate(item, _validations())
+                            )
+                await coverage_session.commit()
+
+                class Profiles:
+                    async def compute(
+                        self,
+                        requested_symbol: str,
+                        requested_start: datetime,
+                        requested_end: datetime,
+                        *,
+                        calculated_at: datetime,
+                    ) -> SymbolProfile:
+                        metric = ProfileMetric(1.0, 10, 1.0)
+                        return SymbolProfile(
+                            symbol=requested_symbol,
+                            calculated_at=calculated_at,
+                            coverage_start=requested_start,
+                            coverage_end=requested_end,
+                            realized_volatility=metric,
+                            jump_frequency=metric,
+                            median_spread_bps=metric,
+                            median_hourly_volume=metric,
+                            funding_rate_mean=metric,
+                        )
+
+                control = MarketDataControlService(
+                    repository,
+                    Profiles(),
+                    Settings(_env_file=None),
+                    clock=lambda: datetime.now(UTC),
+                )
+                assert (
+                    await control.get_symbol(coverage_symbol)
+                ).data_status is not SymbolDataStatus.DATA_READY
+
+                await catalog.approve(
+                    CatalogCandidate(
+                        manifests[(DataType.MARK_PRICE, 1)], _validations()
+                    )
+                )
+                await coverage_session.commit()
+                assert (
+                    await control.get_symbol(coverage_symbol)
+                ).data_status is SymbolDataStatus.DATA_READY
+
+                expected_streams = streams_for_symbols((coverage_symbol,))
+                for stream in expected_streams[:-1]:
+                    await repository.update_stream(
+                        StreamState(
+                            coverage_symbol,
+                            stream.name,
+                            datetime.now(UTC),
+                            "connected",
+                            {"source_mode": "direct"},
+                        )
+                    )
+                await coverage_session.commit()
+                incomplete = await control.get_eligibility(coverage_symbol)
+                assert EligibilityReasonCode.STALE_LIVE_DATA in incomplete.reason_codes
+                assert EligibilityReasonCode.SOURCE_DEGRADED in incomplete.reason_codes
+
+                last_stream = expected_streams[-1]
+                await repository.update_stream(
+                    StreamState(
+                        coverage_symbol,
+                        last_stream.name,
+                        datetime.now(UTC),
+                        "connected",
+                        {"source_mode": "direct"},
+                    )
+                )
+                await coverage_session.commit()
+                complete = await control.get_eligibility(coverage_symbol)
+                assert EligibilityReasonCode.STALE_LIVE_DATA not in complete.reason_codes
+                assert EligibilityReasonCode.SOURCE_DEGRADED not in complete.reason_codes
+
+            async with session_factory() as conflict_setup:
+                conflict_symbol = f"X6{suffix}USDT"
+                first = SqlAlchemyDataStateRepository(conflict_setup)
+                await first.add_symbol(
+                    AddSymbolCommand(conflict_symbol, start, end)
+                )
+                await conflict_setup.commit()
+            async with session_factory() as conflict_session:
+                with pytest.raises(MutationIdentityConflict, match="immutable"):
+                    await SqlAlchemyDataStateRepository(conflict_session).add_symbol(
+                        AddSymbolCommand(
+                            conflict_symbol, start + timedelta(days=1), end
+                        )
+                    )
+                await conflict_session.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+async def _audit_count(session, action: str, subject_id: str) -> int:
+    return int(
+        (
+            await session.scalar(
+                select(func.count())
+                .select_from(AuditEventRow)
+                .where(
+                    AuditEventRow.action == action,
+                    AuditEventRow.subject_id == subject_id,
+                )
+            )
+        )
+        or 0
+    )
+
+
+def _task6_manifest(
+    symbol: str, data_type: DataType, start: datetime
+) -> DataManifest:
+    archive_dataset = {
+        DataType.KLINE_1M: ArchiveDataset.KLINES,
+        DataType.MARK_PRICE: ArchiveDataset.MARK_PRICE_KLINES,
+        DataType.FUNDING: ArchiveDataset.FUNDING_RATE,
+    }[data_type]
+    identity = f"{symbol}|{data_type.value}|{start.isoformat()}"
+    source_checksum = hashlib.sha256(f"source|{identity}".encode()).hexdigest()
+    normalized_checksum = hashlib.sha256(
+        f"normalized|{identity}".encode()
+    ).hexdigest()
+    end = start + timedelta(days=1)
+    return DataManifest(
+        manifest_id=uuid4(),
+        instrument=InstrumentRef(
+            venue="BINANCE", market="USD_M_PERPETUAL", symbol=symbol
+        ),
+        data_type=data_type,
+        start=start,
+        end=end,
+        retrieved_at=end + timedelta(days=1),
+        schema_version="2.0.0",
+        normalization_version="1.0.0",
+        source=BinanceArchiveSource(
+            kind="binance_archive",
+            cadence=ArchiveCadence.DAILY,
+            dataset=archive_dataset,
+            symbol=symbol,
+            interval=None if data_type is DataType.FUNDING else "1m",
+            period_start=start,
+        ),
+        raw_path=f"raw/{symbol}/{data_type.value}/{source_checksum}.zip",
+        normalized_path=(
+            f"normalized/{symbol}/{data_type.value}/{normalized_checksum}.parquet"
+        ),
+        source_checksum=source_checksum,
+        normalized_checksum=normalized_checksum,
+        row_count=1,
+        validation_state=ValidationState.VALIDATED,
+        primary_key_fields=("event_time",),
+        deduplication_method=DeduplicationMethod.REJECT_DUPLICATES,
+        duplicates_removed=0,
+    )
 
 
 def _validations() -> dict[str, bool]:

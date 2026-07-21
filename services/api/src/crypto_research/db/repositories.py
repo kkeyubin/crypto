@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from crypto_research.contracts.manifest import DataManifest, DataType
+from crypto_research.contracts.manifest import DataManifest, DataType, ValidationState
 from crypto_research.db.models import (
     AuditEventRow,
     BackfillObjectRow,
@@ -38,6 +38,14 @@ from crypto_research.market.gaps import (
     approved_evidence_repairs,
 )
 
+_REQUIRED_SUMMARY_DATASETS = (
+    DataType.KLINE_1M.value,
+    DataType.MARK_PRICE.value,
+    DataType.FUNDING.value,
+)
+_TRUSTED_METADATA_SOURCE = "binance_usdm_exchange_info"
+_METADATA_MAX_AGE = timedelta(hours=24)
+
 
 @dataclass(frozen=True)
 class AddSymbolCommand:
@@ -54,6 +62,10 @@ class BackfillCommand:
     dataset: str
     requested_start: datetime | None = None
     requested_end: datetime | None = None
+
+
+class MutationIdentityConflict(ValueError):
+    """A concurrent idempotent mutation reused an immutable identity differently."""
 
 
 @dataclass(frozen=True)
@@ -165,9 +177,24 @@ class DataGap:
 @dataclass(frozen=True)
 class SymbolOperationalSummary:
     approved_data_types: tuple[str, ...] = ()
+    archive_intervals: tuple["ArchiveCoverageInterval", ...] = ()
     metadata_verified: bool = False
     open_gap_count: int = 0
     job_statuses: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ArchiveCoverageInterval:
+    dataset: str
+    start: datetime
+    end: datetime
+
+
+@dataclass(frozen=True)
+class ActiveStreamHealth:
+    expected_count: int
+    observed_count: int
+    healthy_count: int
 
 
 class DataStateRepository(Protocol):
@@ -209,9 +236,11 @@ class DataStateRepository(Protocol):
         offset: int = 0,
     ) -> tuple[StreamState, ...]: ...
 
-    async def list_active_stream_states(
-        self, *, limit: int, offset: int
-    ) -> tuple[StreamState, ...]: ...
+    async def list_active_stream_states(self) -> tuple[StreamState, ...]: ...
+
+    async def get_active_stream_health(
+        self, *, checked_at: datetime, stale_after: timedelta
+    ) -> ActiveStreamHealth: ...
 
     async def update_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None: ...
 
@@ -314,7 +343,8 @@ class SqlAlchemyDataStateRepository:
         symbol = normalize_symbol(command.symbol)
         history_start = _as_utc_datetime(command.history_start)
         history_end = _as_utc_datetime(command.history_end)
-        row = await self._session.get(SymbolRow, symbol)
+        await self._lock_identity(f"crypto-research:symbol:{symbol}")
+        row = await self._session.get(SymbolRow, symbol, populate_existing=True)
         if row is None:
             row = SymbolRow(
                 symbol=symbol,
@@ -326,6 +356,12 @@ class SqlAlchemyDataStateRepository:
             self._session.add(row)
             self._add_audit("symbol_added", "symbol", symbol)
             await self._session.flush()
+        elif (
+            row.history_start != history_start
+            or row.history_end != history_end
+            or row.include_agg_trades != command.include_agg_trades
+        ):
+            raise MutationIdentityConflict("symbol configuration identity is immutable")
         return _symbol_state(row)
 
     async def list_symbols(
@@ -353,7 +389,8 @@ class SqlAlchemyDataStateRepository:
 
     async def set_symbol_enabled(self, symbol: str, enabled: bool) -> SymbolState:
         normalized = normalize_symbol(symbol)
-        row = await self._session.get(SymbolRow, normalized)
+        await self._lock_identity(f"crypto-research:symbol:{normalized}")
+        row = await self._session.get(SymbolRow, normalized, populate_existing=True)
         if row is None:
             raise ValueError(f"symbol is not configured: {normalized}")
         if row.enabled != enabled:
@@ -369,19 +406,28 @@ class SqlAlchemyDataStateRepository:
     async def create_backfill(self, command: BackfillCommand) -> IngestionJob:
         requested_start = _optional_utc_datetime(command.requested_start)
         requested_end = _optional_utc_datetime(command.requested_end)
-        existing = await self._session.get(IngestionJobRow, command.id)
+        symbol = normalize_symbol(command.symbol)
+        await self._lock_identity(f"crypto-research:symbol:{symbol}")
+        await self._lock_identity(f"crypto-research:backfill-job:{command.id}")
+        existing = await self._session.get(
+            IngestionJobRow, command.id, populate_existing=True
+        )
         if existing is not None:
             if (
-                existing.symbol != normalize_symbol(command.symbol)
+                existing.symbol != symbol
                 or existing.dataset != command.dataset
                 or existing.requested_start != requested_start
                 or existing.requested_end != requested_end
             ):
-                raise ValueError("backfill job identity is immutable")
+                raise MutationIdentityConflict("backfill job identity is immutable")
             return _ingestion_job(existing)
-        symbol = normalize_symbol(command.symbol)
-        if await self._session.get(SymbolRow, symbol) is None:
+        configured = await self._session.get(
+            SymbolRow, symbol, populate_existing=True
+        )
+        if configured is None:
             raise ValueError(f"symbol is not configured: {symbol}")
+        if not configured.enabled:
+            raise MutationIdentityConflict("disabled symbols cannot accept new backfills")
         row = IngestionJobRow(
             id=command.id,
             symbol=symbol,
@@ -619,16 +665,12 @@ class SqlAlchemyDataStateRepository:
             for row in rows
         )
 
-    async def list_active_stream_states(
-        self, *, limit: int, offset: int
-    ) -> tuple[StreamState, ...]:
+    async def list_active_stream_states(self) -> tuple[StreamState, ...]:
         statement = (
             select(StreamStateRow)
             .join(SymbolRow, SymbolRow.symbol == StreamStateRow.symbol)
             .where(SymbolRow.enabled.is_(True))
             .order_by(StreamStateRow.symbol, StreamStateRow.stream_name)
-            .limit(limit)
-            .offset(offset)
         )
         rows = (await self._session.execute(statement)).scalars().all()
         return tuple(
@@ -643,49 +685,240 @@ class SqlAlchemyDataStateRepository:
             for row in rows
         )
 
+    async def get_active_stream_health(
+        self, *, checked_at: datetime, stale_after: timedelta
+    ) -> ActiveStreamHealth:
+        checked_at = _require_utc(checked_at)
+        _require_positive_duration(stale_after)
+        expected_name = or_(
+            *(
+                StreamStateRow.stream_name
+                == func.lower(SymbolRow.symbol) + literal(suffix)
+                for suffix in (
+                    "@aggtrade",
+                    "@bookticker",
+                    "@kline_1m",
+                    "@markprice@1s",
+                )
+            )
+        )
+        active_count = (
+            select(func.count())
+            .select_from(SymbolRow)
+            .where(SymbolRow.enabled.is_(True))
+            .scalar_subquery()
+        )
+        observed_count = (
+            select(func.count())
+            .select_from(StreamStateRow)
+            .join(SymbolRow, SymbolRow.symbol == StreamStateRow.symbol)
+            .where(SymbolRow.enabled.is_(True), expected_name)
+            .scalar_subquery()
+        )
+        healthy_count = (
+            select(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                (StreamStateRow.status == "connected")
+                                & (StreamStateRow.last_event_at.is_not(None))
+                                & (
+                                    StreamStateRow.last_event_at
+                                    >= checked_at - stale_after
+                                )
+                                & (StreamStateRow.last_event_at <= checked_at),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                )
+            )
+            .select_from(StreamStateRow)
+            .join(SymbolRow, SymbolRow.symbol == StreamStateRow.symbol)
+            .where(SymbolRow.enabled.is_(True), expected_name)
+            .scalar_subquery()
+        )
+        statement = select(
+            (active_count * 4).label("expected_count"),
+            observed_count.label("observed_count"),
+            healthy_count.label("healthy_count"),
+        )
+        row = (await self._session.execute(statement)).first()
+        if row is None:
+            return ActiveStreamHealth(0, 0, 0)
+        return ActiveStreamHealth(*(int(value or 0) for value in row))
+
     async def get_symbol_summary(self, symbol: str) -> SymbolOperationalSummary:
         normalized = normalize_symbol(symbol)
-        partition_statement = select(DataPartitionRow.dataset).where(
-            DataPartitionRow.symbol == normalized,
-            DataPartitionRow.approval_status == "approved",
+        state = await self.get_symbol(normalized)
+        if state is None:
+            return SymbolOperationalSummary()
+        return (await self.list_symbol_summaries((state,)))[normalized]
+
+    async def list_symbol_summaries(
+        self, symbols: tuple[SymbolState, ...]
+    ) -> dict[str, SymbolOperationalSummary]:
+        if not symbols:
+            return {}
+        symbol_names = tuple(state.symbol for state in symbols)
+        current_versions = (
+            select(
+                DataPartitionRow.symbol.label("symbol"),
+                DataPartitionRow.dataset.label("dataset"),
+                DataPartitionRow.partition_date.label("partition_date"),
+                func.max(DataPartitionRow.version).label("version"),
+            )
+            .where(
+                DataPartitionRow.symbol.in_(symbol_names),
+                DataPartitionRow.dataset.in_(_REQUIRED_SUMMARY_DATASETS),
+                DataPartitionRow.approval_status == "approved",
+            )
+            .group_by(
+                DataPartitionRow.symbol,
+                DataPartitionRow.dataset,
+                DataPartitionRow.partition_date,
+            )
+            .subquery()
+        )
+        partition_statement = (
+            select(DataPartitionRow, DataManifestRow)
+            .join(
+                current_versions,
+                (current_versions.c.symbol == DataPartitionRow.symbol)
+                & (current_versions.c.dataset == DataPartitionRow.dataset)
+                & (
+                    current_versions.c.partition_date
+                    == DataPartitionRow.partition_date
+                )
+                & (current_versions.c.version == DataPartitionRow.version),
+            )
+            .join(SymbolRow, SymbolRow.symbol == DataPartitionRow.symbol)
+            .join(DataManifestRow, DataManifestRow.partition_id == DataPartitionRow.id)
+            .where(
+                DataPartitionRow.symbol.in_(symbol_names),
+                DataPartitionRow.dataset.in_(_REQUIRED_SUMMARY_DATASETS),
+                DataPartitionRow.approval_status == "approved",
+                DataPartitionRow.partition_date
+                >= func.to_char(
+                    func.date_trunc("month", SymbolRow.history_start), "YYYY-MM-DD"
+                ),
+                DataPartitionRow.partition_date
+                <= func.to_char(SymbolRow.history_end, "YYYY-MM-DD"),
+            )
+            .order_by(
+                DataPartitionRow.symbol,
+                DataPartitionRow.dataset,
+                DataPartitionRow.partition_date,
+                DataPartitionRow.id,
+            )
+        )
+        checked_at = utc_now()
+        ranked_metadata = (
+            select(
+                SymbolMetadataSnapshotRow.id.label("id"),
+                func.row_number()
+                .over(
+                    partition_by=SymbolMetadataSnapshotRow.symbol,
+                    order_by=(
+                        SymbolMetadataSnapshotRow.captured_at.desc(),
+                        SymbolMetadataSnapshotRow.id.desc(),
+                    ),
+                )
+                .label("row_number"),
+            )
+            .where(
+                SymbolMetadataSnapshotRow.symbol.in_(symbol_names),
+                SymbolMetadataSnapshotRow.source == _TRUSTED_METADATA_SOURCE,
+                SymbolMetadataSnapshotRow.captured_at
+                >= checked_at - _METADATA_MAX_AGE,
+                SymbolMetadataSnapshotRow.captured_at <= checked_at,
+            )
+            .subquery()
         )
         metadata_statement = (
-            select(SymbolMetadataSnapshotRow.id)
-            .where(SymbolMetadataSnapshotRow.symbol == normalized)
-            .limit(1)
+            select(SymbolMetadataSnapshotRow)
+            .join(ranked_metadata, ranked_metadata.c.id == SymbolMetadataSnapshotRow.id)
+            .where(ranked_metadata.c.row_number == 1)
+            .order_by(SymbolMetadataSnapshotRow.symbol)
         )
         gap_statement = (
-            select(func.count())
+            select(DataGapRow.symbol, func.count())
             .select_from(DataGapRow)
-            .where(DataGapRow.symbol == normalized, DataGapRow.status == "open")
+            .where(
+                DataGapRow.symbol.in_(symbol_names),
+                DataGapRow.status == "open",
+            )
+            .group_by(DataGapRow.symbol)
         )
-        jobs_statement = select(IngestionJobRow).where(
-            IngestionJobRow.symbol == normalized
+        object_stats = _object_status_stats()
+        effective_status = _effective_job_status_sql(object_stats)
+        job_status_statement = (
+            select(
+                IngestionJobRow.symbol,
+                effective_status.label("effective_status"),
+                func.count(),
+            )
+            .outerjoin(object_stats, object_stats.c.job_id == IngestionJobRow.id)
+            .where(IngestionJobRow.symbol.in_(symbol_names))
+            .group_by(IngestionJobRow.symbol, effective_status)
         )
-        object_states_statement = (
-            select(BackfillObjectRow.job_id, BackfillObjectRow.state)
-            .join(IngestionJobRow, IngestionJobRow.id == BackfillObjectRow.job_id)
-            .where(IngestionJobRow.symbol == normalized)
-        )
-        archive_types = (await self._session.execute(partition_statement)).scalars().all()
-        metadata_verified = (
-            await self._session.execute(metadata_statement)
-        ).scalars().first() is not None
-        open_gap_count = int((await self._session.scalar(gap_statement)) or 0)
-        jobs = (await self._session.execute(jobs_statement)).scalars().all()
-        states_by_job: dict[str, list[str]] = {}
-        for job_id, state in (await self._session.execute(object_states_statement)).all():
-            states_by_job.setdefault(job_id, []).append(state)
-        job_statuses = tuple(
-            _effective_job_status(row.status, states_by_job.get(row.id, ()))
-            for row in jobs
-        )
-        return SymbolOperationalSummary(
-            approved_data_types=tuple(sorted(set(archive_types))),
-            metadata_verified=metadata_verified,
-            open_gap_count=open_gap_count,
-            job_statuses=tuple(sorted(job_statuses)),
-        )
+        intervals_by_symbol: dict[str, list[ArchiveCoverageInterval]] = {
+            symbol: [] for symbol in symbol_names
+        }
+        for partition, stored in (
+            await self._session.execute(partition_statement)
+        ).all():
+            manifest = DataManifest.model_validate_json(json.dumps(stored.manifest))
+            if (
+                manifest.validation_state is ValidationState.VALIDATED
+                and manifest.instrument.symbol == partition.symbol
+                and manifest.data_type.value == partition.dataset
+            ):
+                intervals_by_symbol[partition.symbol].extend(
+                    ArchiveCoverageInterval(partition.dataset, start, end)
+                    for start, end in _manifest_coverage_intervals(manifest)
+                )
+        metadata_by_symbol = {
+            snapshot.symbol: snapshot
+            for snapshot in (
+                await self._session.execute(metadata_statement)
+            ).scalars().all()
+        }
+        gaps_by_symbol = {
+            symbol: int(count)
+            for symbol, count in (
+                await self._session.execute(gap_statement)
+            ).all()
+        }
+        statuses_by_symbol: dict[str, set[str]] = {
+            symbol: set() for symbol in symbol_names
+        }
+        for symbol, status, _count in (
+            await self._session.execute(job_status_statement)
+        ).all():
+            statuses_by_symbol[symbol].add(status)
+        return {
+            symbol: SymbolOperationalSummary(
+                approved_data_types=tuple(
+                    sorted(
+                        {
+                            interval.dataset
+                            for interval in intervals_by_symbol[symbol]
+                        }
+                    )
+                ),
+                archive_intervals=tuple(intervals_by_symbol[symbol]),
+                metadata_verified=_trusted_metadata_snapshot(
+                    metadata_by_symbol.get(symbol), symbol, checked_at
+                ),
+                open_gap_count=gaps_by_symbol.get(symbol, 0),
+                job_statuses=tuple(sorted(statuses_by_symbol[symbol])),
+            )
+            for symbol in symbol_names
+        }
 
     async def get_worker_heartbeat(self, worker_id: str) -> WorkerHeartbeat | None:
         row = await self._session.get(WorkerHeartbeatRow, worker_id)
@@ -699,19 +932,15 @@ class SqlAlchemyDataStateRepository:
         )
 
     async def count_failed_jobs(self) -> int:
-        job_statement = (
+        object_stats = _object_status_stats()
+        effective_status = _effective_job_status_sql(object_stats)
+        statement = (
             select(func.count())
             .select_from(IngestionJobRow)
-            .where(IngestionJobRow.status == "failed")
+            .outerjoin(object_stats, object_stats.c.job_id == IngestionJobRow.id)
+            .where(effective_status == "failed")
         )
-        object_statement = (
-            select(func.count(func.distinct(BackfillObjectRow.job_id)))
-            .select_from(BackfillObjectRow)
-            .where(BackfillObjectRow.state == BackfillState.FAILED.value)
-        )
-        return int((await self._session.scalar(job_statement)) or 0) + int(
-            (await self._session.scalar(object_statement)) or 0
-        )
+        return int((await self._session.scalar(statement)) or 0)
 
     async def update_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
         heartbeat_at = _require_utc(heartbeat.heartbeat_at)
@@ -754,7 +983,12 @@ class SqlAlchemyDataStateRepository:
         await self._session.flush()
 
     async def plan_backfill_object(self, work: BackfillObject) -> BackfillObject:
-        existing = await self._session.get(BackfillObjectRow, work.object_id)
+        await self._lock_identity(
+            f"crypto-research:backfill-object:{work.object_id}"
+        )
+        existing = await self._session.get(
+            BackfillObjectRow, work.object_id, populate_existing=True
+        )
         if existing is not None:
             if _backfill_identity(existing) != (
                 work.job_id,
@@ -762,7 +996,7 @@ class SqlAlchemyDataStateRepository:
                 work.start,
                 work.end,
             ):
-                raise ValueError("backfill object identity is immutable")
+                raise MutationIdentityConflict("backfill object identity is immutable")
             return _backfill_object(existing)
         row = BackfillObjectRow(
             id=work.object_id,
@@ -795,7 +1029,10 @@ class SqlAlchemyDataStateRepository:
         _require_positive_duration(duration)
         statement = (
             select(BackfillObjectRow)
+            .join(IngestionJobRow, IngestionJobRow.id == BackfillObjectRow.job_id)
+            .join(SymbolRow, SymbolRow.symbol == IngestionJobRow.symbol)
             .where(
+                SymbolRow.enabled.is_(True),
                 BackfillObjectRow.state.in_(
                     (
                         BackfillState.PLANNED.value,
@@ -1065,6 +1302,11 @@ class SqlAlchemyDataStateRepository:
             )
         )
 
+    async def _lock_identity(self, lock_key: str) -> None:
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
+        )
+
 
 def _as_utc_datetime(value: str | datetime) -> datetime:
     if isinstance(value, str):
@@ -1113,15 +1355,112 @@ def _ingestion_job(
 
 def _effective_job_status(persisted: str, object_states: Any) -> str:
     states = tuple(object_states)
-    if persisted in {"succeeded", "failed", "cancelled"}:
+    if not states:
         return persisted
-    if not states or all(state == BackfillState.PLANNED.value for state in states):
-        return "queued"
     if any(state == BackfillState.FAILED.value for state in states):
         return "failed"
     if all(state == BackfillState.CATALOG_APPROVED.value for state in states):
         return "succeeded"
-    return "running"
+    active = {
+        BackfillState.DOWNLOADING.value,
+        BackfillState.CHECKSUM_VERIFIED.value,
+        BackfillState.NORMALIZED.value,
+        BackfillState.VALIDATED.value,
+    }
+    if any(state in active for state in states):
+        return "running"
+    return "queued"
+
+
+def _object_status_stats():
+    active_states = (
+        BackfillState.DOWNLOADING.value,
+        BackfillState.CHECKSUM_VERIFIED.value,
+        BackfillState.NORMALIZED.value,
+        BackfillState.VALIDATED.value,
+    )
+    return (
+        select(
+            BackfillObjectRow.job_id.label("job_id"),
+            func.count().label("object_count"),
+            func.sum(
+                case((BackfillObjectRow.state == BackfillState.FAILED.value, 1), else_=0)
+            ).label("failed_count"),
+            func.sum(
+                case(
+                    (
+                        BackfillObjectRow.state
+                        == BackfillState.CATALOG_APPROVED.value,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("approved_count"),
+            func.sum(
+                case((BackfillObjectRow.state.in_(active_states), 1), else_=0)
+            ).label("active_count"),
+        )
+        .group_by(BackfillObjectRow.job_id)
+        .subquery()
+    )
+
+
+def _effective_job_status_sql(object_stats):
+    return case(
+        (object_stats.c.object_count.is_(None), IngestionJobRow.status),
+        (object_stats.c.failed_count > 0, "failed"),
+        (
+            object_stats.c.approved_count == object_stats.c.object_count,
+            "succeeded",
+        ),
+        (object_stats.c.active_count > 0, "running"),
+        else_="queued",
+    )
+
+
+def _trusted_metadata_snapshot(
+    snapshot: SymbolMetadataSnapshotRow | None,
+    symbol: str,
+    checked_at: datetime,
+) -> bool:
+    if (
+        snapshot is None
+        or snapshot.symbol != symbol
+        or snapshot.source != _TRUSTED_METADATA_SOURCE
+        or snapshot.captured_at > checked_at
+        or snapshot.captured_at < checked_at - _METADATA_MAX_AGE
+        or not isinstance(snapshot.payload, dict)
+    ):
+        return False
+    symbols = snapshot.payload.get("symbols")
+    if not isinstance(symbols, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("symbol") == symbol
+        and item.get("contractType") == "PERPETUAL"
+        and item.get("status") == "TRADING"
+        for item in symbols
+    )
+
+
+def _manifest_coverage_intervals(
+    manifest: DataManifest,
+) -> tuple[tuple[datetime, datetime], ...]:
+    """Return validated manifest coverage with declared holes removed."""
+    coverage: list[tuple[datetime, datetime]] = []
+    cursor = manifest.start
+    for missing in sorted(
+        manifest.missing_intervals, key=lambda interval: (interval.start, interval.end)
+    ):
+        if missing.end <= cursor:
+            continue
+        if missing.start > cursor:
+            coverage.append((cursor, missing.start))
+        cursor = max(cursor, missing.end)
+    if cursor < manifest.end:
+        coverage.append((cursor, manifest.end))
+    return tuple(coverage)
 
 
 def _data_partition(row: DataPartitionRow) -> DataPartition:

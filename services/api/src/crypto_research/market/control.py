@@ -31,11 +31,13 @@ from crypto_research.contracts.data import (
 )
 from crypto_research.contracts.manifest import DataType
 from crypto_research.db.repositories import (
+    ActiveStreamHealth,
     AddSymbolCommand,
     BackfillCommand,
     DataGap,
     DataPartition,
     IngestionJob,
+    MutationIdentityConflict,
     SqlAlchemyDataStateRepository,
     StreamState,
     SymbolOperationalSummary,
@@ -45,6 +47,7 @@ from crypto_research.db.repositories import (
 from crypto_research.market.backfill import BackfillObject
 from crypto_research.market.backfill_planning import ArchiveBackfillPlanner
 from crypto_research.market.binance.archive_paths import DatasetKind, plan_archives
+from crypto_research.market.binance.streams import streams_for_symbols
 from crypto_research.market.catalog import SecureDuckDBCatalog, SqlAlchemyCatalogRepository
 from crypto_research.market.eligibility import (
     EligibilityContext,
@@ -91,6 +94,8 @@ class MarketDataRepository(Protocol):
 
     async def get_symbol(self, symbol: str) -> SymbolState | None: ...
 
+    async def list_active_symbols(self) -> tuple[SymbolState, ...]: ...
+
     async def add_symbol(self, command: AddSymbolCommand) -> SymbolState: ...
 
     async def set_symbol_enabled(self, symbol: str, enabled: bool) -> SymbolState: ...
@@ -117,9 +122,15 @@ class MarketDataRepository(Protocol):
 
     async def get_symbol_summary(self, symbol: str) -> SymbolOperationalSummary: ...
 
-    async def list_active_stream_states(
-        self, *, limit: int, offset: int
-    ) -> tuple[StreamState, ...]: ...
+    async def list_symbol_summaries(
+        self, symbols: tuple[SymbolState, ...]
+    ) -> dict[str, SymbolOperationalSummary]: ...
+
+    async def list_active_stream_states(self) -> tuple[StreamState, ...]: ...
+
+    async def get_active_stream_health(
+        self, *, checked_at: datetime, stale_after: timedelta
+    ) -> ActiveStreamHealth: ...
 
     async def get_worker_heartbeat(self, worker_id: str) -> WorkerHeartbeat | None: ...
 
@@ -191,7 +202,13 @@ class MarketDataControlService:
 
     async def list_symbols(self, *, limit: int, offset: int) -> tuple[SymbolView, ...]:
         states = await self._repository.list_symbols(limit=limit, offset=offset)
-        return tuple([await self._symbol_view(state) for state in states])
+        summaries = await self._repository.list_symbol_summaries(states)
+        return tuple(
+            [
+                await self._symbol_view(state, summaries[state.symbol])
+                for state in states
+            ]
+        )
 
     async def add_symbol(self, request: AddSymbolRequest) -> SymbolView:
         self._validate_history_range(request.history_start, request.history_end)
@@ -212,14 +229,17 @@ class MarketDataControlService:
             if not existing.enabled:
                 existing = await self._repository.set_symbol_enabled(request.symbol, True)
             return await self._symbol_view(existing)
-        created = await self._repository.add_symbol(
-            AddSymbolCommand(
-                request.symbol,
-                request.history_start,
-                request.history_end,
-                request.include_agg_trades,
+        try:
+            created = await self._repository.add_symbol(
+                AddSymbolCommand(
+                    request.symbol,
+                    request.history_start,
+                    request.history_end,
+                    request.include_agg_trades,
+                )
             )
-        )
+        except MutationIdentityConflict as error:
+            raise MarketDataConflict(str(error)) from error
         return await self._symbol_view(created)
 
     async def get_symbol(self, symbol: str) -> SymbolView:
@@ -269,16 +289,16 @@ class MarketDataControlService:
                 or existing.requested_end != request.end
             ):
                 raise MarketDataConflict("backfill identity conflicts with durable state")
-            stored = existing or await self._repository.create_backfill(
-                BackfillCommand(
-                    id=job_id,
-                    symbol=symbol,
-                    dataset=data_type.value,
-                    requested_start=request.start,
-                    requested_end=request.end,
-                )
-            )
             try:
+                stored = existing or await self._repository.create_backfill(
+                    BackfillCommand(
+                        id=job_id,
+                        symbol=symbol,
+                        dataset=data_type.value,
+                        requested_start=request.start,
+                        requested_end=request.end,
+                    )
+                )
                 archives = plan_archives(
                     _ARCHIVE_DATASET[data_type],
                     symbol,
@@ -286,11 +306,16 @@ class MarketDataControlService:
                     request.end,
                     as_of=self._clock(),
                 )
+            except MutationIdentityConflict as error:
+                raise MarketDataConflict(str(error)) from error
             except ValueError as error:
                 raise MarketDataValidationError(
                     "backfill range must contain complete closed UTC days"
                 ) from error
-            await ArchiveBackfillPlanner(self._repository).plan(stored.id, archives)
+            try:
+                await ArchiveBackfillPlanner(self._repository).plan(stored.id, archives)
+            except MutationIdentityConflict as error:
+                raise MarketDataConflict(str(error)) from error
             jobs.append(_job_view(stored, fallback_now=self._clock()))
         return tuple(jobs)
 
@@ -331,9 +356,9 @@ class MarketDataControlService:
         streams = await self._repository.list_stream_states(
             configured.symbol, limit=100, offset=0
         )
-        live_last_event = max(
-            (item.last_event_at for item in streams if item.last_event_at is not None),
-            default=None,
+        live_last_event, required_source_degraded = _live_gate(
+            configured.symbol,
+            streams,
         )
         decision = evaluate_eligibility(
             EligibilityContext(
@@ -342,7 +367,9 @@ class MarketDataControlService:
                 history_start=_required_time(configured.history_start, "history_start"),
                 history_end=_required_time(configured.history_end, "history_end"),
                 coverage_fraction=(
-                    profile.realized_volatility.coverage_fraction if profile else 0.0
+                    profile.realized_volatility.coverage_fraction
+                    if profile and _archive_coverage_complete(configured, summary)
+                    else 0.0
                 ),
                 median_hourly_volume=(
                     profile.median_hourly_volume.value if profile else 0.0
@@ -351,9 +378,7 @@ class MarketDataControlService:
                 unrepaired_gap_count=summary.open_gap_count,
                 data_ready=_data_status(configured, summary)
                 is SymbolDataStatus.DATA_READY,
-                required_source_degraded=any(
-                    item.status in {"degraded", "disconnected"} for item in streams
-                ),
+                required_source_degraded=required_source_degraded,
             ),
             SymbolEligibilityPolicy(
                 symbol=configured.symbol,
@@ -383,21 +408,40 @@ class MarketDataControlService:
         return tuple(_stream_view(item, fallback_now=self._clock()) for item in values)
 
     async def market_data_health(self) -> MarketDataHealthView:
-        streams = await self._repository.list_active_stream_states(limit=100, offset=0)
+        streams = await self._repository.list_active_stream_states()
         heartbeat = await self._repository.get_worker_heartbeat(
             self._settings.market_worker_id
         )
         failed_jobs = await self._repository.count_failed_jobs()
+        checked_at = self._clock()
+        stale_after = timedelta(seconds=self._settings.live_stale_after_seconds)
+        stream_health = await self._repository.get_active_stream_health(
+            checked_at=checked_at, stale_after=stale_after
+        )
+        worker_healthy = (
+            heartbeat is not None
+            and heartbeat.status == "running"
+            and checked_at - stale_after <= heartbeat.heartbeat_at <= checked_at
+        )
+        live_healthy = (
+            stream_health.expected_count > 0
+            and stream_health.observed_count == stream_health.expected_count
+            and stream_health.healthy_count == stream_health.expected_count
+        )
         return MarketDataHealthView(
-            source_mode=_source_mode(streams),
-            archive_healthy=failed_jobs == 0,
+            source_mode=(
+                _source_mode(streams)
+                if worker_healthy and live_healthy
+                else SourceMode.DEGRADED
+            ),
+            archive_healthy=failed_jobs == 0 and worker_healthy,
             # REST capability health is not durable yet, so the public API fails closed.
             rest_healthy=False,
             worker_heartbeat_at=None if heartbeat is None else heartbeat.heartbeat_at,
             streams=tuple(
                 _stream_view(item, fallback_now=self._clock()) for item in streams
             ),
-            checked_at=self._clock(),
+            checked_at=checked_at,
         )
 
     async def _required_symbol(self, symbol: str) -> SymbolState:
@@ -407,8 +451,12 @@ class MarketDataControlService:
             raise MarketDataNotFound("symbol is not configured")
         return state
 
-    async def _symbol_view(self, state: SymbolState) -> SymbolView:
-        summary = await self._repository.get_symbol_summary(state.symbol)
+    async def _symbol_view(
+        self,
+        state: SymbolState,
+        summary: SymbolOperationalSummary | None = None,
+    ) -> SymbolView:
+        summary = summary or await self._repository.get_symbol_summary(state.symbol)
         now = self._clock()
         return SymbolView(
             symbol=state.symbol,
@@ -519,16 +567,54 @@ def _data_status(
     statuses = set(summary.job_statuses)
     if statuses & {"queued", "running"}:
         return SymbolDataStatus.BACKFILLING
-    approved = set(summary.approved_data_types)
-    if approved >= _REQUIRED_ARCHIVE_TYPES:
+    if _archive_coverage_complete(state, summary):
         if summary.open_gap_count or "failed" in statuses:
             return SymbolDataStatus.DEGRADED
         return SymbolDataStatus.DATA_READY
+    approved = set(summary.approved_data_types)
     if "failed" in statuses and not approved:
         return SymbolDataStatus.FAILED
     if summary.open_gap_count or "failed" in statuses:
         return SymbolDataStatus.DEGRADED
     return SymbolDataStatus.REQUESTED
+
+
+def _archive_coverage_complete(
+    state: SymbolState, summary: SymbolOperationalSummary
+) -> bool:
+    start = _required_time(state.history_start, "history_start")
+    end = _required_time(state.history_end, "history_end")
+    by_dataset: dict[str, list[tuple[datetime, datetime]]] = {
+        data_type: [] for data_type in _REQUIRED_ARCHIVE_TYPES
+    }
+    values = summary.archive_intervals
+    if isinstance(values, Mapping):
+        for dataset, intervals in values.items():
+            if dataset in by_dataset:
+                by_dataset[dataset].extend(intervals)
+    else:
+        for interval in values:
+            if interval.dataset in by_dataset:
+                by_dataset[interval.dataset].append((interval.start, interval.end))
+    return all(
+        _intervals_cover(intervals, start, end)
+        for intervals in by_dataset.values()
+    )
+
+
+def _intervals_cover(
+    intervals: list[tuple[datetime, datetime]], start: datetime, end: datetime
+) -> bool:
+    cursor = start
+    for interval_start, interval_end in sorted(intervals):
+        if interval_start >= interval_end or interval_end <= cursor:
+            continue
+        if interval_start > cursor:
+            return False
+        cursor = max(cursor, interval_end)
+        if cursor >= end:
+            return True
+    return False
 
 
 def _job_view(job: IngestionJob, *, fallback_now: datetime) -> IngestionJobView:
@@ -616,6 +702,25 @@ def _source_mode(streams: tuple[StreamState, ...]) -> SourceMode:
     if "direct" in modes:
         return SourceMode.DIRECT
     return SourceMode.DEGRADED
+
+
+def _live_gate(
+    symbol: str, streams: tuple[StreamState, ...]
+) -> tuple[datetime | None, bool]:
+    expected = {stream.name for stream in streams_for_symbols((symbol,))}
+    by_name = {
+        stream.stream_name: stream
+        for stream in streams
+        if stream.symbol == symbol and stream.stream_name in expected
+    }
+    if set(by_name) != expected:
+        return None, True
+    ordered = tuple(by_name[name] for name in sorted(expected))
+    last_events = tuple(stream.last_event_at for stream in ordered)
+    return (
+        None if any(value is None for value in last_events) else min(last_events),
+        any(stream.status != "connected" for stream in ordered),
+    )
 
 
 def _normalized_symbol(symbol: str) -> str:
