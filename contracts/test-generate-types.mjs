@@ -100,6 +100,7 @@ try {
       new RegExp(`export type ${rootName} = DeepReadonly<${rootName}Shape>;`),
     );
     assert.doesNotMatch(declaration, new RegExp(`export interface ${rootName} \\{`));
+    assert.doesNotMatch(declaration, /\[k: string\]: unknown;/);
   }
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });

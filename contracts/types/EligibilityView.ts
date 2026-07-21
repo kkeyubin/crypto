@@ -10,8 +10,6 @@ type DeepReadonly<T> =
         : T;
 
 type EligibilityViewShape = {
-  [k: string]: unknown;
-} & {
   eligible: Eligible;
   evaluated_at: EvaluatedAt;
   reason_codes: ReasonCodes;

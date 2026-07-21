@@ -30,6 +30,18 @@ const DEEP_READONLY = `type DeepReadonly<T> =
         ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
         : T;`;
 
+const ROOT_UNKNOWN_INDEX_SIGNATURE = "{\n  [k: string]: unknown;\n} & ";
+
+function stripClosedRootIndexSignature(root, declaration, schema) {
+  if (schema.additionalProperties !== false) return declaration;
+  const rootArtifact = `export type ${root} = ${ROOT_UNKNOWN_INDEX_SIGNATURE}`;
+  const stripped = declaration.replace(rootArtifact, `export type ${root} = `);
+  if (stripped.includes(rootArtifact)) {
+    throw new Error(`closed root declaration retains an index signature: ${root}`);
+  }
+  return stripped;
+}
+
 function makeRootDeepReadonly(root, declaration) {
   const exportedRoot = `export interface ${root} {`;
   if (declaration.includes(exportedRoot)) {
@@ -76,10 +88,13 @@ if (roots.join("\n") !== expectedRoots.join("\n")) {
 const generated = await Promise.all(
   files.map(async (file) => {
     const root = file.replace(".schema.json", "");
-    const declaration = await compileFromFile(path.join(inputDir, file), {
+    const schemaPath = path.join(inputDir, file);
+    const schema = JSON.parse(await readFile(schemaPath, "utf8"));
+    const declaration = await compileFromFile(schemaPath, {
       bannerComment: "",
     });
-    return [root, makeRootDeepReadonly(root, declaration)];
+    const closedDeclaration = stripClosedRootIndexSignature(root, declaration, schema);
+    return [root, makeRootDeepReadonly(root, closedDeclaration)];
   }),
 );
 await mkdir(outputDir, { recursive: true });

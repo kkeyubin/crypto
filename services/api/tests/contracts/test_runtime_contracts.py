@@ -71,7 +71,10 @@ def manifest(**overrides: object) -> DataManifest:
             SourceKind.BINANCE_ARCHIVE,
             "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
         ),
-        (SourceKind.BINANCE_REST, "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT"),
+        (
+            SourceKind.BINANCE_REST,
+            "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m",
+        ),
         (
             SourceKind.BINANCE_WEBSOCKET,
             "wss://fstream.binance.com/public/ws/btcusdt@kline_1m",
@@ -113,6 +116,45 @@ def test_manifest_rejects_noncanonical_or_cross_kind_source_urls(
 ) -> None:
     with pytest.raises(ValidationError, match="source URL"):
         manifest(source_kind=source_kind, source_object_url=source_object_url)
+
+
+@pytest.mark.parametrize(
+    "source_object_url",
+    [
+        "https://fapi.binance.com/fapi/v1/klines?limit=500&interval=1m&symbol=BTCUSDT",
+        "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=PEPEUSDT&interval=1m",
+        "https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT&fromId=1&limit=1000",
+        "https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&startTime=1&endTime=2",
+    ],
+)
+def test_manifest_accepts_only_public_rest_dataset_endpoints(source_object_url: str) -> None:
+    assert manifest(
+        source_kind=SourceKind.BINANCE_REST, source_object_url=source_object_url
+    ).source_object_url == source_object_url
+
+
+@pytest.mark.parametrize(
+    "source_object_url",
+    [
+        "https://fapi.binance.com/fapi/v1/order?symbol=BTCUSDT",
+        "https://fapi.binance.com/fapi/v1/account?symbol=BTCUSDT",
+        "https://fapi.binance.com/fapi/v1/listenKey?symbol=BTCUSDT",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo?symbol=BTCUSDT",
+        "https://fapi.binance.com/fapi/v1/klines/?symbol=BTCUSDT&interval=1m",
+        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&orderId=1",
+        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&symbol=PEPEUSDT&interval=1m",
+        "https://fapi.binance.com/fapi/v1/klines?symbol=&interval=1m",
+        "https://fapi.binance.com/fapi/v1/klines?symbol=btcusdt&interval=1m",
+        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=5m",
+        "https://fapi.binance.com/fapi/v1/klines?interval=1m",
+        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&signature=x",
+        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&APIKEY=x",
+        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&listen_key=x",
+    ],
+)
+def test_manifest_rejects_private_or_malformed_rest_urls(source_object_url: str) -> None:
+    with pytest.raises(ValidationError, match="source URL"):
+        manifest(source_kind=SourceKind.BINANCE_REST, source_object_url=source_object_url)
 
 
 def test_manifest_requires_explicit_v2_schema_version() -> None:

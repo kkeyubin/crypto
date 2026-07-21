@@ -1,13 +1,28 @@
 from datetime import UTC, datetime
 from enum import StrEnum
+from re import compile as compile_regex
 from typing import Literal
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, parse_qsl, unquote, urlsplit
 from uuid import UUID
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from crypto_research.contracts.base import UTCModel
 from crypto_research.contracts.strategy import InstrumentRef
+
+CONTRACT_SYMBOL_PATTERN = compile_regex(r"^[A-Z0-9]{3,32}$")
+REST_ENDPOINT_PARAMETERS = {
+    "/fapi/v1/klines": frozenset({"symbol", "interval", "startTime", "endTime", "limit"}),
+    "/fapi/v1/markPriceKlines": frozenset(
+        {"symbol", "interval", "startTime", "endTime", "limit"}
+    ),
+    "/fapi/v1/aggTrades": frozenset({"symbol", "fromId", "startTime", "endTime", "limit"}),
+    "/fapi/v1/fundingRate": frozenset({"symbol", "startTime", "endTime", "limit"}),
+}
+KLINE_REST_ENDPOINTS = frozenset({"/fapi/v1/klines", "/fapi/v1/markPriceKlines"})
+SENSITIVE_REST_PARAMETER_NAMES = frozenset(
+    {"signature", "apikey", "api_key", "listenkey", "listen_key"}
+)
 
 
 class DataType(StrEnum):
@@ -179,12 +194,31 @@ def _validate_archive_url(parsed: object) -> None:
 
 
 def _validate_rest_url(parsed: object) -> None:
-    if not (
-        parsed.scheme == "https"
-        and parsed.netloc == "fapi.binance.com"
-        and parsed.path.startswith("/fapi/v1/")
-    ):
+    if parsed.scheme != "https" or parsed.netloc != "fapi.binance.com":
         raise ValueError("source URL must be a canonical Binance REST URL")
+    allowed_parameters = REST_ENDPOINT_PARAMETERS.get(parsed.path)
+    if allowed_parameters is None:
+        raise ValueError("source URL must use an allowed public Binance REST endpoint")
+    try:
+        parameters = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as error:
+        raise ValueError("source URL must have valid REST query parameters") from error
+    values: dict[str, str] = {}
+    for key, value in parameters:
+        if not key.strip() or not value.strip():
+            raise ValueError("source URL cannot contain blank REST query keys or values")
+        if key.casefold() in SENSITIVE_REST_PARAMETER_NAMES:
+            raise ValueError("source URL cannot contain sensitive REST query parameters")
+        if key not in allowed_parameters:
+            raise ValueError("source URL contains an unsupported REST query parameter")
+        if key in values:
+            raise ValueError("source URL cannot repeat REST query parameters")
+        values[key] = value
+    symbol = values.get("symbol")
+    if symbol is None or CONTRACT_SYMBOL_PATTERN.fullmatch(symbol) is None:
+        raise ValueError("source URL must contain one uppercase contract symbol")
+    if parsed.path in KLINE_REST_ENDPOINTS and values.get("interval") != "1m":
+        raise ValueError("source URL must contain interval=1m for kline data")
 
 
 def _validate_websocket_url(parsed: object) -> None:

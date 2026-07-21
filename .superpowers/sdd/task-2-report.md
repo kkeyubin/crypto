@@ -144,3 +144,52 @@ git diff --check
 No expected generated TypeScript files are deleted; `DataManifest.ts` and
 `EligibilityView.ts` are regenerated with the reviewed changes. No concerns
 remain.
+
+## Second review-fix evidence
+
+### RED
+
+Added exact public REST endpoint/query tests and a generator assertion that no
+generated root declaration includes `[k: string]: unknown;`. Running:
+
+```bash
+cd services/api && .venv/bin/pytest -q tests/contracts/test_runtime_contracts.py
+```
+
+failed as intended: all 14 private, trailing-slash, unknown, repeated, blank,
+lowercase-symbol, wrong-interval, and credential-bearing REST URLs were still
+accepted by the prior `/fapi/v1/` prefix check. The generator safety test also
+exposed the `EligibilityView` root index-signature artifact.
+
+### GREEN
+
+REST provenance now accepts only `klines`, `markPriceKlines`, `aggTrades`, and
+`fundingRate` with their exact per-endpoint parameter allowlists. It requires
+one uppercase `symbol`, requires exactly `interval=1m` for both kline endpoints,
+and rejects private/trading paths, suffixes, unknown/repeated/blank parameters,
+and case-insensitive credential names.
+
+For schemas with `additionalProperties: false`, the type generator strips only
+the exact json-schema-to-typescript root intersection artifact before applying
+the root `DeepReadonly` wrapper. It leaves nested mappings untouched and the
+generator test rejects an index signature in every generated root declaration.
+
+Final verification:
+
+```bash
+cd services/api && .venv/bin/pytest -q tests/contracts
+# 170 passed in 6.24s
+cd services/api && .venv/bin/pytest -q
+# 220 passed, 1 skipped in 12.15s
+cd services/api && .venv/bin/ruff check src tests
+# All checks passed!
+cd services/api && .venv/bin/python scripts/export_schemas.py --check
+source /Users/kyle/.nvm/nvm.sh && nvm use
+npm run contracts:types
+npm run contracts:test-generation
+npm run contracts:check-types
+git diff --check
+```
+
+All checks passed; `rg` confirms no generated TypeScript declaration retains
+the root unknown index signature. No concerns remain.
