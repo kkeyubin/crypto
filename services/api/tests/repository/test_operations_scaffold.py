@@ -47,6 +47,13 @@ def test_container_files_use_entrypoint_and_exact_systemd_runtime_arguments() ->
     ) in systemd_lines
 
 
+def test_market_data_recovery_migration_preserves_api_entrypoint() -> None:
+    runbook = read_repository_file("docs/runbooks/market-data-recovery.md")
+
+    assert "-f compose.yaml run --rm api true" in runbook
+    assert "--entrypoint" not in runbook
+
+
 def test_ci_has_backend_web_and_clean_container_safety_gates() -> None:
     workflow = yaml.safe_load(read_repository_file(".github/workflows/ci.yml"))
     jobs = workflow["jobs"]

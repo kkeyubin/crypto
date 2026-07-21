@@ -70,9 +70,10 @@ docker compose \
   -c 'DELETE FROM live_data_partitions;'
 docker compose \
   --env-file /srv/crypto-research/config/runtime.env \
-  -f compose.yaml run --rm --entrypoint python api \
-  -m alembic -c alembic.ini upgrade head
+  -f compose.yaml run --rm api true
 ```
+
+The final command intentionally preserves the API image's default `api-entrypoint.py`. The entrypoint reads `POSTGRES_PASSWORD`, constructs `CRYPTO_DATABASE_URL`, runs `alembic upgrade head`, and only then executes `true` so the one-off container exits successfully. Do not override this entrypoint for migrations.
 
 Only when the preserved legacy journal has been proved disposable or migrated by an audited tool may it be quarantined. Never merge its SQLite files into a bucket journal by filesystem copy:
 
