@@ -3,8 +3,10 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+from crypto_research.contracts.manifest import DataType
 from crypto_research.db.models import (
     AuditEventRow,
+    BackfillObjectRow,
     DataGapRow,
     DataPartitionRow,
     IngestionJobRow,
@@ -19,20 +21,26 @@ from crypto_research.db.repositories import (
     SqlAlchemyDataStateRepository,
     StreamState,
 )
+from crypto_research.market.backfill import BackfillObject, BackfillState
+from crypto_research.market.gaps import ApprovedCoverage, TimeRange
 
 
 class FakeAsyncSession:
     def __init__(self) -> None:
         self.rows: list[object] = []
 
-    async def get(self, model: type[object], identity: object) -> object | None:
+    async def get(
+        self, model: type[object], identity: object, **_kwargs: object
+    ) -> object | None:
         for row in self.rows:
             if type(row) is not model:
                 continue
             if isinstance(row, SymbolRow) and row.symbol == identity:
                 return row
             if (
-                isinstance(row, (DataGapRow, DataPartitionRow, IngestionJobRow))
+                isinstance(
+                    row, (BackfillObjectRow, DataGapRow, DataPartitionRow, IngestionJobRow)
+                )
                 and row.id == identity
             ):
                 return row
@@ -45,6 +53,20 @@ class FakeAsyncSession:
 
     async def flush(self) -> None:
         return None
+
+
+class FakeCoverageResolver:
+    def __init__(self, coverage: tuple[ApprovedCoverage, ...]) -> None:
+        self.coverage = {item.partition_id: item for item in coverage}
+
+    async def resolve(
+        self, partition_ids: tuple[str, ...]
+    ) -> tuple[ApprovedCoverage, ...]:
+        return tuple(
+            self.coverage[partition_id]
+            for partition_id in partition_ids
+            if partition_id in self.coverage
+        )
 
 
 def test_add_disable_symbol_is_idempotent_and_audited() -> None:
@@ -86,7 +108,7 @@ def test_symbols_and_backfills_are_independent() -> None:
             BackfillCommand(
                 id="00000000-0000-0000-0000-000000000001",
                 symbol="BTCUSDT",
-                dataset="klines_1m",
+                dataset="kline_1m",
             )
         )
         pepe = await repository.create_backfill(
@@ -115,7 +137,7 @@ def test_job_transitions_accept_only_legal_next_states() -> None:
             BackfillCommand(
                 id="00000000-0000-0000-0000-000000000003",
                 symbol="BTCUSDT",
-                dataset="klines_1m",
+                dataset="kline_1m",
             )
         )
 
@@ -159,23 +181,116 @@ def test_approved_partition_is_idempotent_but_refuses_version_replacement() -> N
 def test_gaps_keep_open_and_repair_history() -> None:
     async def scenario() -> None:
         session = FakeAsyncSession()
-        repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
+        partial_coverage = ApprovedCoverage(
+            "BTCUSDT",
+            DataType.KLINE_1M,
+            TimeRange(
+                datetime(2026, 7, 20, tzinfo=UTC),
+                datetime(2026, 7, 20, 0, 0, 30, tzinfo=UTC),
+            ),
+            "partial-partition",
+        )
+        full_coverage = ApprovedCoverage(
+            "BTCUSDT",
+            DataType.KLINE_1M,
+            TimeRange(
+                datetime(2026, 7, 20, tzinfo=UTC),
+                datetime(2026, 7, 20, 0, 1, tzinfo=UTC),
+            ),
+            "full-partition",
+        )
+        repository = SqlAlchemyDataStateRepository(  # type: ignore[arg-type]
+            session, FakeCoverageResolver((partial_coverage, full_coverage))
+        )
         opened = await repository.record_gap(
             GapRecord(
                 id="00000000-0000-0000-0000-000000000021",
                 symbol="BTCUSDT",
-                dataset="klines_1m",
+                dataset="kline_1m",
                 start_at=datetime(2026, 7, 20, tzinfo=UTC),
                 end_at=datetime(2026, 7, 20, 0, 1, tzinfo=UTC),
                 reason="disconnect",
             )
         )
-        repaired = await repository.repair_gap(opened.id, {"method": "archive"})
+        partial = await repository.reconcile_gap(
+            opened.id,
+            ("partial-partition",),
+            datetime(2026, 7, 20, 1, tzinfo=UTC),
+            "archive",
+        )
+        repaired = await repository.reconcile_gap(
+            opened.id,
+            ("full-partition",),
+            datetime(2026, 7, 20, 2, tzinfo=UTC),
+            "archive",
+        )
 
         assert opened.status == "open"
+        assert partial.status == "open"
         assert repaired.status == "repaired"
         assert repaired.repaired_at is not None
-        assert repaired.repair_details == {"method": "archive"}
+        assert repaired.repair_details is not None
+        assert [item["result"] for item in repaired.repair_details["history"]] == [
+            "partial",
+            "repaired",
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_aggregate_trade_gap_persists_and_requires_id_repair_evidence() -> None:
+    async def scenario() -> None:
+        session = FakeAsyncSession()
+        start = datetime(2026, 7, 20, tzinfo=UTC)
+        end = datetime(2026, 7, 20, 0, 0, 1, tzinfo=UTC)
+        time_only_coverage = ApprovedCoverage(
+            "BTCUSDT",
+            DataType.AGG_TRADE,
+            TimeRange(start, end),
+            "time-only",
+        )
+        id_coverage = ApprovedCoverage(
+            "BTCUSDT",
+            DataType.AGG_TRADE,
+            TimeRange(start, end),
+            "id-evidence",
+            recovered_id_start=11,
+            recovered_id_end=14,
+        )
+        repository = SqlAlchemyDataStateRepository(  # type: ignore[arg-type]
+            session, FakeCoverageResolver((time_only_coverage, id_coverage))
+        )
+        opened = await repository.record_gap(
+            GapRecord(
+                id="00000000-0000-0000-0000-000000000022",
+                symbol="BTCUSDT",
+                dataset="agg_trade",
+                start_at=start,
+                end_at=end,
+                reason="aggregate_trade_id_discontinuity",
+                details={"missing_id_start": 11, "missing_id_end": 14},
+            )
+        )
+        time_only = await repository.reconcile_gap(
+            opened.id,
+            ("time-only",),
+            datetime(2026, 7, 20, 1, tzinfo=UTC),
+            "archive",
+        )
+        repaired = await repository.reconcile_gap(
+            opened.id,
+            ("id-evidence",),
+            datetime(2026, 7, 20, 2, tzinfo=UTC),
+            "rest",
+        )
+
+        assert time_only.status == "open"
+        assert repaired.status == "repaired"
+        assert repaired.repair_details is not None
+        assert repaired.repair_details["gap"] == {
+            "missing_id_start": 11,
+            "missing_id_end": 14,
+        }
 
     asyncio.run(scenario())
 
@@ -193,6 +308,141 @@ def test_stream_heartbeat_upsert_preserves_one_row_per_stream() -> None:
         streams = [row for row in session.rows if isinstance(row, StreamStateRow)]
         assert len(streams) == 1
         assert streams[0].last_event_at == later_seen
+
+    asyncio.run(scenario())
+
+
+def test_backfill_object_lease_is_fenced_and_restart_resumes_durable_state() -> None:
+    async def scenario() -> None:
+        session = FakeAsyncSession()
+        repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
+        start = datetime(2026, 7, 20, tzinfo=UTC)
+        row = BackfillObjectRow(
+            id="00000000-0000-0000-0000-000000000041",
+            job_id="00000000-0000-0000-0000-000000000042",
+            source_url="https://data.binance.vision/day.zip",
+            source_checksum="",
+            start_at=start,
+            end_at=start + timedelta(days=1),
+            state="planned",
+            attempt_count=0,
+        )
+        session.add(row)
+
+        claimed = await repository.claim_backfill_object_row(
+            row, "worker-a", start, timedelta(minutes=1)
+        )
+        downloading = await repository.advance_backfill_object(
+            row.id,
+            "worker-a",
+            claimed.attempt_count,
+            start,
+            BackfillState.DOWNLOADING,
+        )
+        restarted = await repository.claim_backfill_object_row(
+            row, "worker-b", start + timedelta(minutes=2), timedelta(minutes=1)
+        )
+
+        assert claimed.attempt_count == 1
+        assert downloading.state is BackfillState.DOWNLOADING
+        assert restarted.state is BackfillState.DOWNLOADING
+        assert restarted.attempt_count == 2
+        with pytest.raises(ValueError, match="lease"):
+            await repository.renew_backfill_object(
+                row.id,
+                "worker-a",
+                claimed.attempt_count,
+                start + timedelta(minutes=2),
+                timedelta(minutes=1),
+            )
+
+    asyncio.run(scenario())
+
+
+def test_planning_backfill_object_is_idempotent_by_immutable_identity() -> None:
+    async def scenario() -> None:
+        session = FakeAsyncSession()
+        repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
+        start = datetime(2026, 7, 20, tzinfo=UTC)
+        work = BackfillObject(
+            object_id="00000000-0000-0000-0000-000000000051",
+            job_id="00000000-0000-0000-0000-000000000052",
+            source_url="https://data.binance.vision/day.zip",
+            start=start,
+            end=start + timedelta(days=1),
+        )
+
+        first = await repository.plan_backfill_object(work)
+        stored = next(
+            item for item in session.rows if isinstance(item, BackfillObjectRow)
+        )
+        stored.source_checksum = "a" * 64
+        stored.raw_path = "raw/a.zip"
+        stored.state = BackfillState.CHECKSUM_VERIFIED.value
+        second = await repository.plan_backfill_object(work)
+        assert first.object_id == second.object_id
+        assert second.source_checksum == "a" * 64
+        assert len([item for item in session.rows if isinstance(item, BackfillObjectRow)]) == 1
+
+        with pytest.raises(ValueError, match="immutable"):
+            await repository.plan_backfill_object(
+                BackfillObject(
+                    **{**work.__dict__, "source_url": "https://example.invalid/replaced.zip"}
+                )
+            )
+
+    asyncio.run(scenario())
+
+
+def test_postgres_claim_statement_uses_skip_locked() -> None:
+    class ScalarResult:
+        def __init__(self, row: BackfillObjectRow) -> None:
+            self.row = row
+
+        def first(self) -> BackfillObjectRow:
+            return self.row
+
+    class Result:
+        def __init__(self, row: BackfillObjectRow) -> None:
+            self.row = row
+
+        def scalars(self) -> ScalarResult:
+            return ScalarResult(self.row)
+
+    class ClaimSession(FakeAsyncSession):
+        statements: list[object]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.statements = []
+
+        async def execute(self, statement: object) -> Result:
+            self.statements.append(statement)
+            return Result(next(row for row in self.rows if isinstance(row, BackfillObjectRow)))
+
+    async def scenario() -> None:
+        session = ClaimSession()
+        start = datetime(2026, 7, 20, tzinfo=UTC)
+        session.add(
+            BackfillObjectRow(
+                id="00000000-0000-0000-0000-000000000061",
+                job_id="00000000-0000-0000-0000-000000000062",
+                source_url="https://data.binance.vision/day.zip",
+                source_checksum="",
+                start_at=start,
+                end_at=start + timedelta(days=1),
+                state="planned",
+                attempt_count=0,
+            )
+        )
+        repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
+
+        claimed = await repository.claim("worker-a", start, timedelta(minutes=1))
+
+        assert claimed is not None
+        assert len(session.statements) == 2
+        for_update = session.statements[0]._for_update_arg  # type: ignore[attr-defined]
+        assert for_update.skip_locked is True
 
     asyncio.run(scenario())
 

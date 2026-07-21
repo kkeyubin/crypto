@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Annotated, Literal
@@ -36,6 +36,7 @@ class ArchiveDataset(StrEnum):
 
 
 class BinanceRestEndpoint(StrEnum):
+    EXCHANGE_INFO = "exchange_info"
     KLINES = "klines"
     MARK_PRICE_KLINES = "mark_price_klines"
     FUNDING_RATE = "funding_rate"
@@ -84,7 +85,7 @@ class ArchiveSourceSpec:
 @dataclass(frozen=True)
 class RestSourceSpec:
     path: str
-    data_type: DataType
+    data_type: DataType | None
     parameter_order: tuple[str, ...]
     limit_maximum: int
     requires_interval: bool = False
@@ -115,6 +116,12 @@ ARCHIVE_SOURCE_SPECS = MappingProxyType(
 )
 REST_SOURCE_SPECS = MappingProxyType(
     {
+        BinanceRestEndpoint.EXCHANGE_INFO: RestSourceSpec(
+            "/fapi/v1/exchangeInfo",
+            None,
+            ("symbol",),
+            1,
+        ),
         BinanceRestEndpoint.KLINES: RestSourceSpec(
             "/fapi/v1/klines",
             DataType.KLINE_1M,
@@ -366,6 +373,24 @@ class DataManifest(UTCModel):
             raise ValueError("manifest source symbol must match instrument symbol")
         if _source_data_type(self.source) is not self.data_type:
             raise ValueError("manifest source must match data_type")
+        if self.start.microsecond % 1000 or self.end.microsecond % 1000:
+            raise ValueError("manifest coverage boundaries must be millisecond-aligned")
+        if isinstance(self.source, BinanceArchiveSource):
+            expected_start = self.source.period_start
+            expected_end = (
+                expected_start + timedelta(days=1)
+                if self.source.cadence is ArchiveCadence.DAILY
+                else _next_month(expected_start)
+            )
+            if (self.start, self.end) != (expected_start, expected_end):
+                raise ValueError("archive manifest coverage must match its source period")
+        if isinstance(self.source, BinanceRestSource):
+            start_ms = _epoch_milliseconds(self.start)
+            end_ms = _epoch_milliseconds(self.end)
+            if self.source.start_time is not None and self.source.start_time != start_ms:
+                raise ValueError("REST manifest coverage must match source start_time")
+            if self.source.end_time is not None and self.source.end_time != end_ms - 1:
+                raise ValueError("REST manifest coverage must match half-open source end_time")
         return self
 
 
@@ -373,5 +398,23 @@ def _source_data_type(source: ManifestSource) -> DataType:
     if isinstance(source, BinanceArchiveSource):
         return ARCHIVE_SOURCE_SPECS[source.dataset].data_type
     if isinstance(source, BinanceRestSource):
-        return REST_SOURCE_SPECS[source.endpoint].data_type
+        data_type = REST_SOURCE_SPECS[source.endpoint].data_type
+        if data_type is None:
+            raise ValueError("metadata REST sources cannot back a data manifest")
+        return data_type
     return WEBSOCKET_SOURCE_SPECS[source.stream].data_type
+
+
+def _next_month(value: datetime) -> datetime:
+    if value.month == 12:
+        return value.replace(year=value.year + 1, month=1)
+    return value.replace(month=value.month + 1)
+
+
+def _epoch_milliseconds(value: datetime) -> int:
+    difference = value - datetime(1970, 1, 1, tzinfo=UTC)
+    return (
+        difference.days * 86_400_000
+        + difference.seconds * 1_000
+        + difference.microseconds // 1_000
+    )

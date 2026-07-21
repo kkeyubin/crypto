@@ -2,9 +2,12 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
-from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
 
 from crypto_research.db.models import (
+    BACKFILL_OBJECT_STATES,
+    BackfillObjectRow,
+    DataManifestRow,
     DataPartitionRow,
     SourceObjectRow,
     SymbolRow,
@@ -39,6 +42,65 @@ def test_catalog_tables_define_unique_keys_and_state_checks() -> None:
         for item in partition_uniques
     )
     assert any("approval_status" in str(item.sqltext) for item in checks)
+
+
+def test_backfill_objects_define_durable_state_lease_and_source_version_constraints() -> None:
+    checks = _constraints(BackfillObjectRow.__table__, CheckConstraint)
+    uniques = _constraints(BackfillObjectRow.__table__, UniqueConstraint)
+
+    assert BACKFILL_OBJECT_STATES == (
+        "planned",
+        "downloading",
+        "checksum_verified",
+        "normalized",
+        "validated",
+        "catalog_approved",
+        "source_pending",
+        "failed",
+    )
+    assert any("state" in str(item.sqltext) for item in checks)
+    assert any("attempt_count" in str(item.sqltext) for item in checks)
+    assert any("source_checksum" in str(item.sqltext) for item in checks)
+    assert any("source_checksum ~" in str(item.sqltext) for item in checks)
+    assert any("normalized_checksum ~" in str(item.sqltext) for item in checks)
+    assert any("normalized_path" in str(item.sqltext) for item in checks)
+    assert any("partition_id" in str(item.sqltext) for item in checks)
+    assert any(
+        {column.name for column in item.columns}
+        == {"job_id", "source_url"}
+        for item in uniques
+    )
+    assert {"lease_owner", "lease_expires_at", "attempt_count", "last_error"}.issubset(
+        BackfillObjectRow.__table__.columns.keys()
+    )
+
+
+def test_manifest_table_persists_full_versioned_manifest_by_partition() -> None:
+    uniques = _constraints(DataManifestRow.__table__, UniqueConstraint)
+
+    assert DataManifestRow.__table__.columns["manifest"].nullable is False
+    assert any({column.name for column in item.columns} == {"partition_id"} for item in uniques)
+
+
+def test_catalog_evidence_uses_composite_relations_and_sha256_checks() -> None:
+    object_checks = _constraints(SourceObjectRow.__table__, CheckConstraint)
+    partition_checks = _constraints(DataPartitionRow.__table__, CheckConstraint)
+    manifest_checks = _constraints(DataManifestRow.__table__, CheckConstraint)
+    manifest_foreign_keys = _constraints(DataManifestRow.__table__, ForeignKeyConstraint)
+    backfill_foreign_keys = _constraints(BackfillObjectRow.__table__, ForeignKeyConstraint)
+
+    assert any("checksum_sha256" in str(item.sqltext) for item in object_checks)
+    assert any("checksum_sha256" in str(item.sqltext) for item in partition_checks)
+    assert any("source_checksum" in str(item.sqltext) for item in manifest_checks)
+    assert any(
+        {column.name for column in item.columns}
+        == {"source_object_id", "source_url", "source_checksum"}
+        for item in manifest_foreign_keys
+    )
+    assert any(
+        {column.name for column in item.columns} == {"manifest_id", "partition_id"}
+        for item in backfill_foreign_keys
+    )
 
 
 def test_job_transitions_are_explicit_and_reject_terminal_restarts() -> None:

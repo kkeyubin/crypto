@@ -12,9 +12,11 @@ from crypto_research.market.binance.archive_paths import DatasetKind
 from crypto_research.market.binance.normalization import normalize_csv
 from crypto_research.market.storage import (
     normalized_archive_path,
+    normalized_archive_version_path,
     raw_archive_path,
     retain_raw_archive,
     write_normalized_parquet,
+    write_versioned_normalized_parquet,
 )
 
 PERIOD = datetime(2024, 1, 1, tzinfo=UTC)
@@ -184,6 +186,42 @@ def test_raw_retention_rejects_staging_or_existing_destination_symlink(tmp_path:
     with pytest.raises(ValueError, match="destination symlink"):
         retain_raw_archive(regular, root, "BTCUSDT", DatasetKind.KLINES, PERIOD, checksum)
     assert regular.exists()
+
+
+def test_source_replacement_uses_immutable_checksum_versioned_parquet_paths(
+    tmp_path: Path,
+) -> None:
+    root = secure_root(tmp_path / "root")
+    normalized = _normalized_dataset()
+    first_source = "a" * 64
+    replacement_source = "b" * 64
+
+    first = write_versioned_normalized_parquet(
+        normalized,
+        root,
+        "BTCUSDT",
+        DatasetKind.KLINES,
+        PERIOD,
+        first_source,
+    )
+    first_bytes = first.path.read_bytes()
+    replacement = write_versioned_normalized_parquet(
+        normalized,
+        root,
+        "BTCUSDT",
+        DatasetKind.KLINES,
+        PERIOD,
+        replacement_source,
+    )
+
+    assert first.path == normalized_archive_version_path(
+        root, "BTCUSDT", DatasetKind.KLINES, PERIOD, first_source
+    )
+    assert replacement.path == normalized_archive_version_path(
+        root, "BTCUSDT", DatasetKind.KLINES, PERIOD, replacement_source
+    )
+    assert first.path != replacement.path
+    assert first.path.read_bytes() == first_bytes
 
 
 def test_fifo_staging_and_existing_raw_destination_are_rejected_without_blocking(

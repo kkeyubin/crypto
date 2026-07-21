@@ -74,6 +74,7 @@
     },
     "BinanceRestEndpoint": {
       "enum": [
+        "exchange_info",
         "klines",
         "mark_price_klines",
         "funding_rate",

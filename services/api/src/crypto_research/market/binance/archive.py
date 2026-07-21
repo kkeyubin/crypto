@@ -144,6 +144,42 @@ def _inspect_zip(path: Path, limits: ArchiveSizeLimits) -> tuple[str, int]:
         raise ArchiveSafetyError("archive is not a valid ZIP") from error
 
 
+def read_verified_archive_csv(
+    descriptor: int,
+    expected_checksum: str,
+    *,
+    limits: ArchiveSizeLimits | None = None,
+) -> bytes:
+    """Re-verify and read the single CSV member from an already secured descriptor."""
+    limits = limits or ArchiveSizeLimits()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_checksum):
+        raise ArchiveChecksumError("expected archive checksum is invalid")
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        raise ArchiveSafetyError("archive descriptor must reference a regular file")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    while chunk := os.read(descriptor, 1024 * 1024):
+        digest.update(chunk)
+    if digest.hexdigest() != expected_checksum:
+        raise ArchiveChecksumError("retained archive checksum mismatch")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    descriptor_root = "/proc/self/fd" if Path("/proc/self/fd").is_dir() else "/dev/fd"
+    descriptor_path = Path(descriptor_root) / str(descriptor)
+    _inspect_zip(descriptor_path, limits)
+    try:
+        with os.fdopen(os.dup(descriptor), "rb") as source, zipfile.ZipFile(source) as archive:
+            member = archive.infolist()[0]
+            _validate_member(member, limits)
+            with archive.open(member) as member_file:
+                payload = member_file.read(limits.max_uncompressed_bytes + 1)
+    except (OSError, zipfile.BadZipFile, IndexError) as error:
+        raise ArchiveSafetyError("archive is not a valid ZIP") from error
+    if len(payload) > limits.max_uncompressed_bytes or len(payload) != member.file_size:
+        raise ArchiveSafetyError("archive uncompressed size exceeds byte limit")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return payload
+
+
 def _validate_member(member: zipfile.ZipInfo, limits: ArchiveSizeLimits) -> None:
     name = member.filename
     path = PurePosixPath(name)

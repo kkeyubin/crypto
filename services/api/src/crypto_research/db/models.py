@@ -8,6 +8,8 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
@@ -21,6 +23,16 @@ JOB_STATES = ("queued", "running", "succeeded", "failed", "cancelled")
 PARTITION_STATUSES = ("candidate", "approved", "rejected")
 GAP_STATUSES = ("open", "repaired")
 STREAM_STATUSES = ("connecting", "connected", "degraded", "disconnected")
+BACKFILL_OBJECT_STATES = (
+    "planned",
+    "downloading",
+    "checksum_verified",
+    "normalized",
+    "validated",
+    "catalog_approved",
+    "source_pending",
+    "failed",
+)
 
 
 def utc_now() -> datetime:
@@ -105,6 +117,16 @@ class SourceObjectRow(Base):
     __tablename__ = "source_objects"
     __table_args__ = (
         UniqueConstraint("source_url", "checksum_sha256", name="uq_source_objects_url_checksum"),
+        UniqueConstraint(
+            "id",
+            "source_url",
+            "checksum_sha256",
+            name="uq_source_objects_identity_url_checksum",
+        ),
+        CheckConstraint(
+            "checksum_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_source_objects_checksum_sha256",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -116,6 +138,100 @@ class SourceObjectRow(Base):
     )
 
 
+class BackfillObjectRow(Base):
+    __tablename__ = "backfill_objects"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "source_url",
+            name="uq_backfill_objects_job_url",
+        ),
+        CheckConstraint(
+            f"state IN {BACKFILL_OBJECT_STATES!r}",
+            name="ck_backfill_objects_state",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_backfill_objects_attempt_count_nonnegative",
+        ),
+        CheckConstraint(
+            "end_at > start_at",
+            name="ck_backfill_objects_time_order",
+        ),
+        CheckConstraint(
+            "(lease_owner IS NULL) = (lease_expires_at IS NULL)",
+            name="ck_backfill_objects_complete_lease",
+        ),
+        CheckConstraint(
+            "source_checksum = '' OR source_checksum ~ '^[0-9a-f]{64}$'",
+            name="ck_backfill_objects_source_checksum",
+        ),
+        CheckConstraint(
+            "normalized_checksum IS NULL OR "
+            "normalized_checksum ~ '^[0-9a-f]{64}$'",
+            name="ck_backfill_objects_normalized_checksum",
+        ),
+        CheckConstraint(
+            "state IN ('planned', 'downloading', 'source_pending', 'failed') OR "
+            "(length(source_checksum) = 64 AND raw_path IS NOT NULL)",
+            name="ck_backfill_objects_verified_evidence",
+        ),
+        CheckConstraint(
+            "state NOT IN ('normalized', 'validated', 'catalog_approved') OR "
+            "(normalized_path IS NOT NULL AND length(normalized_checksum) = 64 "
+            "AND row_count > 0)",
+            name="ck_backfill_objects_normalized_evidence",
+        ),
+        CheckConstraint(
+            "state <> 'catalog_approved' OR "
+            "(partition_id IS NOT NULL AND manifest_id IS NOT NULL)",
+            name="ck_backfill_objects_catalog_evidence",
+        ),
+        ForeignKeyConstraint(
+            ("manifest_id", "partition_id"),
+            ("data_manifests.manifest_id", "data_manifests.partition_id"),
+            name="fk_backfill_objects_manifest_partition",
+        ),
+        Index(
+            "ix_backfill_objects_claim",
+            "state",
+            "lease_expires_at",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("ingestion_jobs.id"), nullable=False, index=True
+    )
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_checksum: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), default="planned", nullable=False)
+    raw_path: Mapped[str | None] = mapped_column(Text)
+    normalized_path: Mapped[str | None] = mapped_column(Text)
+    normalized_checksum: Mapped[str | None] = mapped_column(String(64))
+    row_count: Mapped[int | None] = mapped_column(Integer)
+    partition_id: Mapped[str | None] = mapped_column(ForeignKey("data_partitions.id"))
+    manifest_id: Mapped[str | None] = mapped_column(ForeignKey("data_manifests.manifest_id"))
+    lease_owner: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+    downloading_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checksum_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    normalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    catalog_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
 class DataPartitionRow(Base):
     __tablename__ = "data_partitions"
     __table_args__ = (
@@ -126,11 +242,20 @@ class DataPartitionRow(Base):
             "version",
             name="uq_data_partitions_symbol_dataset_date_version",
         ),
+        UniqueConstraint(
+            "id",
+            "source_object_id",
+            name="uq_data_partitions_id_source_object",
+        ),
         CheckConstraint(
             f"approval_status IN {PARTITION_STATUSES!r}",
             name="ck_data_partitions_approval_status",
         ),
         CheckConstraint("version > 0", name="ck_data_partitions_version_positive"),
+        CheckConstraint(
+            "checksum_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_data_partitions_checksum_sha256",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -147,6 +272,50 @@ class DataPartitionRow(Base):
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DataManifestRow(Base):
+    __tablename__ = "data_manifests"
+    __table_args__ = (
+        UniqueConstraint("partition_id", name="uq_data_manifests_partition_id"),
+        UniqueConstraint(
+            "manifest_id",
+            "partition_id",
+            name="uq_data_manifests_manifest_partition",
+        ),
+        CheckConstraint(
+            "source_checksum ~ '^[0-9a-f]{64}$'",
+            name="ck_data_manifests_source_checksum",
+        ),
+        ForeignKeyConstraint(
+            ("partition_id", "source_object_id"),
+            ("data_partitions.id", "data_partitions.source_object_id"),
+            name="fk_data_manifests_partition_source",
+        ),
+        ForeignKeyConstraint(
+            ("source_object_id", "source_url", "source_checksum"),
+            (
+                "source_objects.id",
+                "source_objects.source_url",
+                "source_objects.checksum_sha256",
+            ),
+            name="fk_data_manifests_source_identity",
+        ),
+    )
+
+    manifest_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    partition_id: Mapped[str] = mapped_column(
+        ForeignKey("data_partitions.id"), nullable=False, index=True
+    )
+    source_object_id: Mapped[str] = mapped_column(
+        ForeignKey("source_objects.id"), nullable=False, index=True
+    )
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
 
 
 class DataGapRow(Base):

@@ -41,7 +41,7 @@ def manifest_payload(**overrides: object) -> dict[str, object]:
             dataset=ArchiveDataset.KLINES,
             symbol="BTCUSDT",
             interval="1m",
-            period_start=NOW,
+            period_start=MONTH_START,
         ),
         "raw_path": "raw/binance/usdm/BTCUSDT/kline_1m/date=2025-01-02/source.zip",
         "normalized_path": "normalized/binance/usdm/BTCUSDT/kline_1m/date=2025-01-02/data.parquet",
@@ -227,6 +227,15 @@ def test_archive_source_rejects_invalid_period_and_interval(source: dict[str, ob
             1000,
             "https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT&fromId=3&limit=1000",
         ),
+        (
+            BinanceRestEndpoint.EXCHANGE_INFO,
+            None,
+            None,
+            None,
+            None,
+            1,
+            "https://fapi.binance.com/fapi/v1/exchangeInfo?symbol=BTCUSDT",
+        ),
     ],
 )
 def test_rest_source_computes_canonical_query_order(
@@ -324,7 +333,7 @@ def test_resolved_urls_are_read_only_serialization_output() -> None:
     manifest = DataManifest(**manifest_payload())
     serialized = manifest.model_dump(mode="json")
 
-    assert serialized["source"]["resolved_url"].endswith("BTCUSDT-1m-2025-01-02.zip")
+    assert serialized["source"]["resolved_url"].endswith("BTCUSDT-1m-2025-01-01.zip")
     with pytest.raises(ValidationError, match="resolved_url"):
         DataManifest.model_validate_json(json.dumps(serialized))
 
@@ -342,3 +351,50 @@ def test_provenance_models_reject_caller_supplied_urls() -> None:
         )
     with pytest.raises(ValidationError, match="Extra inputs"):
         DataManifest(**manifest_payload(source_object_url="https://attacker.invalid/"))
+
+
+def test_manifest_binds_archive_coverage_to_daily_source_period() -> None:
+    with pytest.raises(ValidationError, match="archive manifest coverage"):
+        DataManifest(
+            **manifest_payload(
+                start=MONTH_START,
+                end=NOW,
+                source=BinanceArchiveSource(
+                    kind="binance_archive",
+                    cadence=ArchiveCadence.DAILY,
+                    dataset=ArchiveDataset.KLINES,
+                    symbol="BTCUSDT",
+                    interval="1m",
+                    period_start=NOW,
+                ),
+            )
+        )
+
+
+def test_manifest_binds_rest_time_bounds_to_half_open_milliseconds() -> None:
+    start_ms = int(MONTH_START.timestamp() * 1000)
+    end_ms = int(NOW.timestamp() * 1000)
+    rest = BinanceRestSource(
+        kind="binance_rest",
+        endpoint=BinanceRestEndpoint.KLINES,
+        symbol="BTCUSDT",
+        interval="1m",
+        start_time=start_ms,
+        end_time=end_ms - 1,
+        limit=1500,
+    )
+    assert DataManifest(**manifest_payload(source=rest)).source is rest
+
+    with pytest.raises(ValidationError, match="REST manifest coverage"):
+        DataManifest(
+            **manifest_payload(
+                source=rest.model_copy(update={"start_time": start_ms + 1})
+            )
+        )
+
+
+def test_manifest_rejects_sub_millisecond_coverage_boundaries() -> None:
+    with pytest.raises(ValidationError, match="millisecond-aligned"):
+        DataManifest(
+            **manifest_payload(start=MONTH_START.replace(microsecond=1))
+        )

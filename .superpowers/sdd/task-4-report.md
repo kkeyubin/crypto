@@ -1,105 +1,160 @@
-# Task 4: Deterministic Cross-Language Contract Generation
+# Task 4: Backfill Orchestration, Catalog, Gaps, Profiles, and Eligibility
 
 ## Status
 
-Complete. The four Pydantic root contracts are exported in serialization mode as
-committed, deterministically formatted JSON Schemas, and each is compiled to an
-isolated TypeScript declaration module with exact root-only re-exports.
+Complete. Phase 1 now has a restart-safe archive backfill state machine, a
+versioned approved catalog, descriptor-anchored DuckDB reads, explicit gap and
+repair evidence, approved-data-only profiles, centralized fail-closed
+eligibility, and independently degraded public REST capabilities.
 
-## RED evidence
+## Delivered behavior
 
-Created `services/api/tests/contracts/test_schema_export.py` before the export
-script. Running:
+- Backfill objects persist the exact sequence `planned -> downloading ->
+  checksum_verified -> normalized -> validated -> catalog_approved`, with
+  `source_pending` and `failed` terminal alternatives. Every transition and its
+  evidence is committed before the next external stage starts.
+- PostgreSQL claims use `FOR UPDATE SKIP LOCKED`, database `now()`, lease expiry,
+  and monotonically increasing attempt tokens. Renewals and transitions are
+  conditional updates fenced by owner, token, state, and an unexpired
+  database-time lease.
+- `ArchiveBackfillStages` executes the Task 3 verified archive pipeline from an
+  approved structured plan: download and official checksum validation, raw ZIP
+  retention, restart-safe descriptor reopening, deterministic normalization,
+  immutable checksum-versioned Parquet publication, six validation checks, and
+  manifest/catalog approval. Deterministic planner and old-404 gap wiring are
+  included.
+- Catalog approval requires checksum, schema, ordering, uniqueness, range, and
+  row-count success. Same-source retries are idempotent; changed official bytes
+  create a new immutable version. DuckDB accepts no caller path, opens only
+  catalog paths beneath the secure data root, rechecks file SHA-256, and reads
+  only the latest approved version for each exact coverage partition.
+- The migration persists full manifests and binds manifest, partition, source
+  object, URL, and checksums with composite foreign keys and lowercase SHA-256
+  checks. Backfill catalog evidence uses a composite manifest/partition
+  relation.
+- Gaps cover missing minute opens, aggregate-trade ID discontinuities,
+  source-unknown disconnect windows, missing official archives, and partition
+  coverage. A repair closes only from approved evidence for the same symbol,
+  data type, and complete half-open range; aggregate-trade gaps additionally
+  require the recorded missing ID range.
+- Profiles are computed only through the approved catalog boundary. Every
+  metric includes its own sample count and coverage fraction, and BTC/PEPE
+  fixtures prove independent volatility, jump, spread, funding, and liquidity
+  results.
+- Eligibility evaluates every reason independently, including
+  `metadata_unverified`, insufficient history/coverage/liquidity, stale live
+  data, unrepaired gaps, data-not-ready, and required-source degradation.
+- Public REST classifies 451, timeout, DNS, TLS, connect, 429, server, HTTP, and
+  response-validation failures. Endpoint type determines metadata versus repair
+  capability, so callers cannot mislabel health; archive and live health remain
+  isolated.
+- `DataManifest` now binds archive coverage to its exact daily/monthly source
+  period and REST coverage to exact millisecond request bounds. Epoch conversion
+  is integer-based and sub-millisecond boundaries fail closed.
 
-```bash
-cd services/api && .venv/bin/pytest tests/contracts/test_schema_export.py -q
+## TDD evidence
+
+### RED
+
+The initial focused tests failed during collection because the six Task 4
+market modules did not exist. Subsequent adversarial RED runs included:
+
+```text
+.venv/bin/pytest -q tests/market/test_backfill.py -k production_archive_stages
+ImportError: cannot import name 'ArchiveBackfillStages'
+
+.venv/bin/pytest -q tests/market/test_gaps.py -k aggregate_trade_gap_requires
+TypeError: ApprovedCoverage.__init__() got an unexpected keyword argument
+'recovered_id_start'
+
+.venv/bin/pytest -q tests/db/test_models.py -k backfill_objects
+assert any("source_checksum ~" in str(item.sqltext) for item in checks)
+AssertionError
 ```
 
-failed as intended with exit code 1 because
-`scripts/export_schemas.py` did not exist (`[Errno 2] No such file or directory`).
+Other RED cases covered stale worker fencing with a reused worker ID,
+latest-version-only reads, wrong-symbol/data-type/unapproved gap evidence,
+endpoint capability mislabeling, source-period/REST-boundary mismatches,
+sub-millisecond catalog queries, and composite evidence constraints.
 
-## GREEN evidence
+### GREEN
 
-Added `services/api/scripts/export_schemas.py`, generated the schemas, then ran
-the focused test again. It passed: `1 passed in 0.68s`.
+Each failure received the smallest corresponding implementation before the
+next behavior. Final focused Task 4 verification:
 
-`export_schemas.py --check` passes when committed files match the serialization
-schemas and reports drift with a nonzero exit code when they do not.
+```text
+cd services/api
+.venv/bin/pytest -q tests/market
+```
 
-## Dependencies resolved
+Result: `114 passed`.
 
-- Node: `v24.15.0` from `.nvmrc` (`24`)
-- npm: `11.12.1`
-- `json-schema-to-typescript`: `15.0.4`
-- `typescript`: `5.9.3`
+## Review hardening
 
-The durable Task 4 plan now includes `typescript` and
-`contracts:check-types`. This narrow compatibility correction is needed because
-the transitive `@types/lodash` declarations require an ES2015 library when
-compiled by TypeScript; the script uses `--lib es2015`.
+The first independent review identified lease transaction/fencing, latest
+catalog version, typed repair evidence, capability authority, concrete pipeline
+wiring, relational evidence, source-bound manifest coverage, and float epoch
+risks. The implementation now commits every durable stage; uses atomic
+database-time lease conditions and attempt tokens; selects only latest approved
+versions; requires typed and ID-aware repair evidence; derives REST capability
+from endpoint; provides production Task 3 stages/planner/sink; enforces
+composite relations and SHA-256 formats; binds coverage to provenance; and uses
+integer millisecond arithmetic.
 
-## Generated files
-
-- `contracts/jsonschema/AIAssessment.schema.json`
-- `contracts/jsonschema/DataManifest.schema.json`
-- `contracts/jsonschema/MarketSnapshot.schema.json`
-- `contracts/jsonschema/StrategySpec.schema.json`
-- `contracts/types/AIAssessment.ts`
-- `contracts/types/DataManifest.ts`
-- `contracts/types/MarketSnapshot.ts`
-- `contracts/types/StrategySpec.ts`
-- `contracts/types/index.ts`
-
-`index.ts` contains only the four exact root type re-exports. Each root was
-compiled independently, and the per-module duplicate exported-name scan found no
-duplicates.
+The second review then found five integration holes. Replanning now excludes a
+discovered checksum from immutable plan identity. Durable gap reconciliation
+accepts only partition IDs and derives locked approval, identity, coverage,
+validator, and contiguous aggregate-ID evidence from PostgreSQL. Concrete
+archive validation persists minute and aggregate-ID gaps before catalog
+approval. Long external stages, including catalog publication, run under a
+bounded lease heartbeat with cancellation cleanup. SQL heartbeats require an
+independent repository/session, so renewal commits cannot commit the main
+catalog transaction or release its advisory lock; missing SQL heartbeat
+injection fails fast. Blocking archive/Parquet work runs in worker threads so
+renewals can execute. Finally, differing overlapping active ranges
+are rejected; PostgreSQL serializes approvals per symbol/data type with a
+transaction advisory lock so monthly and daily coverage cannot race into the
+active catalog.
 
 ## Verification
 
-```bash
-cd services/api && .venv/bin/python scripts/export_schemas.py --check
-cd ../.. && source /Users/kyle/.nvm/nvm.sh && nvm use
-npm install
-npm run contracts:types
-npm run contracts:check-types
-npm run contracts:types  # second run; SHA-256 manifest unchanged
-cd services/api && .venv/bin/pytest -q
+```text
+cd services/api
+.venv/bin/pytest -q
+# 340 passed, 1 skipped
+
 .venv/bin/ruff check src tests
+# All checks passed!
+
+.venv/bin/python scripts/export_schemas.py --check
+.venv/bin/alembic -c alembic.ini heads
+# 20260721_0002 (head)
+
+CRYPTO_DATABASE_URL=postgresql+asyncpg://user:pass@localhost/db \
+  .venv/bin/alembic -c alembic.ini upgrade head --sql
+# generated 210 lines of PostgreSQL migration SQL
+
+source /Users/kyle/.nvm/nvm.sh && nvm use
+npm run contracts:test-generation
+npm run contracts:check-types
+npm run contracts:types
+
+git diff --check
 ```
 
-Results: schema check passed; type generation passed twice with identical
-SHA-256 manifests; TypeScript check passed; backend suite passed (`51 passed in
-2.21s`); Ruff reported `All checks passed!`.
+All listed checks completed successfully. Generated `DataManifest` JSON Schema
+and TypeScript declarations include the public `exchange_info` endpoint.
 
-## Self-review and concerns
+## Remaining environment note
 
-The exporter uses `model_json_schema(mode="serialization")`, stable model order,
-sorted JSON keys, two-space indentation, and a trailing newline. The generator
-sorts input schemas, removes only prior `.ts` generated outputs, and rebuilds the
-index deterministically. No concerns remain.
+`tests/db/test_postgres_integration.py` is intentionally opt-in and was the one
+skipped test because `CRYPTO_TEST_DATABASE_URL` was not set. Alembic's
+PostgreSQL offline compilation passed, and the integration test now explicitly
+expires a lease using database time before proving safe restart takeover. No
+live exchange, mutable production data, credentials, trading, or public port
+was used.
 
-## Review-fix evidence
-
-The schema exporter now accepts `--output` for isolated verification. In
-`--check` mode it neither creates the output directory nor writes any file, and
-it compares the actual `*.schema.json` names with the exact four expected roots.
-Its diagnostics identify every missing, modified, and stale file on separate
-lines. Normal mode owns the generated-only `contracts/jsonschema/` boundary:
-it creates the directory, writes all four current schemas, and removes stale
-`*.schema.json` artifacts.
-
-Focused tests cover a missing schema (and the no-directory-creation guarantee),
-a modified schema, and a stale extra schema without changing committed files:
-`4 passed in 3.80s`.
-
-`contracts/generate-types.mjs` now requires that its input has exactly the four
-schema roots. It removes only `.ts` files whose first line is exactly the
-generated header. `npm run contracts:test-generation` uses temporary input and
-output directories to prove a manual `.ts` survives, a header-marked stale file
-is removed, the exact root-only index is rebuilt, and a second generation is
-byte-identical.
-
-Fresh review-fix verification ran the focused schema tests, schema `--check`,
-the generator safety test, two TypeScript generations with identical SHA-256
-manifests, `contracts:check-types`, full API tests (`54 passed in 6.30s`), and
-Ruff (`All checks passed!`). No warnings or concerns remain.
+The final independent review approved the implementation with no remaining
+Critical or Important findings. Its targeted publish-heartbeat verification
+passed; the real PostgreSQL dual-session composition remains in the opt-in
+integration suite described above.

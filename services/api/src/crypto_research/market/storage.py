@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pyarrow.parquet as pq
 
@@ -26,6 +26,38 @@ class StoredParquet:
     row_count: int
 
 
+@contextmanager
+def open_secure_relative_file(data_root: Path, relative_path: str) -> Iterator[int]:
+    """Open a regular file beneath ``data_root`` without following symlinks."""
+    relative = PurePosixPath(relative_path)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        raise ValueError("storage path must be relative to the secure data root")
+    descriptors = [_open_secure_root(data_root)]
+    try:
+        for component in relative.parts[:-1]:
+            _require_component(component)
+            try:
+                descriptors.append(
+                    os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptors[-1])
+                )
+            except OSError as error:
+                raise ValueError("storage path could not be opened securely") from error
+        _require_component(relative.parts[-1])
+        try:
+            descriptor = os.open(
+                relative.parts[-1], _READ_FLAGS, dir_fd=descriptors[-1]
+            )
+        except OSError as error:
+            raise ValueError("storage file could not be opened securely") from error
+        descriptors.append(descriptor)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("storage file must be a regular file")
+        yield descriptor
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def raw_archive_path(
     data_root: Path,
     symbol: str,
@@ -41,6 +73,18 @@ def normalized_archive_path(
     data_root: Path, symbol: str, dataset: DatasetKind, period_start: datetime
 ) -> Path:
     return _partition_path(data_root, "normalized", symbol, dataset, period_start) / "data.parquet"
+
+
+def normalized_archive_version_path(
+    data_root: Path,
+    symbol: str,
+    dataset: DatasetKind,
+    period_start: datetime,
+    source_checksum: str,
+) -> Path:
+    checksum = _checksum(source_checksum)
+    directory = _partition_path(data_root, "normalized", symbol, dataset, period_start)
+    return directory / f"data-{checksum}.parquet"
 
 
 def retain_raw_archive(
@@ -96,10 +140,50 @@ def write_normalized_parquet(
     period_start: datetime,
 ) -> StoredParquet:
     """Publish validated Parquet with only fixed names relative to opened directories."""
+    return _write_normalized_parquet(
+        dataset,
+        data_root,
+        symbol,
+        dataset_kind,
+        period_start,
+        "data.parquet",
+    )
+
+
+def write_versioned_normalized_parquet(
+    dataset: NormalizedDataset,
+    data_root: Path,
+    symbol: str,
+    dataset_kind: DatasetKind,
+    period_start: datetime,
+    source_checksum: str,
+) -> StoredParquet:
+    """Publish immutable normalized bytes under their official source version."""
+    final_name = f"data-{_checksum(source_checksum)}.parquet"
+    return _write_normalized_parquet(
+        dataset,
+        data_root,
+        symbol,
+        dataset_kind,
+        period_start,
+        final_name,
+    )
+
+
+def _write_normalized_parquet(
+    dataset: NormalizedDataset,
+    data_root: Path,
+    symbol: str,
+    dataset_kind: DatasetKind,
+    period_start: datetime,
+    final_name: str,
+) -> StoredParquet:
     if dataset.row_count <= 0:
         raise ValueError("normalized dataset must contain at least one row")
-    destination = normalized_archive_path(data_root, symbol, dataset_kind, period_start)
-    final_name = "data.parquet"
+    destination = (
+        _partition_path(data_root, "normalized", symbol, dataset_kind, period_start)
+        / final_name
+    )
     with _open_partition(
         data_root, "normalized", symbol, dataset_kind, period_start
     ) as partition_fd:
