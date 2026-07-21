@@ -145,7 +145,7 @@ git diff --check
 All listed checks completed successfully. Generated `DataManifest` JSON Schema
 and TypeScript declarations include the public `exchange_info` endpoint.
 
-## Remaining environment note
+## Local environment note
 
 `tests/db/test_postgres_integration.py` is intentionally opt-in and was the one
 skipped test because `CRYPTO_TEST_DATABASE_URL` was not set. Alembic's
@@ -156,8 +156,8 @@ was used.
 
 The final independent review approved the implementation with no remaining
 Critical or Important findings. Its targeted publish-heartbeat verification
-passed; the real PostgreSQL dual-session composition remains in the opt-in
-integration suite described above.
+passed. The controller subsequently executed the opt-in PostgreSQL suite as
+recorded below.
 
 ## PostgreSQL gate follow-up
 
@@ -188,3 +188,23 @@ short stages, pre-stage failure without operation creation, and periodic
 failure cancellation; the opt-in PostgreSQL case now includes multiple short
 stages below the heartbeat interval. Final verification passed with
 `343 passed, 1 skipped`.
+
+## Controller PostgreSQL gate
+
+After both real-database findings were fixed, the controller pushed commit
+`8fa46be`, checked out the exact branch on `keyubin@192.168.1.4`, and ran the
+opt-in suite against a fresh PostgreSQL 17 container published only on a
+temporary loopback port:
+
+```text
+CRYPTO_TEST_DATABASE_URL=postgresql+asyncpg://crypto_test:[redacted]@127.0.0.1:55440/crypto_test \
+  pytest -q tests/db/test_postgres_integration.py
+# 1 passed in 2.28s
+```
+
+This exercised migrations `20260721_0001 -> 20260721_0002`, UTC persistence,
+database-time lease takeover, attempt fencing, catalog source/partition/manifest
+constraints, fabricated repair-evidence rejection, dual-session heartbeat, and
+the final `catalog_approved` transition. The temporary database container and
+checkout were removed afterward; the existing Phase 0 deployment was not
+changed.
