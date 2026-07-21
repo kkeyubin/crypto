@@ -8,7 +8,7 @@
 
 ## 1. Outcome and Boundary
 
-Phase 1 makes Binance USDⓈ-M public market data reproducible, observable, and safe to consume. The owner can add `BTCUSDT`, `PEPEUSDT`, or another perpetual symbol; request an explicit UTC history range; observe live data; inspect gaps, freshness, checksums, and per-symbol eligibility; and remove the symbol from active monitoring without deleting its audit history.
+Phase 1 makes Binance USDⓈ-M public market data reproducible, observable, and safe to consume. The owner can add `BTCUSDT`, `1000PEPEUSDT`, or another perpetual symbol; request an explicit UTC history range; observe live data; inspect gaps, freshness, checksums, and per-symbol eligibility; and remove the symbol from active monitoring without deleting its audit history. User inputs `PEPE` and `PEPEUSDT` canonicalize to Binance's actual USDⓈ-M venue symbol `1000PEPEUSDT`; unknown symbols remain dynamic and fail closed on unavailable evidence.
 
 This phase does not implement strategies, backtests, paper orders, signals, Feishu notifications, or AI. It supplies the verified data boundary those later phases require.
 
@@ -28,7 +28,7 @@ No API key or exchange credential is accepted. Because `exchangeInfo` cannot cur
 
 ## 3. Source and Reconciliation Model
 
-The historical planner prefers complete monthly archives, then daily archives for the remaining closed UTC days. It supports:
+The historical planner prefers complete monthly archives, then daily archives for the remaining closed UTC days when the dataset publishes both cadences. Funding is a deliberate exception: Binance publishes the required `fundingRate` archive monthly, not daily, so any funding range must consist of complete UTC calendar months. Because initial onboarding always includes funding, its history range must also contain one or more complete UTC calendar months. A multi-dataset request preplans every archive object and rejects any unsupported range before creating jobs or source objects. It supports:
 
 - `klines/<symbol>/1m` for trade-price 1-minute bars;
 - `markPriceKlines/<symbol>/1m` for mark-price 1-minute bars;
@@ -66,7 +66,7 @@ metadata_unverified | profile_building -> eligible | ineligible
 
 The empirical profile includes realized volatility, jump frequency, spread distribution, volume/liquidity by hour, funding distribution, observed gaps, staleness, and data coverage. BTC metrics never seed PEPE thresholds or approval. Eligibility exposes separate reasons such as `insufficient_history`, `stale_live_data`, `unrepaired_gap`, `insufficient_liquidity`, and `metadata_unverified`.
 
-Adding a symbol requires an explicit history start/end and opt-in for historical aggregate trades. Default API limits prevent accidental unbounded downloads. Removing a symbol disables new subscriptions and jobs but retains data, manifests, and audit records.
+Adding a symbol requires a complete-month history start/end and opt-in for historical aggregate trades. Default API limits prevent accidental unbounded downloads. The console explains the full-month rule and canonical PEPE venue identity before submission, then uses the canonical symbol returned by the API for backfills. Removing a symbol disables new subscriptions and jobs but retains data, manifests, and audit records.
 
 ## 6. API and Console
 
@@ -84,7 +84,7 @@ Proxy mode is `auto`: attempt direct access first; switch only after a classifie
 
 Phase 1 is complete only when automated tests and a server smoke test demonstrate all of the following:
 
-1. Add `BTCUSDT` and `PEPEUSDT` with separate bounded ranges and independent states.
+1. Add `BTCUSDT` and `1000PEPEUSDT` with separate complete-month ranges and independent states; prove `PEPE`/`PEPEUSDT` returns and stores `1000PEPEUSDT`.
 2. Download at least one closed partition for kline, mark-price kline, and funding; verify official SHA-256 files and write validated Parquet/manifests.
 3. Opt in to a bounded `aggTrades` partition and prove a failed or pending object is not published as valid.
 4. Receive and persist routed live kline, mark price, aggregate trade, and best bid/ask events through the server's measured network path.

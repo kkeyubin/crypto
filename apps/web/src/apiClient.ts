@@ -21,6 +21,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const symbolPattern = /^[A-Z0-9]{3,32}$/;
+const symbolAliases = new Map([
+  ["PEPE", "1000PEPEUSDT"],
+  ["PEPEUSDT", "1000PEPEUSDT"],
+]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const dataStatuses = new Set(["requested", "backfilling", "data_ready", "degraded", "failed", "disabled"]);
 const metadataStatuses = new Set(["metadata_unverified", "profile_building", "eligible", "ineligible"]);
@@ -352,7 +356,8 @@ export async function addSymbol(
     history_end: input.historyEnd,
     include_agg_trades: input.includeAggTrades,
   }, signal);
-  if (!isSymbolView(symbolPayload) || symbolPayload.symbol !== input.symbol) {
+  const expectedSymbol = symbolAliases.get(input.symbol) ?? input.symbol;
+  if (!isSymbolView(symbolPayload) || symbolPayload.symbol !== expectedSymbol) {
     throw new ApiClientError("response");
   }
   return symbolPayload;

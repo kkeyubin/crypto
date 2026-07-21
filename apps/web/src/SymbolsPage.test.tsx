@@ -139,6 +139,17 @@ test("allows exactly 366 inclusive UTC days and converts the inclusive end to th
   });
 });
 
+test("rejects history that is not one or more complete UTC calendar months", () => {
+  expect(toArchiveUtcRange("2026-07-14", "2026-07-16", new Date("2026-07-21T12:00:00Z"))).toEqual({
+    ok: false,
+    reason: "incomplete_month",
+  });
+  expect(toArchiveUtcRange("2026-06-01", "2026-06-29", new Date("2026-07-21T12:00:00Z"))).toEqual({
+    ok: false,
+    reason: "incomplete_month",
+  });
+});
+
 test("announces the initial data-console loading state", () => {
   vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
 
@@ -458,7 +469,7 @@ test("keeps symbol evidence visible when operations health fails and retries hea
   expect(btcProfileAttempts).toBe(1);
 });
 
-test("adds a symbol with inclusive UTC days converted to a planner-compatible half-open range", async () => {
+test("uses a returned canonical venue symbol for a complete-month backfill", async () => {
   const user = userEvent.setup();
   const requests: Array<{ path: string; body: unknown }> = [];
   let listRequests = 0;
@@ -472,7 +483,7 @@ test("adds a symbol with inclusive UTC days converted to a planner-compatible ha
         if (path === "/api/symbols") {
           return jsonResponse({
             ...baseSymbol,
-            symbol: "SOLUSDT",
+            symbol: "1000PEPEUSDT",
             data_status: "requested",
             metadata_status: "metadata_unverified",
             include_agg_trades: true,
@@ -480,11 +491,11 @@ test("adds a symbol with inclusive UTC days converted to a planner-compatible ha
         }
         return jsonResponse(["kline_1m", "mark_price", "funding", "agg_trade"].map((dataType, index) => ({
           job_id: `00000000-0000-0000-0000-00000000040${index}`,
-          symbol: "SOLUSDT",
+          symbol: "1000PEPEUSDT",
           data_type: dataType,
           status: index === 0 ? "running" : "queued",
-          requested_start: "2026-07-01T00:00:00Z",
-          requested_end: "2026-07-21T00:00:00Z",
+          requested_start: "2026-06-01T00:00:00Z",
+          requested_end: "2026-07-01T00:00:00Z",
           created_at: "2026-07-21T10:00:00Z",
           updated_at: "2026-07-21T10:00:00Z",
         })));
@@ -494,11 +505,11 @@ test("adds a symbol with inclusive UTC days converted to a planner-compatible ha
         const dataType = ["kline_1m", "mark_price", "funding", "agg_trade"][jobIndex];
         return jsonResponse({
           job_id: path.split("/").at(-1),
-          symbol: "SOLUSDT",
+          symbol: "1000PEPEUSDT",
           data_type: dataType,
           status: "succeeded",
-          requested_start: "2026-07-01T00:00:00Z",
-          requested_end: "2026-07-21T00:00:00Z",
+          requested_start: "2026-06-01T00:00:00Z",
+          requested_end: "2026-07-01T00:00:00Z",
           created_at: "2026-07-21T10:00:00Z",
           updated_at: "2026-07-21T10:05:00Z",
         });
@@ -523,13 +534,14 @@ test("adds a symbol with inclusive UTC days converted to a planner-compatible ha
   await user.click(screen.getByRole("button", { name: "添加币种" }));
 
   const form = screen.getByRole("form", { name: "添加监控币种" });
-  expect(within(form).getByText("按 UTC 自然日选择，开始日从 00:00Z 起，结束日包含整天；提交给服务的是 [开始日 00:00Z, 结束日次日 00:00Z) 半开区间。")).toBeInTheDocument();
+  expect(within(form).getByText("历史回填必须选择一个或多个完整 UTC 自然月：开始日为月初，结束日为月末；提交为 [月初 00:00Z, 下月月初 00:00Z) 半开区间。")).toBeInTheDocument();
+  expect(within(form).getByText("输入 PEPE 或 PEPEUSDT 时会保存并显示 Binance USDⓈ-M 实际合约 1000PEPEUSDT。")).toBeInTheDocument();
   expect(within(form).getByText(/aggTrades 历史体量很大/)).toBeInTheDocument();
   expect(within(form).getByText("此操作只配置数据采集，不会启用交易、通知或 AI 下单。")).toBeInTheDocument();
 
-  await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
-  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
-  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  await user.type(within(form).getByLabelText("币种代码"), "PEPE");
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-06-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-06-30" } });
   const symbolOptIn = within(form).getByRole("checkbox", { name: "为此币种启用 aggTrades 历史" });
   const backfillOptIn = within(form).getByRole("checkbox", { name: "我确认本次回填也包含 aggTrades" });
   expect(backfillOptIn).toBeDisabled();
@@ -549,19 +561,19 @@ test("adds a symbol with inclusive UTC days converted to a planner-compatible ha
     {
       path: "/api/symbols",
       body: {
-        symbol: "SOLUSDT",
-        history_start: "2026-07-01T00:00:00.000Z",
-        history_end: "2026-07-21T00:00:00.000Z",
+        symbol: "PEPE",
+        history_start: "2026-06-01T00:00:00.000Z",
+        history_end: "2026-07-01T00:00:00.000Z",
         include_agg_trades: true,
       },
     },
     {
-      path: "/api/symbols/SOLUSDT/backfills",
+      path: "/api/symbols/1000PEPEUSDT/backfills",
       body: {
-        symbol: "SOLUSDT",
+        symbol: "1000PEPEUSDT",
         data_types: ["kline_1m", "mark_price", "funding", "agg_trade"],
-        start: "2026-07-01T00:00:00.000Z",
-        end: "2026-07-21T00:00:00.000Z",
+        start: "2026-06-01T00:00:00.000Z",
+        end: "2026-07-01T00:00:00.000Z",
         include_agg_trades: true,
       },
     },
@@ -686,8 +698,8 @@ test("keeps a configured symbol visible and retries only backfill after partial 
   await user.click(screen.getByRole("button", { name: "添加币种" }));
   const form = screen.getByRole("form", { name: "添加监控币种" });
   await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
-  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
-  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-06-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-06-30" } });
   await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
 
   await waitFor(() => expect(backfillPosts).toBe(1));
@@ -756,8 +768,8 @@ test("aborts a protected add-and-backfill workflow if the page unmounts external
   await user.click(screen.getByRole("button", { name: "添加币种" }));
   const form = screen.getByRole("form", { name: "添加监控币种" });
   await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
-  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
-  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-06-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-06-30" } });
   await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
 
   await waitFor(() => expect(backfillSignal).toBeDefined());
@@ -1047,8 +1059,8 @@ test.each(["delete-first", "list-first"] as const)(
     await user.click(screen.getByRole("button", { name: "添加币种" }));
     const form = screen.getByRole("form", { name: "添加监控币种" });
     await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
-    fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
-    fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+    fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-06-01" } });
+    fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-06-30" } });
     await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
     await waitFor(() => {
       expect(listRequests).toBe(2);
@@ -1446,8 +1458,8 @@ test.each([
   await user.click(screen.getByRole("button", { name: "添加币种" }));
   const form = screen.getByRole("form", { name: "添加监控币种" });
   await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
-  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
-  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-06-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-06-30" } });
   await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
 
   const enabledBtc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
@@ -1532,8 +1544,8 @@ test("suppresses committed notice and focus when a newer opposite server state w
   await user.click(screen.getByRole("button", { name: "添加币种" }));
   const form = screen.getByRole("form", { name: "添加监控币种" });
   await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
-  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
-  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-06-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-06-30" } });
   await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
   await waitFor(() => expect(listRequests).toBe(2));
 

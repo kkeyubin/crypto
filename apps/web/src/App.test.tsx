@@ -173,8 +173,8 @@ test("keeps a protected backfill recovery mounted across normal App navigation",
   await user.click(screen.getByRole("button", { name: "添加币种" }));
   const form = screen.getByRole("form", { name: "添加监控币种" });
   await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
-  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
-  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-06-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-06-30" } });
   await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
   await waitFor(() => expect(backfillPosts).toBe(1));
 

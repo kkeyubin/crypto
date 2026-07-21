@@ -47,11 +47,6 @@ def test_planner_prefers_whole_month_then_daily_edges() -> None:
             "daily/markPriceKlines/BTCUSDT/1m/BTCUSDT-1m-2024-02-29.zip",
         ),
         (
-            DatasetKind.FUNDING_RATE,
-            ArchiveDataset.FUNDING_RATE,
-            "daily/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2024-02-29.zip",
-        ),
-        (
             DatasetKind.AGG_TRADES,
             ArchiveDataset.AGG_TRADES,
             "daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-02-29.zip",
@@ -67,6 +62,48 @@ def test_planner_uses_exact_official_dataset_urls(
 
     assert item.source.dataset is source_dataset
     assert item.url == f"https://data.binance.vision/data/futures/um/{url}"
+
+
+def test_funding_planner_uses_only_complete_monthly_archives() -> None:
+    objects = plan_archives(
+        DatasetKind.FUNDING_RATE,
+        "BTCUSDT",
+        utc("2026-05-01T00:00:00"),
+        utc("2026-07-01T00:00:00"),
+        as_of=utc("2026-07-21T12:00:00"),
+    )
+
+    assert [item.source.cadence for item in objects] == [
+        ArchiveCadence.MONTHLY,
+        ArchiveCadence.MONTHLY,
+    ]
+    assert [item.url for item in objects] == [
+        "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/"
+        "BTCUSDT-fundingRate-2026-05.zip",
+        "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/"
+        "BTCUSDT-fundingRate-2026-06.zip",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        ("2026-06-14T00:00:00", "2026-06-15T00:00:00"),
+        ("2026-05-02T00:00:00", "2026-07-01T00:00:00"),
+        ("2026-05-01T00:00:00", "2026-06-30T00:00:00"),
+    ],
+)
+def test_funding_planner_rejects_partial_months_before_creating_objects(
+    start: str, end: str
+) -> None:
+    with pytest.raises(ValueError, match="complete UTC calendar months"):
+        plan_archives(
+            DatasetKind.FUNDING_RATE,
+            "BTCUSDT",
+            utc(start),
+            utc(end),
+            as_of=utc("2026-07-21T12:00:00"),
+        )
 
 
 def test_planner_rejects_non_midnight_or_non_utc_ranges() -> None:

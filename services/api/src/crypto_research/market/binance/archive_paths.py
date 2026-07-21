@@ -69,6 +69,10 @@ def plan_archives(
     if end > _current_utc_midnight(as_of):
         raise ValueError("archive ranges must contain only closed UTC days")
     normalized_symbol = normalize_symbol(symbol)
+    if dataset is DatasetKind.FUNDING_RATE and (start.day != 1 or end.day != 1):
+        raise ValueError(
+            "funding-rate archives require complete UTC calendar months"
+        )
     month_starts = _complete_month_starts(start, end)
     monthly_days = {
         day

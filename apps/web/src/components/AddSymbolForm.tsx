@@ -14,7 +14,7 @@ const MAX_HISTORY_DAYS = 366;
 
 type ArchiveRangeResult =
   | { readonly ok: true; readonly start: string; readonly end: string }
-  | { readonly ok: false; readonly reason: "invalid" | "too_large" };
+  | { readonly ok: false; readonly reason: "invalid" | "too_large" | "incomplete_month" };
 
 function utcDayMillis(value: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -42,6 +42,12 @@ export function toArchiveUtcRange(
   const currentUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   if (endMillis > currentUtcMidnight) {
     return { ok: false, reason: "invalid" };
+  }
+  if (
+    new Date(startMillis).getUTCDate() !== 1 ||
+    new Date(endMillis).getUTCDate() !== 1
+  ) {
+    return { ok: false, reason: "incomplete_month" };
   }
   return {
     ok: true,
@@ -111,7 +117,12 @@ export function AddSymbolForm({ onAdded, onBackfillsCreated, onProtectionChange 
     setError(null);
     const range = toArchiveUtcRange(historyStart, historyEnd);
     if (!/^[A-Z0-9]{3,32}$/.test(symbol) || !range.ok) {
-      setError(t(!range.ok && range.reason === "too_large" ? "utcRangeTooLarge" : "invalidUtcRange"));
+      const errorKey = !range.ok && range.reason === "too_large"
+        ? "utcRangeTooLarge"
+        : !range.ok && range.reason === "incomplete_month"
+          ? "completeMonthRequired"
+          : "invalidUtcRange";
+      setError(t(errorKey));
       return;
     }
     if (symbolAggTrades && !backfillAggTrades) {
@@ -129,13 +140,14 @@ export function AddSymbolForm({ onAdded, onBackfillsCreated, onProtectionChange 
     };
     let remainProtected = true;
     try {
-      await addSymbol(input, controller.signal);
+      const configured = await addSymbol(input, controller.signal);
       if (!mounted.current) {
         return;
       }
-      setConfiguredInput(input);
+      const canonicalInput = { ...input, symbol: configured.symbol };
+      setConfiguredInput(canonicalInput);
       onAdded();
-      remainProtected = !(await startBackfills(input, controller.signal));
+      remainProtected = !(await startBackfills(canonicalInput, controller.signal));
     } catch {
       if (mounted.current) {
         setError(t("addSymbolError"));
@@ -199,6 +211,7 @@ export function AddSymbolForm({ onAdded, onBackfillsCreated, onProtectionChange 
         <div>
           <h2>{t("addSymbolFormLabel")}</h2>
           <p className="muted compact-copy">{t("closedUtcRange")}</p>
+          <p className="muted compact-copy">{t("pepeAliasNotice")}</p>
         </div>
         <p className="scope-note">{t("dataOnlyScope")}</p>
       </div>

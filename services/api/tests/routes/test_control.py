@@ -364,6 +364,85 @@ def test_service_creates_deterministic_per_dataset_jobs_and_requires_symbol_opt_
     asyncio.run(scenario())
 
 
+def test_partial_month_funding_request_fails_before_any_multi_type_mutation() -> None:
+    async def scenario() -> None:
+        repository = configured_repository()
+        control = service(repository)
+
+        with pytest.raises(MarketDataValidationError, match="complete UTC calendar months"):
+            await control.create_backfills(
+                "BTCUSDT",
+                BackfillRequest(
+                    symbol="BTCUSDT",
+                    data_types=(DataType.KLINE_1M, DataType.FUNDING),
+                    start=datetime(2026, 7, 14, tzinfo=UTC),
+                    end=datetime(2026, 7, 16, tzinfo=UTC),
+                ),
+            )
+
+        assert repository.jobs == {}
+        assert repository.planned == {}
+        assert repository.audit_actions == []
+
+    asyncio.run(scenario())
+
+
+def test_add_symbol_rejects_partial_month_before_persisting_configuration() -> None:
+    async def scenario() -> None:
+        repository = Repository()
+
+        with pytest.raises(MarketDataValidationError, match="complete UTC calendar months"):
+            await service(repository).add_symbol(
+                AddSymbolRequest(
+                    symbol="BTCUSDT",
+                    history_start=datetime(2026, 7, 14, tzinfo=UTC),
+                    history_end=datetime(2026, 7, 16, tzinfo=UTC),
+                )
+            )
+
+        assert repository.symbols == {}
+        assert repository.audit_actions == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("alias", ["PEPE", "PEPEUSDT"])
+def test_pepe_alias_is_canonicalized_to_the_actual_usdm_contract(alias: str) -> None:
+    async def scenario() -> None:
+        repository = Repository()
+        control = service(repository)
+        request = AddSymbolRequest(
+            symbol=alias,
+            history_start=START,
+            history_end=END,
+        )
+
+        added = await control.add_symbol(request)
+        fetched = await control.get_symbol(alias)
+        jobs = await control.create_backfills(
+            alias,
+            BackfillRequest(
+                symbol=alias,
+                data_types=(DataType.KLINE_1M,),
+                start=START,
+                end=END,
+            ),
+        )
+        disabled = await control.disable_symbol(alias)
+
+        assert added.symbol == "1000PEPEUSDT"
+        assert fetched.symbol == "1000PEPEUSDT"
+        assert disabled.symbol == "1000PEPEUSDT"
+        assert [job.symbol for job in jobs] == ["1000PEPEUSDT"]
+        assert set(repository.symbols) == {"1000PEPEUSDT"}
+        assert all(
+            "/1000PEPEUSDT/" in item.source_url
+            for item in repository.planned.values()
+        )
+
+    asyncio.run(scenario())
+
+
 def test_ui_inclusive_days_map_to_a_complete_utc_day_archive_plan() -> None:
     async def scenario() -> None:
         repository = configured_repository()

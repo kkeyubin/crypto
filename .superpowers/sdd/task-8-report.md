@@ -19,20 +19,39 @@ The resulting controls are:
 - CI Alembic-head/import checks, server-profile Compose validation, real migration invocation, image builds, and `always()` cleanup;
 - documented bounded onboarding, official `.CHECKSUM` verification, `source_pending`, source replacement, disconnect gaps, metadata degradation, restart/idempotency, backup/restore/rollback, SSH tunnel, and exposure checks.
 
+## Independent review remediation
+
+The post-implementation review found that the original acceptance examples assumed a nonexistent daily `fundingRate` archive and used `PEPEUSDT`, which is not the Binance USDⓈ-M venue contract. Direct official `.CHECKSUM` probes on 2026-07-22 established the replacement evidence:
+
+- BTCUSDT June 2026 monthly kline, mark-price kline, and funding objects were published;
+- BTCUSDT `2026-06-14` daily aggTrades was published;
+- 1000PEPEUSDT May and June 2026 monthly kline, mark-price kline, and funding objects were published;
+- the tested daily funding object and PEPEUSDT objects returned 404.
+
+The implementation now plans funding from complete monthly archives only and rejects a partial-month funding request before creating any job/source object. Multi-type backfills preplan every dataset before mutation. Initial onboarding and the Chinese/English UI require complete UTC calendar months because funding is always included. `PEPE` and `PEPEUSDT` input aliases are stored/returned as canonical `1000PEPEUSDT`, and the Web backfill uses the API-returned canonical identity. A compatibility lookup keeps pre-alias persisted records readable.
+
+The runbooks now require live `.CHECKSUM` preflight for every candidate before any POST, parameterize checkout/environment/data paths, and separate a fresh installation from an existing smoke upgrade. The upgrade gate stops mutators, preserves the existing mode-`0600` `runtime.env` and `POSTGRES_PASSWORD`, dumps PostgreSQL, archives the data root, records sanitized volume/config/source identity, verifies all artifacts and checksums, and creates `VERIFIED` only after validation. Phase 1 recovery now covers data, gaps, audit evidence, and eligibility only; it makes no later-phase operational claims.
+
 ## Local verification
 
 Executed on 2026-07-22 in `/Users/kyle/Documents/crypto/.worktrees/phase-1-binance-data`:
 
 - focused Task 8 repository/config/entrypoint/healthcheck tests — passed;
-- `cd services/api && .venv/bin/pytest -q` — `597 passed, 1 skipped` after final entrypoint pairing hardening;
+- `cd services/api && .venv/bin/pytest -q` — `607 passed, 1 skipped` after independent-review remediation;
 - `.venv/bin/ruff check src tests migrations ../../deploy/api-entrypoint.py ../../deploy/market-worker-healthcheck.py` — passed after the final hardening;
 - `.venv/bin/python scripts/export_schemas.py --check` — passed;
 - `source /Users/kyle/.nvm/nvm.sh && nvm use` — Node `v24.15.0`, npm `11.12.1`;
 - `npm ci` — passed, 180 packages audited, 0 vulnerabilities;
 - contract generation/check/type drift gates — passed;
-- `npm run web:test -- --run` — 4 files, 59 tests passed;
+- `npm run web:test -- --run` — 4 files, 60 tests passed;
 - `npm run web:build` — passed, 56 modules transformed;
 - `git diff --check` — passed.
+
+Review-remediation focused verification:
+
+- archive/control behavior — 28 tests passed;
+- SymbolsPage/App canonicalization and complete-month behavior — 43 tests passed;
+- operations/recovery documentation policy — 8 tests passed.
 
 Not executed locally:
 
@@ -46,4 +65,4 @@ At `2026-07-22T02:03+08:00`, the existing `/home/keyubin/crypto-research-phase0-
 
 ## Pending completion gates
 
-After independent review, run Compose config and both image builds in a Docker-capable environment. Then back up the Phase 0 state and run the bounded BTCUSDT/PEPEUSDT server acceptance: archive checksums/rows/manifests, one BTC aggTrades day, all four live types, recorded direct failure plus proxy source mode, `metadata_unverified`, restart idempotency, UI tunnel, and loopback-only listeners. Only then update the implementation plan/roadmap and use `docs: complete Phase 1 data foundation`.
+Run Compose config and both image builds in a Docker-capable environment. Then complete the verified backup gate and run bounded BTCUSDT/1000PEPEUSDT server acceptance with the preflighted complete-month objects: archive checksums/rows/manifests, one BTC aggTrades day, all four live types, recorded direct failure plus proxy source mode, `metadata_unverified`, restart idempotency, UI tunnel, and loopback-only listeners. Only then update the implementation plan/roadmap and use `docs: complete Phase 1 data foundation`.

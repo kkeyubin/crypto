@@ -1,151 +1,150 @@
 # Binance Data Operations Runbook
 
-This runbook operates Phase 1 public Binance USDⓈ-M data only. It must not be used for account endpoints, API keys, orders, backtests, simulated trading, or notifications. All request ranges are explicit UTC half-open intervals `[start, end)`, contain only closed days, and are capped at 366 days.
+This runbook operates Phase 1 public Binance USDⓈ-M data only. It does not authorize account endpoints, credentials, orders, backtests, simulated trading, notifications, or AI decisions. All history ranges are UTC half-open intervals `[start, end)`, contain only closed days, and are capped at 366 days. Funding archives are monthly-only, so onboarding history must contain one or more complete UTC calendar months.
 
-## Pre-change Inventory and Baseline
+## Select the Exact Installation
 
-Before changing an existing installation, record container names/status/restart policy, loopback bindings, network/volume names, bind mounts, data size, database size, migration revision, filesystem capacity, checkout identity, and only the **names** of runtime variables. Do not print `runtime.env` values or container environments.
+Never mix a checkout, environment file, or data root from different installations. For the existing Phase 0 smoke stack use:
 
-The read-only baseline captured on `2026-07-22T02:03+08:00` for `/home/keyubin/crypto-research-phase0-smoke` was:
+```bash
+export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase0-smoke
+export CRYPTO_ENV_FILE="$CRYPTO_CHECKOUT/runtime.env"
+export CRYPTO_DATA_ROOT="$CRYPTO_CHECKOUT/data"
+export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
+```
 
-- `crypto-research-postgres-1`, `crypto-research-api-1`, and `crypto-research-web-1` healthy with `restart=unless-stopped`;
-- Web bound only to `127.0.0.1:8088`; API and PostgreSQL had no host port;
-- network `crypto-research_default`, volume `crypto-research_postgres-data`;
-- API bind `/home/keyubin/crypto-research-phase0-smoke/data` → `/srv/crypto-research/data`; data size `4.0K`;
-- `runtime.env` mode `0600` with keys `POSTGRES_PASSWORD`, `CRYPTO_SESSION_SECRET`, and `CRYPTO_DATA_ROOT` only;
-- database size `7518kB`, no `alembic_version` table, `688G` filesystem free;
-- copied source identified in README as `0226feba8bbefec207c7eee5b40c93c68a22e922`, without a `.git` directory.
+For a fresh formal installation use:
 
-This baseline is evidence, not a backup. Keep the Phase 0 stack unchanged until the Phase 1 image/configuration passes review. Then follow the consistent backup order in [Market Data Recovery](market-data-recovery.md).
+```bash
+export CRYPTO_CHECKOUT=/srv/crypto-research/repo
+export CRYPTO_ENV_FILE=/srv/crypto-research/config/runtime.env
+export CRYPTO_DATA_ROOT=/srv/crypto-research/data
+export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"
+```
+
+Confirm the selection before every change:
+
+```bash
+test -d "$CRYPTO_CHECKOUT"
+test -f "$CRYPTO_ENV_FILE"
+test -d "$CRYPTO_DATA_ROOT"
+test -f "$CRYPTO_COMPOSE_FILE"
+test "$(stat -c %a "$CRYPTO_ENV_FILE")" = 600
+docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" config --quiet
+```
+
+The read-only inventory captured on `2026-07-22T02:03+08:00` for the smoke stack found healthy PostgreSQL/API/Web containers, only `127.0.0.1:8088` exposed, volume `crypto-research_postgres-data`, `runtime.env` mode `0600`, a `7518kB` database, and source identity `0226feba8bbefec207c7eee5b40c93c68a22e922`. This evidence is not a backup. Before replacing or upgrading that stack, complete the `VERIFIED` backup gate in [Market Data Recovery](market-data-recovery.md).
 
 ## Validate and Start Phase 1
 
 ```bash
-cd /srv/crypto-research/repo
-docker compose --env-file /srv/crypto-research/config/runtime.env \
-  -f deploy/compose.yaml --profile server config --quiet
-docker compose --env-file /srv/crypto-research/config/runtime.env \
-  -f deploy/compose.yaml --profile server up -d --build
-docker compose --env-file /srv/crypto-research/config/runtime.env \
-  -f deploy/compose.yaml --profile server ps
+cd "$CRYPTO_CHECKOUT"
+docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
+  --profile server config --quiet
+docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
+  --profile server up -d --build
+docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
+  --profile server ps
 curl --fail http://127.0.0.1:8088/api/health/ready
 curl --fail http://127.0.0.1:8088/api/operations/market-data
 ```
 
-The API container owns `alembic upgrade head`; `market-worker` waits for healthy PostgreSQL/API and never races migrations. Its host-network database address is validated as `127.0.0.1:55432`. The only UI listener is `127.0.0.1:8088`. The scoped proxy is `CRYPTO_HTTP_PROXY_URL=http://127.0.0.1:17891` with `CRYPTO_PROXY_MODE=auto`; direct access is attempted first. Do not add generic `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` variables.
+The API owns `alembic upgrade head`; `market-worker` waits for healthy PostgreSQL/API. PostgreSQL is bound only to `127.0.0.1:55432`, Web only to `127.0.0.1:8088`, and API has no host port. The worker tries direct access before the scoped `http://127.0.0.1:17891` proxy. Do not add generic proxy variables.
+
+## Preflight Official Acceptance Objects
+
+An acceptance date is usable only when its ZIP and official sibling `.CHECKSUM` are published. Probe every required object before mutating symbol or job state:
+
+```bash
+preflight_archive_checksum() {
+  source_url=$1
+  archive_name=${source_url##*/}
+  checksum_line=$(curl --fail --silent --show-error "${source_url}.CHECKSUM") || return 1
+  checksum=$(printf '%s\n' "$checksum_line" | awk 'NR==1 {print tolower($1)}')
+  listed_name=$(printf '%s\n' "$checksum_line" | awk 'NR==1 {print $2}' | sed 's/^\*//')
+  printf '%s' "$checksum" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  test "$listed_name" = "$archive_name" || return 1
+  printf 'published %s %s\n' "$checksum" "$source_url"
+}
+
+archive_root=https://data.binance.vision/data/futures/um
+preflight_archive_checksum "$archive_root/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2026-06.zip"
+preflight_archive_checksum "$archive_root/monthly/markPriceKlines/BTCUSDT/1m/BTCUSDT-1m-2026-06.zip"
+preflight_archive_checksum "$archive_root/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-06.zip"
+preflight_archive_checksum "$archive_root/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-06-14.zip"
+preflight_archive_checksum "$archive_root/monthly/klines/1000PEPEUSDT/1m/1000PEPEUSDT-1m-2026-05.zip"
+preflight_archive_checksum "$archive_root/monthly/markPriceKlines/1000PEPEUSDT/1m/1000PEPEUSDT-1m-2026-05.zip"
+preflight_archive_checksum "$archive_root/monthly/fundingRate/1000PEPEUSDT/1000PEPEUSDT-fundingRate-2026-05.zip"
+```
+
+These candidates were observed published on 2026-07-22, but the live probes remain mandatory. Daily `fundingRate` archives do not exist. `PEPEUSDT` is not the Binance USDⓈ-M venue symbol; user inputs `PEPE` and `PEPEUSDT` canonicalize to `1000PEPEUSDT`.
+
+**Do not POST any symbol or backfill request unless every probe succeeds.**
 
 ## Add Symbols and Request Bounded History
 
-The following acceptance ranges are deliberately small, different, and fully closed. BTC opts into one aggregate-trade download; PEPE does not.
+Use the canonical venue symbol in operational scripts. BTC uses the complete June month for core data and one separate closed aggregate-trade day; 1000PEPE uses the complete May month without aggregate trades.
 
 ```bash
 curl --fail-with-body -H 'Content-Type: application/json' \
-  -d '{"symbol":"BTCUSDT","history_start":"2026-07-18T00:00:00Z","history_end":"2026-07-20T00:00:00Z","include_agg_trades":true}' \
+  -d '{"symbol":"BTCUSDT","history_start":"2026-06-01T00:00:00Z","history_end":"2026-07-01T00:00:00Z","include_agg_trades":true}' \
   http://127.0.0.1:8088/api/symbols
 curl --fail-with-body -H 'Content-Type: application/json' \
-  -d '{"symbol":"PEPEUSDT","history_start":"2026-07-19T00:00:00Z","history_end":"2026-07-20T00:00:00Z","include_agg_trades":false}' \
+  -d '{"symbol":"1000PEPEUSDT","history_start":"2026-05-01T00:00:00Z","history_end":"2026-06-01T00:00:00Z","include_agg_trades":false}' \
   http://127.0.0.1:8088/api/symbols
 
 curl --fail-with-body -H 'Content-Type: application/json' \
-  -d '{"symbol":"BTCUSDT","data_types":["kline_1m","mark_price","funding"],"start":"2026-07-18T00:00:00Z","end":"2026-07-20T00:00:00Z","include_agg_trades":false}' \
+  -d '{"symbol":"BTCUSDT","data_types":["kline_1m","mark_price","funding"],"start":"2026-06-01T00:00:00Z","end":"2026-07-01T00:00:00Z","include_agg_trades":false}' \
   http://127.0.0.1:8088/api/symbols/BTCUSDT/backfills
 curl --fail-with-body -H 'Content-Type: application/json' \
-  -d '{"symbol":"BTCUSDT","data_types":["agg_trade"],"start":"2026-07-19T00:00:00Z","end":"2026-07-20T00:00:00Z","include_agg_trades":true}' \
+  -d '{"symbol":"BTCUSDT","data_types":["agg_trade"],"start":"2026-06-14T00:00:00Z","end":"2026-06-15T00:00:00Z","include_agg_trades":true}' \
   http://127.0.0.1:8088/api/symbols/BTCUSDT/backfills
 curl --fail-with-body -H 'Content-Type: application/json' \
-  -d '{"symbol":"PEPEUSDT","data_types":["kline_1m","mark_price","funding"],"start":"2026-07-19T00:00:00Z","end":"2026-07-20T00:00:00Z","include_agg_trades":false}' \
-  http://127.0.0.1:8088/api/symbols/PEPEUSDT/backfills
+  -d '{"symbol":"1000PEPEUSDT","data_types":["kline_1m","mark_price","funding"],"start":"2026-05-01T00:00:00Z","end":"2026-06-01T00:00:00Z","include_agg_trades":false}' \
+  http://127.0.0.1:8088/api/symbols/1000PEPEUSDT/backfills
 ```
 
-Save returned job IDs and poll `GET /api/backfills/{job_id}`. Inspect each symbol independently:
+Save every job ID and poll `GET /api/backfills/{job_id}`. Inspect partitions, gaps, profile, eligibility, and streams under each symbol independently. Never infer 1000PEPE parameters from BTC.
+
+## Verify Downloaded Archive Checksums
+
+Every approved archive must match both the durable source checksum and the official checksum:
 
 ```bash
-curl --fail 'http://127.0.0.1:8088/api/symbols/BTCUSDT/partitions?limit=100&offset=0'
-curl --fail 'http://127.0.0.1:8088/api/symbols/PEPEUSDT/partitions?limit=100&offset=0'
-curl --fail 'http://127.0.0.1:8088/api/symbols/BTCUSDT/gaps?limit=100&offset=0'
-curl --fail 'http://127.0.0.1:8088/api/symbols/PEPEUSDT/gaps?limit=100&offset=0'
-curl --fail http://127.0.0.1:8088/api/symbols/BTCUSDT/profile
-curl --fail http://127.0.0.1:8088/api/symbols/PEPEUSDT/profile
-curl --fail http://127.0.0.1:8088/api/symbols/BTCUSDT/eligibility
-curl --fail http://127.0.0.1:8088/api/symbols/PEPEUSDT/eligibility
-```
-
-Do not infer PEPE parameters from BTC. Record exact row ranges, sample counts, coverage, manifest IDs, partition IDs, and reason codes per symbol.
-
-## Verify Official Archive Checksums
-
-Every archive is trusted only after the downloaded ZIP SHA-256 matches its official sibling `.CHECKSUM`. The worker persists the source checksum and normalized checksum separately. For acceptance, query approved object evidence and independently compare all three values on the server:
-
-```bash
-cd /srv/crypto-research/repo
+cd "$CRYPTO_CHECKOUT"
 while IFS='|' read -r source_url source_checksum raw_path; do
   official_checksum=$(curl --fail --silent --show-error "${source_url}.CHECKSUM" | awk 'NR==1 {print tolower($1)}')
-  stored_checksum=$(sha256sum "/srv/crypto-research/data/${raw_path}" | awk '{print $1}')
+  stored_checksum=$(sha256sum "$CRYPTO_DATA_ROOT/$raw_path" | awk '{print $1}')
   test "$official_checksum" = "$source_checksum"
   test "$stored_checksum" = "$source_checksum"
   printf '%s %s\n' "$source_checksum" "$source_url"
-done < <(docker compose --env-file /srv/crypto-research/config/runtime.env \
-  -f deploy/compose.yaml --profile server exec -T postgres \
-  psql -U crypto -d crypto_research -At -F '|' -c \
+done < <(docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
+  --profile server exec -T postgres psql -U crypto -d crypto_research -At -F '|' -c \
   "SELECT source_url, source_checksum, raw_path FROM backfill_objects WHERE state='catalog_approved' ORDER BY source_url")
 ```
 
-Never publish a checksum mismatch. Retain the conflicting bytes in quarantine and record the URL, official checksum, actual checksum, UTC observation time, and affected job without secrets.
+Never publish a mismatch. Quarantine conflicting bytes and record only sanitized URL, checksums, UTC time, and job identity.
 
-## Pending Days, Recheck, and Source Replacement
+## Pending Sources, Replacements, and Gaps
 
-An archive 404 for either of the two most recently closed UTC days is `source_pending`; it is not a valid empty partition. An older 404 fails and opens a gap. Recheck the exact official URL and sibling `.CHECKSUM` after Binance publishes it. Phase 1 has no public mutation that force-promotes a pending/failed object, so do not reset state with ad hoc SQL. If it remains pending after the source appears, keep eligibility fail-closed and use a reviewed maintenance change that preserves the audit trail.
+A recent archive 404 is `source_pending`, not an empty partition. An older 404 fails and opens a gap. Recheck the exact official URL and `.CHECKSUM`; do not reset durable state with ad hoc SQL. A source replacement at the same URL requires new immutable raw data, Parquet, manifest, and partition versions. Never overwrite prior evidence.
 
-For periodic archive recheck, compare the current official `.CHECKSUM` with `data_manifests.source_checksum`. A source replacement (same official URL, new checksum) must produce a new immutable raw object, Parquet path, manifest, and partition version. Never overwrite the prior files or edit the old checksum. If no reviewed re-ingestion path is available, open an incident and leave the old version active/degraded rather than silently substituting bytes.
+After reconnect or restart, inspect `/api/operations/market-data`, per-symbol streams, and gaps. A disconnect gap is repaired only by continuity or approved replacement evidence; new messages alone are insufficient. Keep eligibility false while a required stream is stale/degraded or a required gap remains open. `metadata_unverified` caused by unavailable Binance REST metadata is a separate fail-closed gate and must never be filled with invented values.
 
-## Disconnect Gap Triage
+## Restart, Exposure, and Acceptance Record
 
-After a reconnect or restart, inspect operations health, per-symbol streams, and gaps:
-
-```bash
-curl --fail http://127.0.0.1:8088/api/operations/market-data
-curl --fail 'http://127.0.0.1:8088/api/symbols/BTCUSDT/streams?limit=100&offset=0'
-curl --fail 'http://127.0.0.1:8088/api/symbols/BTCUSDT/gaps?limit=100&offset=0'
-```
-
-Classify each disconnect gap by symbol, stream, UTC start/end, last source ID, and reconnect reason. Repair archival datasets only with an exact bounded backfill request. Do not mark a live gap repaired merely because new messages resumed; continuity or approved replacement evidence is required. Keep affected eligibility blocked while any required stream is stale, degraded, or has an open gap.
-
-## Expected Metadata Degradation
-
-Binance REST can return HTTP 451 in the current server network. This must appear as REST/metadata degraded and `metadata_unverified`; it must not stop verified archives or fresh routed WebSockets. Never synthesize `exchangeInfo`, tick size, status, or contract metadata. Archive/live health and metadata health are separate gates.
-
-## Restart and Idempotency Check
-
-Before restart, record job/partition/manifest/live-partition counts. Restart API and worker, wait for health, then compare counts and identities; retries may add newly completed evidence but must not duplicate an existing immutable identity.
+Record job/partition/manifest/live-partition counts, restart API and worker, and verify identities are not duplicated:
 
 ```bash
-cd /srv/crypto-research/repo
-docker compose --env-file /srv/crypto-research/config/runtime.env \
-  -f deploy/compose.yaml --profile server restart api market-worker
-docker compose --env-file /srv/crypto-research/config/runtime.env \
-  -f deploy/compose.yaml --profile server ps
+docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
+  --profile server restart api market-worker
+docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
+  --profile server ps
 curl --retry 12 --retry-delay 5 --retry-connrefused --fail \
   http://127.0.0.1:8088/api/operations/market-data
-```
-
-The worker must recover its fixed `bucket=00..3f` SQLite spool and catalog all previously published batches exactly once. Follow [Market Data Recovery](market-data-recovery.md) for backup and rollback before any destructive recovery.
-
-## Access and Exposure Check
-
-From the server, verify no application or database socket listens on a non-loopback address:
-
-```bash
 ss -lntp | grep -E ':(8088|55432)\b'
 ```
 
-Expected listeners are exactly `127.0.0.1:8088` and `127.0.0.1:55432`. API and worker expose no host port. From the Mac:
+Expected listeners are exactly `127.0.0.1:8088` and `127.0.0.1:55432`. From the Mac use `ssh -N -L 8088:127.0.0.1:8088 keyubin@192.168.1.4` and open `http://127.0.0.1:8088`.
 
-```bash
-ssh -N -L 8088:127.0.0.1:8088 keyubin@192.168.1.4
-```
-
-Open `http://127.0.0.1:8088`. Record a Chinese-console screenshot showing independent BTCUSDT/PEPEUSDT state, source mode, freshness, gaps, profile sample counts, and eligibility reasons.
-
-## Acceptance Record
-
-Record sanitized UTC timestamps, application commit, job/manifest/partition IDs, source and normalized checksums, exact row ranges/counts, stream message types, direct-failure classification, active source mode, metadata reason codes, restart comparisons, and `ss` output. Do not record proxy traffic, secrets, chat IDs, or bulk market data. Phase 1 remains in progress until every server acceptance item passes.
+Record sanitized UTC timestamps, application commit, job/manifest/partition IDs, checksums, row ranges/counts, source mode, gaps, eligibility reasons, restart comparison, and listener output. Do not record secrets, proxy traffic, chat IDs, or bulk market data. Phase 1 remains in progress until every server acceptance gate passes.

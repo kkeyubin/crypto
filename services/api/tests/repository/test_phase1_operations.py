@@ -139,3 +139,60 @@ def test_operations_docs_cover_phase1_recovery_and_keep_later_phases_closed() ->
     assert "server acceptance" in roadmap.lower()
     assert "Do not use Claude for this project." in agents
     assert "Phase 2" in agents
+
+
+def test_runbooks_parameterize_the_real_checkout_and_verify_private_backup_first() -> None:
+    operations = read_text("docs/runbooks/binance-data-operations.md")
+    recovery = read_text("docs/runbooks/market-data-recovery.md")
+
+    for document in (operations, recovery):
+        for variable in (
+            "CRYPTO_CHECKOUT",
+            "CRYPTO_ENV_FILE",
+            "CRYPTO_DATA_ROOT",
+        ):
+            assert variable in document
+
+    assert "CRYPTO_BACKUP_ROOT" in recovery
+    assert 'install -m 0600 "$CRYPTO_ENV_FILE"' in recovery
+    assert 'cmp --silent "$CRYPTO_ENV_FILE"' in recovery
+    assert "pg_restore --list" in recovery
+    assert 'tar -tf "$backup_root/data.tar"' in recovery
+    assert 'sha256sum --check "$backup_root/backup.sha256"' in recovery
+    assert 'touch "$backup_root/VERIFIED"' in recovery
+    assert "Do not start an upgrade unless `VERIFIED` exists" in recovery
+    assert '"$CRYPTO_DATA_ROOT/$raw_path"' in operations
+    assert '"/srv/crypto-research/data/${raw_path}"' not in operations
+
+
+def test_acceptance_candidates_require_all_official_checksums_before_posts() -> None:
+    operations = read_text("docs/runbooks/binance-data-operations.md")
+
+    assert "preflight_archive_checksum" in operations
+    assert "Do not POST any symbol or backfill request unless every probe succeeds" in operations
+    assert "1000PEPEUSDT" in operations
+    assert "2026-05-01T00:00:00Z" in operations
+    assert "2026-06-01T00:00:00Z" in operations
+    assert "2026-07-01T00:00:00Z" in operations
+    assert "2026-06-14T00:00:00Z" in operations
+    assert "2026-06-15T00:00:00Z" in operations
+    assert '"symbol":"PEPEUSDT"' not in operations
+    assert "2026-07-18T00:00:00Z" not in operations
+    assert "2026-07-19T00:00:00Z" not in operations
+
+
+def test_phase1_recovery_does_not_claim_future_trading_or_notification_actions() -> None:
+    recovery = read_text("docs/runbooks/market-data-recovery.md")
+
+    for forbidden in (
+        "strategy entries",
+        "paper positions",
+        "resume entries",
+        "Paper-ledger",
+        "paper entries",
+        "Feishu",
+    ):
+        assert forbidden not in recovery
+    assert "eligibility" in recovery
+    assert "audit" in recovery.lower()
+    assert "gap" in recovery.lower()

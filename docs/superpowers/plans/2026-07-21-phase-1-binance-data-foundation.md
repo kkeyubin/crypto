@@ -17,7 +17,7 @@
 - Require an explicit UTC `historyStart` and `historyEnd`; cap one API request at 366 closed days and require separate jobs for larger ranges.
 - Treat archive 404 as `source_pending` only for the two most recently closed UTC days; older missing objects fail the job and create a gap.
 - Treat REST and metadata as optional, explicitly degraded capabilities in the current network. Never synthesize `exchangeInfo` filters.
-- Keep BTCUSDT and PEPEUSDT state, profile, gaps, and eligibility completely separate.
+- Keep BTCUSDT and canonical 1000PEPEUSDT state, profile, gaps, and eligibility completely separate; accept PEPE/PEPEUSDT only as input aliases.
 - Do not implement backtests, strategies, paper orders, signal notifications, Hermes calls, or AI in this plan.
 - Each task ends with its focused tests, relevant regression tests, lint, a requirements review, and a quality review before commit.
 
@@ -401,8 +401,8 @@ git diff --check
 Deploy to the existing loopback-only smoke location on `keyubin@192.168.1.4`. Preserve its current runtime configuration and data before changing it. Then:
 
 1. migrate PostgreSQL and start API/Web/market worker;
-2. add BTCUSDT and PEPEUSDT with two explicit, small closed UTC ranges;
-3. backfill kline, mark-price kline, funding, and one opt-in aggTrades day;
+2. preflight every official `.CHECKSUM`, then add BTCUSDT and 1000PEPEUSDT with separate complete UTC month ranges;
+3. backfill kline, mark-price kline, monthly-only funding, and one separately bounded opt-in aggTrades day;
 4. compare downloaded ZIP SHA-256 values with official `.CHECKSUM` files;
 5. verify approved Parquet manifests, exact row ranges, no hidden gaps, and independent profiles;
 6. observe at least one live message of each required type and confirm source mode reports proxy after a recorded direct failure;
@@ -425,7 +425,7 @@ Before merge, invoke `superpowers:requesting-code-review` over the complete Phas
 - every focused and full test passes;
 - generated schemas/types have no drift;
 - container configuration and builds pass;
-- server archive and routed WebSocket acceptance passes for BTCUSDT and PEPEUSDT;
+- server archive and routed WebSocket acceptance passes for BTCUSDT and 1000PEPEUSDT;
 - restart recovery and loopback-only exposure pass;
 - REST/metadata degradation is visible and fail-closed;
 - no Phase 2+ behavior, credentials, source books, or market data are committed.

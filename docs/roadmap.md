@@ -17,12 +17,12 @@ This file preserves both committed and deferred work. A deferred item is not per
 
 - Dynamic USDⓈ-M symbol watchlist.
 - Independent symbol onboarding, empirical volatility/liquidity/cost profile, and eligibility state.
-- Historical 1m klines, mark price, funding, and selected aggTrades.
+- Historical 1m klines, mark price, monthly-only funding, and selected aggTrades; onboarding uses complete UTC calendar months.
 - Live WebSocket klines, aggTrades, and best bid/ask.
 - Parquet partitioning, checksums, data catalog, gap detection, and REST repair.
 - Liquidity eligibility and stale-data gate.
 
-Remaining server acceptance gate: verify bounded BTCUSDT/PEPEUSDT archive checksums and required live stream types, restart idempotency, explicit metadata degradation, and no non-loopback listener. Phase 1 stays in progress until the sanitized acceptance record passes and is committed.
+Remaining server acceptance gate: verify bounded BTCUSDT/1000PEPEUSDT archive checksums and required live stream types, restart idempotency, explicit metadata degradation, and no non-loopback listener. Acceptance uses published complete-month funding objects; `PEPE`/`PEPEUSDT` must resolve to canonical `1000PEPEUSDT`. Phase 1 stays in progress until the sanitized acceptance record passes and is committed.
 
 ## Phase 2 — Research and Backtesting
 

@@ -212,7 +212,8 @@ class MarketDataControlService:
 
     async def add_symbol(self, request: AddSymbolRequest) -> SymbolView:
         self._validate_history_range(request.history_start, request.history_end)
-        existing = await self._repository.get_symbol(request.symbol)
+        symbol = _canonical_symbol(request.symbol)
+        existing = await self._find_symbol(request.symbol)
         if existing is not None:
             identity = (
                 existing.history_start,
@@ -227,12 +228,24 @@ class MarketDataControlService:
             if identity != requested:
                 raise MarketDataConflict("symbol configuration conflicts with existing history")
             if not existing.enabled:
-                existing = await self._repository.set_symbol_enabled(request.symbol, True)
+                existing = await self._repository.set_symbol_enabled(existing.symbol, True)
             return await self._symbol_view(existing)
+        try:
+            plan_archives(
+                DatasetKind.FUNDING_RATE,
+                symbol,
+                request.history_start,
+                request.history_end,
+                as_of=self._clock(),
+            )
+        except ValueError as error:
+            raise MarketDataValidationError(
+                "initial history must contain complete UTC calendar months"
+            ) from error
         try:
             created = await self._repository.add_symbol(
                 AddSymbolCommand(
-                    request.symbol,
+                    symbol,
                     request.history_start,
                     request.history_end,
                     request.include_agg_trades,
@@ -247,15 +260,17 @@ class MarketDataControlService:
         return await self._symbol_view(state)
 
     async def disable_symbol(self, symbol: str) -> SymbolView:
-        await self._required_symbol(symbol)
-        disabled = await self._repository.set_symbol_enabled(symbol, False)
+        configured = await self._required_symbol(symbol)
+        disabled = await self._repository.set_symbol_enabled(
+            configured.symbol, False
+        )
         return await self._symbol_view(disabled)
 
     async def create_backfills(
         self, symbol: str, request: BackfillRequest
     ) -> tuple[IngestionJobView, ...]:
-        symbol = _normalized_symbol(symbol)
-        if symbol != request.symbol:
+        symbol = _canonical_symbol(symbol)
+        if symbol != _canonical_symbol(request.symbol):
             raise MarketDataConflict("path symbol conflicts with request symbol")
         configured = await self._required_symbol(symbol)
         if not configured.enabled:
@@ -270,8 +285,27 @@ class MarketDataControlService:
             raise MarketDataConflict(
                 "aggregate-trade history requires symbol-level explicit opt-in"
             )
+        data_types = sorted(set(request.data_types), key=lambda item: item.value)
+        archive_plans = {}
+        for data_type in data_types:
+            try:
+                archive_plans[data_type] = plan_archives(
+                    _ARCHIVE_DATASET[data_type],
+                    symbol,
+                    request.start,
+                    request.end,
+                    as_of=self._clock(),
+                )
+            except ValueError as error:
+                message = (
+                    "funding-rate backfills require complete UTC calendar months"
+                    if data_type is DataType.FUNDING
+                    else "backfill range must contain complete closed UTC days"
+                )
+                raise MarketDataValidationError(message) from error
+
         jobs: list[IngestionJobView] = []
-        for data_type in sorted(set(request.data_types), key=lambda item: item.value):
+        for data_type in data_types:
             identity = "|".join(
                 (
                     symbol,
@@ -299,21 +333,12 @@ class MarketDataControlService:
                         requested_end=request.end,
                     )
                 )
-                archives = plan_archives(
-                    _ARCHIVE_DATASET[data_type],
-                    symbol,
-                    request.start,
-                    request.end,
-                    as_of=self._clock(),
-                )
             except MutationIdentityConflict as error:
                 raise MarketDataConflict(str(error)) from error
-            except ValueError as error:
-                raise MarketDataValidationError(
-                    "backfill range must contain complete closed UTC days"
-                ) from error
             try:
-                await ArchiveBackfillPlanner(self._repository).plan(stored.id, archives)
+                await ArchiveBackfillPlanner(self._repository).plan(
+                    stored.id, archive_plans[data_type]
+                )
             except MutationIdentityConflict as error:
                 raise MarketDataConflict(str(error)) from error
             jobs.append(_job_view(stored, fallback_now=self._clock()))
@@ -445,10 +470,18 @@ class MarketDataControlService:
         )
 
     async def _required_symbol(self, symbol: str) -> SymbolState:
-        normalized = _normalized_symbol(symbol)
-        state = await self._repository.get_symbol(normalized)
+        state = await self._find_symbol(symbol)
         if state is None:
             raise MarketDataNotFound("symbol is not configured")
+        return state
+
+    async def _find_symbol(self, symbol: str) -> SymbolState | None:
+        """Resolve canonical state while keeping pre-alias records readable."""
+        normalized = _normalized_symbol(symbol)
+        canonical = _SYMBOL_ALIASES.get(normalized, normalized)
+        state = await self._repository.get_symbol(canonical)
+        if state is None and canonical != normalized:
+            state = await self._repository.get_symbol(normalized)
         return state
 
     async def _symbol_view(
@@ -728,6 +761,17 @@ def _normalized_symbol(symbol: str) -> str:
     if _SYMBOL.fullmatch(normalized) is None:
         raise MarketDataValidationError("symbol has invalid syntax")
     return normalized
+
+
+_SYMBOL_ALIASES = {
+    "PEPE": "1000PEPEUSDT",
+    "PEPEUSDT": "1000PEPEUSDT",
+}
+
+
+def _canonical_symbol(symbol: str) -> str:
+    normalized = _normalized_symbol(symbol)
+    return _SYMBOL_ALIASES.get(normalized, normalized)
 
 
 def _required_time(value: datetime | None, field_name: str) -> datetime:
