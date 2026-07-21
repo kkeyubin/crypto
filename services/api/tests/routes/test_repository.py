@@ -327,7 +327,7 @@ def test_symbol_summary_trusts_only_fresh_validated_official_matching_metadata()
                 payload={
                     "symbols": [
                         {
-                            "symbol": "PEPEUSDT",
+                            "symbol": "1000PEPEUSDT",
                             "contractType": "PERPETUAL",
                             "status": "TRADING",
                         }

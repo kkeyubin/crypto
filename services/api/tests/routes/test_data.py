@@ -22,7 +22,7 @@ def test_backfill_creation_is_typed_sorted_and_path_symbol_mismatch_is_409(
         "/api/symbols/BTCUSDT/backfills", json=backfill_payload()
     )
     conflict = client.post(
-        "/api/symbols/BTCUSDT/backfills", json=backfill_payload("PEPEUSDT")
+        "/api/symbols/BTCUSDT/backfills", json=backfill_payload("1000PEPEUSDT")
     )
 
     assert response.status_code == 200
@@ -86,19 +86,19 @@ def test_partitions_gaps_profile_eligibility_and_streams_are_symbol_scoped(
     client: TestClient,
 ) -> None:
     btc_partitions = client.get("/api/symbols/BTCUSDT/partitions")
-    pepe_partitions = client.get("/api/symbols/PEPEUSDT/partitions")
+    pepe_partitions = client.get("/api/symbols/1000PEPEUSDT/partitions")
     btc_gaps = client.get("/api/symbols/BTCUSDT/gaps")
-    pepe_gaps = client.get("/api/symbols/PEPEUSDT/gaps")
+    pepe_gaps = client.get("/api/symbols/1000PEPEUSDT/gaps")
     btc_profile = client.get("/api/symbols/BTCUSDT/profile")
-    pepe_profile = client.get("/api/symbols/PEPEUSDT/profile")
+    pepe_profile = client.get("/api/symbols/1000PEPEUSDT/profile")
     btc_eligibility = client.get("/api/symbols/BTCUSDT/eligibility")
-    pepe_eligibility = client.get("/api/symbols/PEPEUSDT/eligibility")
+    pepe_eligibility = client.get("/api/symbols/1000PEPEUSDT/eligibility")
     streams = client.get("/api/symbols/BTCUSDT/streams")
 
     assert [item["symbol"] for item in btc_partitions.json()] == ["BTCUSDT"]
     assert pepe_partitions.json() == []
     assert btc_gaps.json() == []
-    assert [item["symbol"] for item in pepe_gaps.json()] == ["PEPEUSDT"]
+    assert [item["symbol"] for item in pepe_gaps.json()] == ["1000PEPEUSDT"]
     assert btc_profile.json()["realized_volatility"] != pepe_profile.json()[
         "realized_volatility"
     ]

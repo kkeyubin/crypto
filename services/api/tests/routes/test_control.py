@@ -211,7 +211,9 @@ def configured_repository() -> Repository:
     repository = Repository()
     repository.symbols = {
         "BTCUSDT": SymbolState("BTCUSDT", True, START, END, False, NOW, NOW),
-        "PEPEUSDT": SymbolState("PEPEUSDT", True, START, END, False, NOW, NOW),
+        "1000PEPEUSDT": SymbolState(
+            "1000PEPEUSDT", True, START, END, False, NOW, NOW
+        ),
     }
     repository.summaries = {
         "BTCUSDT": SymbolOperationalSummary(
@@ -220,7 +222,7 @@ def configured_repository() -> Repository:
             open_gap_count=0,
             job_statuses=("succeeded",),
         ),
-        "PEPEUSDT": SymbolOperationalSummary(
+        "1000PEPEUSDT": SymbolOperationalSummary(
             approved_data_types=("kline_1m",),
             metadata_verified=False,
             open_gap_count=1,
@@ -288,7 +290,7 @@ def test_symbol_list_uses_one_bulk_summary_projection_without_n_plus_one() -> No
 
         values = await service(repository).list_symbols(limit=50, offset=0)
 
-        assert [item.symbol for item in values] == ["BTCUSDT", "PEPEUSDT"]
+        assert [item.symbol for item in values] == ["1000PEPEUSDT", "BTCUSDT"]
         assert repository.bulk_summary_calls == 1
         assert repository.summary_calls == 0
 
@@ -406,10 +408,14 @@ def test_add_symbol_rejects_partial_month_before_persisting_configuration() -> N
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("alias", ["PEPE", "PEPEUSDT"])
-def test_pepe_alias_is_canonicalized_to_the_actual_usdm_contract(alias: str) -> None:
+@pytest.mark.parametrize("alias", ["PEPE", "PEPEUSDT", "1000PEPEUSDT"])
+def test_every_pepe_alias_operates_on_existing_canonical_state(alias: str) -> None:
     async def scenario() -> None:
         repository = Repository()
+        repository.symbols["1000PEPEUSDT"] = SymbolState(
+            "1000PEPEUSDT", False, START, END, False, NOW, NOW
+        )
+        repository.summaries["1000PEPEUSDT"] = SymbolOperationalSummary()
         control = service(repository)
         request = AddSymbolRequest(
             symbol=alias,
@@ -429,16 +435,57 @@ def test_pepe_alias_is_canonicalized_to_the_actual_usdm_contract(alias: str) -> 
             ),
         )
         disabled = await control.disable_symbol(alias)
+        reenabled = await control.add_symbol(request)
 
         assert added.symbol == "1000PEPEUSDT"
         assert fetched.symbol == "1000PEPEUSDT"
         assert disabled.symbol == "1000PEPEUSDT"
+        assert reenabled.symbol == "1000PEPEUSDT"
+        assert reenabled.enabled is True
         assert [job.symbol for job in jobs] == ["1000PEPEUSDT"]
         assert set(repository.symbols) == {"1000PEPEUSDT"}
         assert all(
             "/1000PEPEUSDT/" in item.source_url
             for item in repository.planned.values()
         )
+        assert repository.audit_actions == [
+            "symbol_enabled",
+            "backfill_created",
+            "symbol_disabled",
+            "symbol_enabled",
+        ]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("alias", ["PEPE", "PEPEUSDT", "1000PEPEUSDT"])
+def test_every_pepe_alias_creates_only_canonical_state(alias: str) -> None:
+    async def scenario() -> None:
+        repository = Repository()
+
+        added = await service(repository).add_symbol(
+            AddSymbolRequest(
+                symbol=alias,
+                history_start=START,
+                history_end=END,
+            )
+        )
+
+        assert added.symbol == "1000PEPEUSDT"
+        assert set(repository.symbols) == {"1000PEPEUSDT"}
+
+    asyncio.run(scenario())
+
+
+def test_alias_lookup_never_uses_a_noncanonical_intermediate_row() -> None:
+    async def scenario() -> None:
+        repository = Repository()
+        repository.symbols["PEPEUSDT"] = SymbolState(
+            "PEPEUSDT", True, START, END, False, NOW, NOW
+        )
+
+        with pytest.raises(MarketDataNotFound):
+            await service(repository).get_symbol("PEPEUSDT")
 
     asyncio.run(scenario())
 
@@ -490,7 +537,7 @@ def test_service_keeps_profile_and_eligibility_evidence_symbol_specific() -> Non
         assert "unrepaired_gap" not in btc.reason_codes
         assert "unrepaired_gap" in pepe.reason_codes
         assert btc.symbol == "BTCUSDT"
-        assert pepe.symbol == "PEPEUSDT"
+        assert pepe.symbol == "1000PEPEUSDT"
 
     asyncio.run(scenario())
 
@@ -588,13 +635,13 @@ def test_service_health_uses_persisted_worker_and_redacted_stream_details() -> N
             )
             for stream in streams_for_symbols(("BTCUSDT",))
         )
-        repository.symbols["PEPEUSDT"] = replace(
-            repository.symbols["PEPEUSDT"], enabled=False
+        repository.symbols["1000PEPEUSDT"] = replace(
+            repository.symbols["1000PEPEUSDT"], enabled=False
         )
-        repository.streams["PEPEUSDT"] = (
+        repository.streams["1000PEPEUSDT"] = (
             StreamState(
-                "PEPEUSDT",
-                "pepeusdt@kline_1m",
+                "1000PEPEUSDT",
+                "1000pepeusdt@kline_1m",
                 NOW - timedelta(minutes=10),
                 "disconnected",
                 {"source_mode": "direct"},

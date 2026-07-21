@@ -32,7 +32,7 @@ official archive + sibling .CHECKSUM       routed Binance WebSocket
 
 PostgreSQL stores bounded structured state. Immutable raw objects and partitioned Parquet live under `/srv/crypto-research/data`. DuckDB may open only descriptor-safe paths from approved catalog rows and rechecks bytes before query. A file on disk is not trusted without matching catalog, manifest, checksum, and validation evidence.
 
-BTCUSDT and PEPEUSDT have independent configuration, partitions, gaps, stream freshness, profile sample counts, and eligibility reasons. A healthy proxy-fed stream is not itself degraded; REST metadata failure is reported separately as `metadata_unverified`.
+BTCUSDT and canonical 1000PEPEUSDT have independent configuration, partitions, gaps, stream freshness, profile sample counts, and eligibility reasons. `PEPE` and `PEPEUSDT` are input aliases only. A healthy proxy-fed stream is not itself degraded; REST metadata failure is reported separately as `metadata_unverified`.
 
 ## Failure and Recovery Semantics
 

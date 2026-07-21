@@ -42,7 +42,7 @@ const disabledSymbol: SymbolView = {
 
 const pepeSymbol: SymbolView = {
   ...symbol,
-  symbol: "PEPEUSDT",
+  symbol: "1000PEPEUSDT",
 };
 
 function profile(sampleCount: number) {
@@ -410,7 +410,7 @@ test("keeps failed and successful committed mutations isolated across a stale re
   const partitionLoads = new Map<string, number>();
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     const path = String(input);
-    const symbolName = path.includes("PEPEUSDT") ? "PEPEUSDT" : "BTCUSDT";
+    const symbolName = path.includes("1000PEPEUSDT") ? "1000PEPEUSDT" : "BTCUSDT";
     if (path.startsWith("/api/symbols?")) {
       return Promise.resolve(jsonResponse([symbol, pepeSymbol]));
     }
@@ -467,7 +467,7 @@ test("keeps failed and successful committed mutations isolated across a stale re
     ? result.current.dashboard.items.find((item) => item.symbol.symbol === "BTCUSDT")?.status
     : null).toBe("refresh_error");
   expect(result.current.status === "ready"
-    ? result.current.dashboard.items.find((item) => item.symbol.symbol === "PEPEUSDT")?.symbol.enabled
+    ? result.current.dashboard.items.find((item) => item.symbol.symbol === "1000PEPEUSDT")?.symbol.enabled
     : null).toBe(false);
 
   act(() => result.current.reload());
@@ -476,7 +476,7 @@ test("keeps failed and successful committed mutations isolated across a stale re
       throw new Error("dashboard is not ready");
     }
     const btc = result.current.dashboard.items.find((item) => item.symbol.symbol === "BTCUSDT");
-    const pepe = result.current.dashboard.items.find((item) => item.symbol.symbol === "PEPEUSDT");
+    const pepe = result.current.dashboard.items.find((item) => item.symbol.symbol === "1000PEPEUSDT");
     expect(btc?.status).toBe("ready");
     expect(btc?.symbol.enabled).toBe(false);
     expect(pepe?.status).toBe("ready");

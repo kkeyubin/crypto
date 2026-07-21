@@ -16,7 +16,7 @@ def test_symbol_list_is_stably_sorted_and_bounded(client: TestClient) -> None:
     response = client.get("/api/symbols", params={"limit": 1, "offset": 1})
 
     assert response.status_code == 200
-    assert [item["symbol"] for item in response.json()] == ["PEPEUSDT"]
+    assert [item["symbol"] for item in response.json()] == ["BTCUSDT"]
     assert client.get("/api/symbols", params={"limit": 101}).status_code == 422
 
 

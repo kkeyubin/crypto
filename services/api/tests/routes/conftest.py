@@ -77,11 +77,11 @@ class FakeMarketDataControl:
     def __init__(self) -> None:
         self.symbols = {
             "BTCUSDT": symbol_view("BTCUSDT"),
-            "PEPEUSDT": symbol_view("PEPEUSDT"),
+            "1000PEPEUSDT": symbol_view("1000PEPEUSDT"),
         }
         self.jobs = {
             BTC_JOB: job_view("BTCUSDT", BTC_JOB, DataType.KLINE_1M),
-            PEPE_JOB: job_view("PEPEUSDT", PEPE_JOB, DataType.FUNDING),
+            PEPE_JOB: job_view("1000PEPEUSDT", PEPE_JOB, DataType.FUNDING),
         }
         self.audit_actions: list[str] = []
 
@@ -169,7 +169,7 @@ class FakeMarketDataControl:
                     approved_at=START,
                 ),
             ),
-            "PEPEUSDT": (),
+            "1000PEPEUSDT": (),
         }
         return values[symbol][offset : offset + limit]
 
@@ -179,10 +179,10 @@ class FakeMarketDataControl:
         await self.get_symbol(symbol)
         values = {
             "BTCUSDT": (),
-            "PEPEUSDT": (
+            "1000PEPEUSDT": (
                 DataGapView(
                     gap_id=UUID("00000000-0000-0000-0000-000000000301"),
-                    symbol="PEPEUSDT",
+                    symbol="1000PEPEUSDT",
                     data_type=DataType.KLINE_1M,
                     start=START,
                     end=START + timedelta(minutes=1),

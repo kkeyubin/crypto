@@ -34,7 +34,7 @@ def test_detects_and_coalesces_missing_minute_open_times_with_half_open_coverage
 
 def test_detects_aggregate_trade_id_discontinuity() -> None:
     gaps = detect_aggregate_trade_id_gaps(
-        "PEPEUSDT",
+        "1000PEPEUSDT",
         [(10, START), (11, START + timedelta(milliseconds=1)), (15, START + timedelta(seconds=1))],
     )
 
@@ -131,7 +131,7 @@ def test_wrong_symbol_dataset_or_unapproved_ranges_cannot_close_gap() -> None:
     )
     ranges = (
         ApprovedCoverage(
-            "PEPEUSDT",
+            "1000PEPEUSDT",
             DataType.KLINE_1M,
             TimeRange(gap.start, gap.end),
             "wrong-symbol",

@@ -181,6 +181,30 @@ def test_acceptance_candidates_require_all_official_checksums_before_posts() -> 
     assert "2026-07-19T00:00:00Z" not in operations
 
 
+def test_checksum_verification_aborts_on_query_download_hash_or_match_failure() -> None:
+    operations = read_text("docs/runbooks/binance-data-operations.md")
+    verification = operations.split("## Verify Downloaded Archive Checksums", 1)[1]
+
+    assert "set -euo pipefail" in verification
+    assert "catalog_rows=$(" in verification
+    assert 'psql -v ON_ERROR_STOP=1' in verification
+    assert 'test -n "$catalog_rows"' in verification
+    assert 'done <<< "$catalog_rows"' in verification
+    assert "done < <(" not in verification
+
+
+def test_backup_discovers_and_stops_server_profile_services() -> None:
+    recovery = read_text("docs/runbooks/market-data-recovery.md")
+    backup = recovery.split("## Verified Backup Gate Before Upgrade", 1)[1].split(
+        "## Detection and Automatic Response", 1
+    )[0]
+
+    assert "set -euo pipefail" in backup
+    assert backup.count("--profile server") >= 5
+    assert "--profile server config --services" in backup
+    assert '--profile server stop "$service"' in backup
+
+
 def test_phase1_recovery_does_not_claim_future_trading_or_notification_actions() -> None:
     recovery = read_text("docs/runbooks/market-data-recovery.md")
 

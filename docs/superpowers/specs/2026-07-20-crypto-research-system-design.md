@@ -225,7 +225,7 @@ add BTCUSDT
 → restart services and recover paper/data/notification state
 ```
 
-The acceptance suite also adds a second, materially different contract such as `PEPEUSDT` and proves that it receives an independent profile, cost/risk configuration, experiment ledger, evidence conclusion, and paper-enable decision. The two symbols are allowed—and expected—to produce different outcomes.
+The acceptance suite also adds a second, materially different contract such as canonical `1000PEPEUSDT` and proves that it receives an independent profile, cost/risk configuration, experiment ledger, evidence conclusion, and paper-enable decision. The two symbols are allowed—and expected—to produce different outcomes.
 
 Automated tests cover bar construction, no-lookahead timing, deterministic replay, fee/funding accounting, risk rejection, restart recovery, data-gap blocking, outbox idempotency, and schema/version validation.
 

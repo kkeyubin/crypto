@@ -56,6 +56,7 @@ The API owns `alembic upgrade head`; `market-worker` waits for healthy PostgreSQ
 An acceptance date is usable only when its ZIP and official sibling `.CHECKSUM` are published. Probe every required object before mutating symbol or job state:
 
 ```bash
+set -euo pipefail
 preflight_archive_checksum() {
   source_url=$1
   archive_name=${source_url##*/}
@@ -77,7 +78,7 @@ preflight_archive_checksum "$archive_root/monthly/markPriceKlines/1000PEPEUSDT/1
 preflight_archive_checksum "$archive_root/monthly/fundingRate/1000PEPEUSDT/1000PEPEUSDT-fundingRate-2026-05.zip"
 ```
 
-These candidates were observed published on 2026-07-22, but the live probes remain mandatory. Daily `fundingRate` archives do not exist. `PEPEUSDT` is not the Binance USDⓈ-M venue symbol; user inputs `PEPE` and `PEPEUSDT` canonicalize to `1000PEPEUSDT`.
+These candidates were observed published on 2026-07-22, but the live probes remain mandatory. Daily `fundingRate` archives do not exist. `PEPEUSDT` is not the Binance USDⓈ-M venue symbol; inputs `PEPE`, `PEPEUSDT`, and `1000PEPEUSDT` all operate on canonical `1000PEPEUSDT` state. Intermediate Phase 1 alias-row builds were never deployed, so there is no legacy alias-row migration or fallback.
 
 **Do not POST any symbol or backfill request unless every probe succeeds.**
 
@@ -111,16 +112,24 @@ Save every job ID and poll `GET /api/backfills/{job_id}`. Inspect partitions, ga
 Every approved archive must match both the durable source checksum and the official checksum:
 
 ```bash
+set -euo pipefail
 cd "$CRYPTO_CHECKOUT"
+catalog_rows=$(
+  docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
+    --profile server exec -T postgres \
+    psql -v ON_ERROR_STOP=1 -U crypto -d crypto_research -At -F '|' -c \
+    "SELECT source_url, source_checksum, raw_path FROM backfill_objects WHERE state='catalog_approved' ORDER BY source_url"
+)
+test -n "$catalog_rows"
+
 while IFS='|' read -r source_url source_checksum raw_path; do
   official_checksum=$(curl --fail --silent --show-error "${source_url}.CHECKSUM" | awk 'NR==1 {print tolower($1)}')
   stored_checksum=$(sha256sum "$CRYPTO_DATA_ROOT/$raw_path" | awk '{print $1}')
+  printf '%s\n' "$official_checksum" | grep -Eq '^[0-9a-f]{64}$'
   test "$official_checksum" = "$source_checksum"
   test "$stored_checksum" = "$source_checksum"
   printf '%s %s\n' "$source_checksum" "$source_url"
-done < <(docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
-  --profile server exec -T postgres psql -U crypto -d crypto_research -At -F '|' -c \
-  "SELECT source_url, source_checksum, raw_path FROM backfill_objects WHERE state='catalog_approved' ORDER BY source_url")
+done <<< "$catalog_rows"
 ```
 
 Never publish a mismatch. Quarantine conflicting bytes and record only sanitized URL, checksums, UTC time, and job identity.

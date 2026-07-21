@@ -31,7 +31,7 @@ class Repository:
     def __init__(self) -> None:
         self.active = (
             SymbolState("BTCUSDT", True, None, None, False),
-            SymbolState("PEPEUSDT", True, None, None, True),
+            SymbolState("1000PEPEUSDT", True, None, None, True),
         )
         self.streams = []
         self.gaps = {}
@@ -208,7 +208,7 @@ def test_cycle_refreshes_independent_active_symbols_and_schedules_backfill() -> 
         assert len(groups) == 2
         assert {stream.symbol for group in groups for stream in group.streams} == {
             "BTCUSDT",
-            "PEPEUSDT",
+            "1000PEPEUSDT",
         }
         assert backfill.calls == [("worker-a", timedelta(minutes=5))]
         assert repository.heartbeats[-1].status == "running"

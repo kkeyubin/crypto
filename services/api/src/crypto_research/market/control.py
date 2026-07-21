@@ -213,7 +213,7 @@ class MarketDataControlService:
     async def add_symbol(self, request: AddSymbolRequest) -> SymbolView:
         self._validate_history_range(request.history_start, request.history_end)
         symbol = _canonical_symbol(request.symbol)
-        existing = await self._find_symbol(request.symbol)
+        existing = await self._repository.get_symbol(symbol)
         if existing is not None:
             identity = (
                 existing.history_start,
@@ -470,18 +470,10 @@ class MarketDataControlService:
         )
 
     async def _required_symbol(self, symbol: str) -> SymbolState:
-        state = await self._find_symbol(symbol)
+        canonical = _canonical_symbol(symbol)
+        state = await self._repository.get_symbol(canonical)
         if state is None:
             raise MarketDataNotFound("symbol is not configured")
-        return state
-
-    async def _find_symbol(self, symbol: str) -> SymbolState | None:
-        """Resolve canonical state while keeping pre-alias records readable."""
-        normalized = _normalized_symbol(symbol)
-        canonical = _SYMBOL_ALIASES.get(normalized, normalized)
-        state = await self._repository.get_symbol(canonical)
-        if state is None and canonical != normalized:
-            state = await self._repository.get_symbol(normalized)
         return state
 
     async def _symbol_view(

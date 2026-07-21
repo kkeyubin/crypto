@@ -112,7 +112,7 @@ def test_backfill_request_accepts_explicit_aggregate_trade_history_opt_in() -> N
 
 def test_symbol_view_exposes_independent_data_and_metadata_statuses() -> None:
     view = SymbolView(
-        symbol="PEPEUSDT",
+        symbol="1000PEPEUSDT",
         enabled=True,
         history_start=START,
         history_end=NOW,

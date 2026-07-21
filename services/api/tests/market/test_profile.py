@@ -59,7 +59,7 @@ def test_btc_and_pepe_profiles_use_independent_approved_evidence() -> None:
     )
     pepe = compute_symbol_profile(
         fixture(
-            "PEPEUSDT",
+            "1000PEPEUSDT",
             ("0.000010", "0.000012", "0.000009", "0.000015"),
             (("0.000009", "0.000011"), ("0.000010", "0.000014")),
             ("1000000", "4000000", "9000000", "16000000"),
@@ -69,7 +69,7 @@ def test_btc_and_pepe_profiles_use_independent_approved_evidence() -> None:
     )
 
     assert btc.symbol == "BTCUSDT"
-    assert pepe.symbol == "PEPEUSDT"
+    assert pepe.symbol == "1000PEPEUSDT"
     assert btc.realized_volatility.value != pepe.realized_volatility.value
     assert btc.jump_frequency.value != pepe.jump_frequency.value
     assert btc.median_spread_bps.value != pepe.median_spread_bps.value

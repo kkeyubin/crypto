@@ -28,16 +28,16 @@ The post-implementation review found that the original acceptance examples assum
 - 1000PEPEUSDT May and June 2026 monthly kline, mark-price kline, and funding objects were published;
 - the tested daily funding object and PEPEUSDT objects returned 404.
 
-The implementation now plans funding from complete monthly archives only and rejects a partial-month funding request before creating any job/source object. Multi-type backfills preplan every dataset before mutation. Initial onboarding and the Chinese/English UI require complete UTC calendar months because funding is always included. `PEPE` and `PEPEUSDT` input aliases are stored/returned as canonical `1000PEPEUSDT`, and the Web backfill uses the API-returned canonical identity. A compatibility lookup keeps pre-alias persisted records readable.
+The implementation now plans funding from complete monthly archives only and rejects a partial-month funding request before creating any job/source object. Multi-type backfills preplan every dataset before mutation. Initial onboarding and the Chinese/English UI require complete UTC calendar months because funding is always included. `PEPE`, `PEPEUSDT`, and `1000PEPEUSDT` all operate on stored canonical `1000PEPEUSDT` state, and the Web backfill uses the API-returned canonical identity. Intermediate Phase 1 builds that could create noncanonical alias rows were never deployed, so no partial legacy compatibility path is implemented or claimed.
 
-The runbooks now require live `.CHECKSUM` preflight for every candidate before any POST, parameterize checkout/environment/data paths, and separate a fresh installation from an existing smoke upgrade. The upgrade gate stops mutators, preserves the existing mode-`0600` `runtime.env` and `POSTGRES_PASSWORD`, dumps PostgreSQL, archives the data root, records sanitized volume/config/source identity, verifies all artifacts and checksums, and creates `VERIFIED` only after validation. Phase 1 recovery now covers data, gaps, audit evidence, and eligibility only; it makes no later-phase operational claims.
+The runbooks now require live `.CHECKSUM` preflight for every candidate before any POST, parameterize checkout/environment/data paths, and separate a fresh installation from an existing smoke upgrade. Downloaded-object verification uses `set -euo pipefail`, requires a nonempty successful catalog query, and aborts on any official download, local hash, or comparison failure. The upgrade gate discovers and stops the full server profile, preserves the existing mode-`0600` `runtime.env` and `POSTGRES_PASSWORD`, dumps PostgreSQL, archives the data root, records sanitized volume/config/source identity, verifies all artifacts and checksums, and creates `VERIFIED` only after validation. Phase 1 recovery now covers data, gaps, audit evidence, and eligibility only; it makes no later-phase operational claims.
 
 ## Local verification
 
 Executed on 2026-07-22 in `/Users/kyle/Documents/crypto/.worktrees/phase-1-binance-data`:
 
 - focused Task 8 repository/config/entrypoint/healthcheck tests — passed;
-- `cd services/api && .venv/bin/pytest -q` — `607 passed, 1 skipped` after independent-review remediation;
+- `cd services/api && .venv/bin/pytest -q` — `614 passed, 1 skipped` after re-review remediation;
 - `.venv/bin/ruff check src tests migrations ../../deploy/api-entrypoint.py ../../deploy/market-worker-healthcheck.py` — passed after the final hardening;
 - `.venv/bin/python scripts/export_schemas.py --check` — passed;
 - `source /Users/kyle/.nvm/nvm.sh && nvm use` — Node `v24.15.0`, npm `11.12.1`;
@@ -47,11 +47,10 @@ Executed on 2026-07-22 in `/Users/kyle/Documents/crypto/.worktrees/phase-1-binan
 - `npm run web:build` — passed, 56 modules transformed;
 - `git diff --check` — passed.
 
-Review-remediation focused verification:
+Re-review focused verification:
 
-- archive/control behavior — 28 tests passed;
-- SymbolsPage/App canonicalization and complete-month behavior — 43 tests passed;
-- operations/recovery documentation policy — 8 tests passed.
+- canonical alias/control and operations documentation — 29 tests passed;
+- SymbolsPage/useSymbols canonical runtime fixtures — 46 tests passed.
 
 Not executed locally:
 

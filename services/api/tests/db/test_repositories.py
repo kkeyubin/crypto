@@ -165,7 +165,7 @@ def test_symbols_and_backfills_are_independent() -> None:
             AddSymbolCommand("BTCUSDT", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z")
         )
         await repository.add_symbol(
-            AddSymbolCommand("pepeusdt", "2026-02-01T00:00:00Z", "2026-02-02T00:00:00Z")
+            AddSymbolCommand("1000pepeusdt", "2026-02-01T00:00:00Z", "2026-02-02T00:00:00Z")
         )
 
         btc = await repository.create_backfill(
@@ -178,13 +178,13 @@ def test_symbols_and_backfills_are_independent() -> None:
         pepe = await repository.create_backfill(
             BackfillCommand(
                 id="00000000-0000-0000-0000-000000000002",
-                symbol="PEPEUSDT",
+                symbol="1000PEPEUSDT",
                 dataset="funding_rate",
             )
         )
 
         assert btc.symbol == "BTCUSDT"
-        assert pepe.symbol == "PEPEUSDT"
+        assert pepe.symbol == "1000PEPEUSDT"
         assert btc.id != pepe.id
 
     asyncio.run(scenario())
@@ -433,7 +433,7 @@ def test_active_symbols_are_queried_separately_and_source_transition_is_audited(
 
     async def scenario() -> None:
         session = QuerySession()
-        session.add(SymbolRow(symbol="PEPEUSDT", enabled=True))
+        session.add(SymbolRow(symbol="1000PEPEUSDT", enabled=True))
         session.add(SymbolRow(symbol="BTCUSDT", enabled=True))
         session.add(SymbolRow(symbol="ETHUSDT", enabled=False))
         repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
@@ -449,7 +449,7 @@ def test_active_symbols_are_queried_separately_and_source_transition_is_audited(
             )
         )
 
-        assert [item.symbol for item in active] == ["BTCUSDT", "PEPEUSDT"]
+        assert [item.symbol for item in active] == ["1000PEPEUSDT", "BTCUSDT"]
         assert session.statement is not None
         assert "symbols.enabled" in str(session.statement)
         audits = [row for row in session.rows if isinstance(row, AuditEventRow)]
@@ -618,7 +618,7 @@ def test_repository_rejects_non_utc_datetimes_at_every_command_boundary(
 
         operations = [
             lambda: repository.add_symbol(
-                AddSymbolCommand("PEPEUSDT", invalid_at, datetime(2026, 1, 2, tzinfo=UTC))
+                AddSymbolCommand("1000PEPEUSDT", invalid_at, datetime(2026, 1, 2, tzinfo=UTC))
             ),
             lambda: repository.create_backfill(
                 BackfillCommand(

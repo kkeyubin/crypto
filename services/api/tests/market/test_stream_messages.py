@@ -157,11 +157,11 @@ def test_mark_price_parser_retains_funding_fields() -> None:
 def test_aggregate_trade_and_book_ticker_parsers_preserve_source_ids() -> None:
     aggregate = parse_stream_message(
         combined(
-            "pepeusdt@aggtrade",
+            "1000pepeusdt@aggtrade",
             {
                 "e": "aggTrade",
                 "E": 1_753_099_200_010,
-                "s": "PEPEUSDT",
+                "s": "1000PEPEUSDT",
                 "a": 42,
                 "p": "0.0000123400",
                 "q": "1000000.00000000",
@@ -175,12 +175,12 @@ def test_aggregate_trade_and_book_ticker_parsers_preserve_source_ids() -> None:
     )
     ticker = parse_stream_message(
         combined(
-            "pepeusdt@bookticker",
+            "1000pepeusdt@bookticker",
             {
                 "e": "bookTicker",
                 "E": 1_753_099_200_011,
                 "T": 1_753_099_200_010,
-                "s": "PEPEUSDT",
+                "s": "1000PEPEUSDT",
                 "u": 99,
                 "b": "0.0000123300",
                 "B": "1000.00000000",

@@ -28,7 +28,7 @@ from crypto_research.contracts.market import (
 from crypto_research.contracts.strategy import ExecutionSpec, InstrumentRef, RiskSpec
 
 NOW = datetime(2025, 1, 1, tzinfo=UTC)
-INSTRUMENT = InstrumentRef(venue="BINANCE", market="USD_M_PERPETUAL", symbol="PEPEUSDT")
+INSTRUMENT = InstrumentRef(venue="BINANCE", market="USD_M_PERPETUAL", symbol="1000PEPEUSDT")
 NON_FINITE_VALUES = [
     pytest.param(float("nan"), id="nan"),
     pytest.param(float("inf"), id="positive-infinity"),
@@ -42,12 +42,15 @@ def manifest_fields() -> dict[str, object]:
             kind="binance_archive",
             cadence=ArchiveCadence.DAILY,
             dataset=ArchiveDataset.KLINES,
-            symbol="PEPEUSDT",
+            symbol="1000PEPEUSDT",
             interval="1m",
             period_start=NOW,
         ),
-        "raw_path": "raw/binance/usdm/PEPEUSDT/kline_1m/date=2025-01-01/source.zip",
-        "normalized_path": "normalized/binance/usdm/PEPEUSDT/kline_1m/date=2025-01-01/data.parquet",
+        "raw_path": "raw/binance/usdm/1000PEPEUSDT/kline_1m/date=2025-01-01/source.zip",
+        "normalized_path": (
+            "normalized/binance/usdm/1000PEPEUSDT/"
+            "kline_1m/date=2025-01-01/data.parquet"
+        ),
         "source_checksum": "b" * 64,
         "normalized_checksum": "c" * 64,
         "row_count": 1,

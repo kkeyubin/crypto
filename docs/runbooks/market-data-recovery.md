@@ -47,23 +47,23 @@ sudo install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" \
   "$CRYPTO_BACKUP_ROOT" "$backup_root"
 
 cd "$CRYPTO_CHECKOUT"
-services=$(docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" config --services)
+services=$(docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" --profile server config --services)
 for service in market-worker api web; do
   if printf '%s\n' "$services" | grep -Fxq "$service"; then
-    docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" stop "$service"
+    docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" --profile server stop "$service"
   fi
 done
 
 sudo install -m 0600 "$CRYPTO_ENV_FILE" "$backup_root/runtime.env"
 docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
-  exec -T postgres pg_dump -U crypto -d crypto_research -Fc \
+  --profile server exec -T postgres pg_dump -U crypto -d crypto_research -Fc \
   | sudo tee "$backup_root/catalog.dump" >/dev/null
 sudo tar --acls --xattrs -cpf "$backup_root/data.tar" -C "$CRYPTO_DATA_ROOT" .
 
 docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
-  config --services | sudo tee "$backup_root/compose-services.txt" >/dev/null
+  --profile server config --services | sudo tee "$backup_root/compose-services.txt" >/dev/null
 docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
-  config --volumes | sudo tee "$backup_root/compose-volumes.txt" >/dev/null
+  --profile server config --volumes | sudo tee "$backup_root/compose-volumes.txt" >/dev/null
 docker volume ls --format '{{.Name}}' | sort \
   | sudo tee "$backup_root/docker-volumes.txt" >/dev/null
 sudo awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/{print $1}' "$CRYPTO_ENV_FILE" \
@@ -84,7 +84,7 @@ set -euo pipefail
 sudo cmp --silent "$CRYPTO_ENV_FILE" "$backup_root/runtime.env"
 test "$(sudo stat -c %a "$backup_root/runtime.env")" = 600
 docker compose --env-file "$CRYPTO_ENV_FILE" -f "$CRYPTO_COMPOSE_FILE" \
-  exec -T postgres pg_restore --list < "$backup_root/catalog.dump" >/dev/null
+  --profile server exec -T postgres pg_restore --list < "$backup_root/catalog.dump" >/dev/null
 sudo tar -tf "$backup_root/data.tar" >/dev/null
 sudo test -s "$backup_root/catalog.dump"
 sudo test -s "$backup_root/compose-services.txt"

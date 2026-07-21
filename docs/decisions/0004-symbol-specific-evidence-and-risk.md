@@ -18,7 +18,7 @@ A symbol starts paper trading only after its own evidence gate and explicit owne
 
 ## Consequences
 
-- Adding `PEPEUSDT` does not reuse `BTCUSDT` approval.
+- Adding canonical `1000PEPEUSDT` (including through the `PEPE` or `PEPEUSDT` input aliases) does not reuse `BTCUSDT` approval.
 - The same BB/RB concept can yield different parameters or conclusions by symbol.
 - Higher volatility may reduce position size or eligibility; it does not merely widen stops.
 - Cross-symbol tests are robustness evidence, not a shared activation switch.

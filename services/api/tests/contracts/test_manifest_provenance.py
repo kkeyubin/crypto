@@ -315,7 +315,7 @@ def test_websocket_source_computes_canonical_routed_urls(
         ),
         (
             BinanceWebSocketSource(
-                kind="binance_websocket", stream=BinanceStream.BEST_BID_ASK, symbol="PEPEUSDT"
+                kind="binance_websocket", stream=BinanceStream.BEST_BID_ASK, symbol="1000PEPEUSDT"
             ),
             DataType.BEST_BID_ASK,
             INSTRUMENT,

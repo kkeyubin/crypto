@@ -131,7 +131,7 @@ def test_proxy_mode_periodically_probes_and_recovers_direct() -> None:
         first = await factory.open(public_group(), NOW)
         before_probe = await factory.open(public_group("ETHUSDT"), NOW + timedelta(minutes=4))
         recovered = await factory.open(
-            public_group("PEPEUSDT"), NOW + timedelta(minutes=5)
+            public_group("1000PEPEUSDT"), NOW + timedelta(minutes=5)
         )
 
         assert [first.mode, before_probe.mode, recovered.mode] == [

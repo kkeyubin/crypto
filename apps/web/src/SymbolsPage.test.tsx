@@ -41,7 +41,7 @@ function dashboardResponse(path: string): Response {
       { ...baseSymbol, symbol: "BTCUSDT" },
       {
         ...baseSymbol,
-        symbol: "PEPEUSDT",
+        symbol: "1000PEPEUSDT",
         data_status: "degraded",
         metadata_status: "ineligible",
       },
@@ -76,7 +76,7 @@ function dashboardResponse(path: string): Response {
   if (path.includes("/gaps")) {
     return jsonResponse(isBtc ? [] : [{
       gap_id: "00000000-0000-0000-0000-000000000301",
-      symbol: "PEPEUSDT",
+      symbol: "1000PEPEUSDT",
       data_type: "kline_1m",
       start: "2026-07-20T03:00:00Z",
       end: "2026-07-20T03:01:00Z",
@@ -88,7 +88,7 @@ function dashboardResponse(path: string): Response {
   }
   if (path.endsWith("/profile")) {
     return jsonResponse({
-      symbol: isBtc ? "BTCUSDT" : "PEPEUSDT",
+      symbol: isBtc ? "BTCUSDT" : "1000PEPEUSDT",
       calculated_at: "2026-07-21T10:00:00Z",
       coverage_start: "2026-07-01T00:00:00Z",
       coverage_end: "2026-07-21T00:00:00Z",
@@ -103,14 +103,14 @@ function dashboardResponse(path: string): Response {
   }
   if (path.endsWith("/eligibility")) {
     return jsonResponse({
-      symbol: isBtc ? "BTCUSDT" : "PEPEUSDT",
+      symbol: isBtc ? "BTCUSDT" : "1000PEPEUSDT",
       eligible: isBtc,
       reason_codes: isBtc ? [] : ["insufficient_coverage", "unrepaired_gap"],
       evaluated_at: "2026-07-21T10:00:00Z",
     });
   }
   if (path.includes("/streams")) {
-    const symbol = isBtc ? "BTCUSDT" : "PEPEUSDT";
+    const symbol = isBtc ? "BTCUSDT" : "1000PEPEUSDT";
     const suffixes = ["aggtrade", "bookticker", "kline_1m", "markprice@1s"];
     return jsonResponse(suffixes.slice(0, isBtc ? 4 : 3).map((suffix, index) => ({
       symbol,
@@ -236,7 +236,7 @@ test("keeps BTC and PEPE evidence independent and separates data-health dimensio
   render(<SymbolsPage />);
 
   const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
-  const pepe = await screen.findByRole("article", { name: "PEPEUSDT 数据证据" });
+  const pepe = await screen.findByRole("article", { name: "1000PEPEUSDT 数据证据" });
 
   expect(within(btc).getByText("符合数据启用条件")).toBeInTheDocument();
   expect(within(btc).getByText("120,000")).toBeInTheDocument();
@@ -270,7 +270,7 @@ test("publishes health and ready symbol evidence while another symbol request is
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
       const path = String(input);
-      return path.endsWith("PEPEUSDT/profile")
+      return path.endsWith("1000PEPEUSDT/profile")
         ? pepeProfile.promise
         : Promise.resolve(dashboardResponse(path));
     }),
@@ -280,11 +280,11 @@ test("publishes health and ready symbol evidence while another symbol request is
 
   expect(await screen.findByRole("region", { name: "数据来源与健康" })).toBeInTheDocument();
   expect(await screen.findByRole("article", { name: "BTCUSDT 数据证据" })).toBeInTheDocument();
-  expect(screen.getByRole("article", { name: "正在加载 PEPEUSDT 数据" })).toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "正在加载 1000PEPEUSDT 数据" })).toBeInTheDocument();
   expect(screen.queryByRole("status", { name: "正在加载币种与数据" })).not.toBeInTheDocument();
 
-  pepeProfile.resolve(dashboardResponse("/api/symbols/PEPEUSDT/profile"));
-  expect(await screen.findByRole("article", { name: "PEPEUSDT 数据证据" })).toBeInTheDocument();
+  pepeProfile.resolve(dashboardResponse("/api/symbols/1000PEPEUSDT/profile"));
+  expect(await screen.findByRole("article", { name: "1000PEPEUSDT 数据证据" })).toBeInTheDocument();
 });
 
 test("shows backend stale status while retaining the oldest exact required-stream event", async () => {
@@ -292,18 +292,18 @@ test("shows backend stale status while retaining the oldest exact required-strea
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path.endsWith("PEPEUSDT/eligibility")) {
+      if (path.endsWith("1000PEPEUSDT/eligibility")) {
         return jsonResponse({
-          symbol: "PEPEUSDT",
+          symbol: "1000PEPEUSDT",
           eligible: false,
           reason_codes: ["stale_live_data"],
           evaluated_at: "2026-07-21T10:00:00Z",
         });
       }
-      if (path.includes("PEPEUSDT/streams")) {
+      if (path.includes("1000PEPEUSDT/streams")) {
         return jsonResponse(["aggtrade", "bookticker", "kline_1m", "markprice@1s"].map((suffix, index) => ({
-          symbol: "PEPEUSDT",
-          stream_name: `pepeusdt@${suffix}`,
+          symbol: "1000PEPEUSDT",
+          stream_name: `1000pepeusdt@${suffix}`,
           status: "connected",
           last_event_at: `2026-07-21T09:40:0${index}Z`,
           updated_at: "2026-07-21T10:00:00Z",
@@ -315,7 +315,7 @@ test("shows backend stale status while retaining the oldest exact required-strea
 
   render(<SymbolsPage />);
 
-  const pepe = await screen.findByRole("article", { name: "PEPEUSDT 数据证据" });
+  const pepe = await screen.findByRole("article", { name: "1000PEPEUSDT 数据证据" });
   expect(within(pepe).getByText("实时数据已过期（由服务端启用条件判定）")).toBeInTheDocument();
   expect(within(pepe).getByText(/最旧必需事件/)).toHaveTextContent("09:40:00");
 });
@@ -382,9 +382,9 @@ test("rejects eligibility payloads that violate the eligible-to-reasons invarian
           evaluated_at: "2026-07-21T10:00:00Z",
         });
       }
-      if (path.endsWith("PEPEUSDT/eligibility")) {
+      if (path.endsWith("1000PEPEUSDT/eligibility")) {
         return jsonResponse({
-          symbol: "PEPEUSDT",
+          symbol: "1000PEPEUSDT",
           eligible: false,
           reason_codes: [],
           evaluated_at: "2026-07-21T10:00:00Z",
@@ -397,7 +397,7 @@ test("rejects eligibility payloads that violate the eligible-to-reasons invarian
   render(<SymbolsPage />);
 
   expect(await screen.findByRole("article", { name: "BTCUSDT 数据加载失败" })).toBeInTheDocument();
-  expect(screen.getByRole("article", { name: "PEPEUSDT 数据加载失败" })).toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "1000PEPEUSDT 数据加载失败" })).toBeInTheDocument();
   expect(screen.queryByText("符合数据启用条件")).not.toBeInTheDocument();
 });
 
@@ -412,7 +412,7 @@ test("isolates a PEPE evidence failure and retries only that symbol", async () =
       if (path.endsWith("BTCUSDT/profile")) {
         btcProfileAttempts += 1;
       }
-      if (path.endsWith("PEPEUSDT/profile")) {
+      if (path.endsWith("1000PEPEUSDT/profile")) {
         pepeProfileAttempts += 1;
         if (pepeProfileAttempts === 1) {
           return jsonResponse({ detail: "profile unavailable" }, 503);
@@ -425,12 +425,12 @@ test("isolates a PEPE evidence failure and retries only that symbol", async () =
   render(<SymbolsPage />);
 
   const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
-  const pepeError = await screen.findByRole("article", { name: "PEPEUSDT 数据加载失败" });
+  const pepeError = await screen.findByRole("article", { name: "1000PEPEUSDT 数据加载失败" });
   expect(within(btc).getByText("120,000")).toBeInTheDocument();
-  expect(within(pepeError).getByText("暂时无法加载 PEPEUSDT 的数据证据。")).toBeInTheDocument();
+  expect(within(pepeError).getByText("暂时无法加载 1000PEPEUSDT 的数据证据。")).toBeInTheDocument();
 
-  await user.click(within(pepeError).getByRole("button", { name: "重试 PEPEUSDT" }));
-  expect(await screen.findByRole("article", { name: "PEPEUSDT 数据证据" })).toBeInTheDocument();
+  await user.click(within(pepeError).getByRole("button", { name: "重试 1000PEPEUSDT" }));
+  expect(await screen.findByRole("article", { name: "1000PEPEUSDT 数据证据" })).toBeInTheDocument();
   expect(screen.getByRole("article", { name: "BTCUSDT 数据证据" })).toBeInTheDocument();
   expect(btcProfileAttempts).toBe(1);
   expect(pepeProfileAttempts).toBe(2);
@@ -1151,10 +1151,10 @@ test("keeps focus with the most recent mutation when an earlier symbol finishes 
     if (init?.method === "DELETE" && path === "/api/symbols/BTCUSDT") {
       return btcDelete.promise;
     }
-    if (init?.method === "DELETE" && path === "/api/symbols/PEPEUSDT") {
+    if (init?.method === "DELETE" && path === "/api/symbols/1000PEPEUSDT") {
       return pepeDelete.promise;
     }
-    const symbolName = path.includes("PEPEUSDT") ? "PEPEUSDT" : "BTCUSDT";
+    const symbolName = path.includes("1000PEPEUSDT") ? "1000PEPEUSDT" : "BTCUSDT";
     if (committed.has(symbolName) && path.endsWith("/profile")) {
       return symbolName === "BTCUSDT" ? btcProfile.promise : pepeProfile.promise;
     }
@@ -1176,21 +1176,21 @@ test("keeps focus with the most recent mutation when an earlier symbol finishes 
 
   render(<SymbolsPage />);
   const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
-  const pepe = screen.getByRole("article", { name: "PEPEUSDT 数据证据" });
+  const pepe = screen.getByRole("article", { name: "1000PEPEUSDT 数据证据" });
   await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
   await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 BTCUSDT" })).getByRole("button", { name: "确认停用" }));
-  await user.click(within(pepe).getByRole("button", { name: "停用 PEPEUSDT 数据采集" }));
-  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 PEPEUSDT" })).getByRole("button", { name: "确认停用" }));
+  await user.click(within(pepe).getByRole("button", { name: "停用 1000PEPEUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 1000PEPEUSDT" })).getByRole("button", { name: "确认停用" }));
 
-  committed.add("PEPEUSDT");
+  committed.add("1000PEPEUSDT");
   pepeDelete.resolve(jsonResponse({
     ...baseSymbol,
-    symbol: "PEPEUSDT",
+    symbol: "1000PEPEUSDT",
     enabled: false,
     data_status: "disabled",
     updated_at: "2026-07-21T10:01:00Z",
   }));
-  const pepeOwner = await screen.findByRole("article", { name: "正在确认 PEPEUSDT 最新数据" });
+  const pepeOwner = await screen.findByRole("article", { name: "正在确认 1000PEPEUSDT 最新数据" });
   expect(pepeOwner).toHaveFocus();
 
   committed.add("BTCUSDT");
@@ -1210,8 +1210,8 @@ test("keeps focus with the most recent mutation when an earlier symbol finishes 
   expect(pepeOwner).toHaveFocus();
 
   pepeProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
-  const disabledPepe = await screen.findByRole("article", { name: "PEPEUSDT 数据证据" });
-  expect(within(disabledPepe).getByRole("button", { name: "重新启用 PEPEUSDT 数据采集" })).toHaveFocus();
+  const disabledPepe = await screen.findByRole("article", { name: "1000PEPEUSDT 数据证据" });
+  expect(within(disabledPepe).getByRole("button", { name: "重新启用 1000PEPEUSDT 数据采集" })).toHaveFocus();
 });
 
 test("keeps the newer successful notice when its evidence completes before an older symbol", async () => {
@@ -1226,10 +1226,10 @@ test("keeps the newer successful notice when its evidence completes before an ol
     if (init?.method === "DELETE" && path === "/api/symbols/BTCUSDT") {
       return btcDelete.promise;
     }
-    if (init?.method === "DELETE" && path === "/api/symbols/PEPEUSDT") {
+    if (init?.method === "DELETE" && path === "/api/symbols/1000PEPEUSDT") {
       return pepeDelete.promise;
     }
-    const symbolName = path.includes("PEPEUSDT") ? "PEPEUSDT" : "BTCUSDT";
+    const symbolName = path.includes("1000PEPEUSDT") ? "1000PEPEUSDT" : "BTCUSDT";
     if (committed.has(symbolName) && path.endsWith("/profile")) {
       return symbolName === "BTCUSDT" ? btcProfile.promise : pepeProfile.promise;
     }
@@ -1251,16 +1251,16 @@ test("keeps the newer successful notice when its evidence completes before an ol
 
   render(<SymbolsPage />);
   const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
-  const pepe = screen.getByRole("article", { name: "PEPEUSDT 数据证据" });
+  const pepe = screen.getByRole("article", { name: "1000PEPEUSDT 数据证据" });
   await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
   await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 BTCUSDT" })).getByRole("button", { name: "确认停用" }));
-  await user.click(within(pepe).getByRole("button", { name: "停用 PEPEUSDT 数据采集" }));
-  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 PEPEUSDT" })).getByRole("button", { name: "确认停用" }));
+  await user.click(within(pepe).getByRole("button", { name: "停用 1000PEPEUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 1000PEPEUSDT" })).getByRole("button", { name: "确认停用" }));
 
-  committed.add("PEPEUSDT");
+  committed.add("1000PEPEUSDT");
   pepeDelete.resolve(jsonResponse({
     ...baseSymbol,
-    symbol: "PEPEUSDT",
+    symbol: "1000PEPEUSDT",
     enabled: false,
     data_status: "disabled",
     updated_at: "2026-07-21T10:02:00Z",
@@ -1268,7 +1268,7 @@ test("keeps the newer successful notice when its evidence completes before an ol
   pepeProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
 
   expect(await screen.findByRole("status", { name: "币种已停用" })).toHaveTextContent(
-    "PEPEUSDT 已停用；历史数据已保留。",
+    "1000PEPEUSDT 已停用；历史数据已保留。",
   );
 
   committed.add("BTCUSDT");
@@ -1292,7 +1292,7 @@ test("keeps the newer successful notice when its evidence completes before an ol
   });
   const notices = screen.getAllByRole("status", { name: "币种已停用" });
   expect(notices).toHaveLength(1);
-  expect(notices[0]).toHaveTextContent("PEPEUSDT 已停用；历史数据已保留。");
+  expect(notices[0]).toHaveTextContent("1000PEPEUSDT 已停用；历史数据已保留。");
   expect(notices[0]).not.toHaveTextContent("BTCUSDT");
 });
 
@@ -1307,7 +1307,7 @@ test("does not let an older success overwrite a newer mutation failure", async (
     if (init?.method === "DELETE" && path === "/api/symbols/BTCUSDT") {
       return btcDelete.promise;
     }
-    if (init?.method === "DELETE" && path === "/api/symbols/PEPEUSDT") {
+    if (init?.method === "DELETE" && path === "/api/symbols/1000PEPEUSDT") {
       return pepeDelete.promise;
     }
     if (btcCommitted && path.endsWith("BTCUSDT/profile")) {
@@ -1331,11 +1331,11 @@ test("does not let an older success overwrite a newer mutation failure", async (
 
   render(<SymbolsPage />);
   const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
-  const pepe = screen.getByRole("article", { name: "PEPEUSDT 数据证据" });
+  const pepe = screen.getByRole("article", { name: "1000PEPEUSDT 数据证据" });
   await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
   await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 BTCUSDT" })).getByRole("button", { name: "确认停用" }));
-  await user.click(within(pepe).getByRole("button", { name: "停用 PEPEUSDT 数据采集" }));
-  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 PEPEUSDT" })).getByRole("button", { name: "确认停用" }));
+  await user.click(within(pepe).getByRole("button", { name: "停用 1000PEPEUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 1000PEPEUSDT" })).getByRole("button", { name: "确认停用" }));
 
   pepeDelete.resolve(jsonResponse({ detail: "temporarily unavailable" }, 503));
   const newerFailure = await screen.findByRole("alert");
@@ -1664,7 +1664,7 @@ test("filters the full symbol grid from the title and action row", async () => {
   await user.type(filter, "pepe");
 
   expect(screen.queryByRole("article", { name: "BTCUSDT 数据证据" })).not.toBeInTheDocument();
-  expect(screen.getByRole("article", { name: "PEPEUSDT 数据证据" })).toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "1000PEPEUSDT 数据证据" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "添加币种" })).toBeInTheDocument();
 });
 
@@ -1709,7 +1709,7 @@ test("shows a filtered-empty state and clears the filter without implying the ca
   expect(empty).toHaveTextContent("当前筛选没有匹配项；已监控币种并未被删除。");
   await user.click(within(empty).getByRole("button", { name: "清除筛选" }));
   expect(screen.getByRole("article", { name: "BTCUSDT 数据证据" })).toBeInTheDocument();
-  expect(screen.getByRole("article", { name: "PEPEUSDT 数据证据" })).toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "1000PEPEUSDT 数据证据" })).toBeInTheDocument();
 });
 
 test("keeps the filter and primary action reachable in keyboard order", async () => {

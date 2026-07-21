@@ -94,11 +94,11 @@ def midnight_final_kline():
 
 def aggregate_trade(identity: int = 42):
     return event(
-        "pepeusdt@aggtrade",
+        "1000pepeusdt@aggtrade",
         {
             "e": "aggTrade",
             "E": 1_753_099_200_010 + identity,
-            "s": "PEPEUSDT",
+            "s": "1000PEPEUSDT",
             "a": identity,
             "p": "0.000012340000000000",
             "q": "1000000.000000000000000000",

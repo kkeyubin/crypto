@@ -70,7 +70,7 @@ def test_each_reason_independently_blocks_eligibility(
 
 def test_all_reasons_are_evaluated_without_short_circuiting() -> None:
     context = EligibilityContext(
-        symbol="PEPEUSDT",
+        symbol="1000PEPEUSDT",
         metadata_verified=False,
         history_start=NOW - timedelta(days=1),
         history_end=NOW,
@@ -82,7 +82,7 @@ def test_all_reasons_are_evaluated_without_short_circuiting() -> None:
         required_source_degraded=True,
     )
     pepe_policy = SymbolEligibilityPolicy(
-        symbol="PEPEUSDT",
+        symbol="1000PEPEUSDT",
         minimum_history=timedelta(days=30),
         minimum_coverage_fraction=0.99,
         minimum_median_hourly_volume=500_000,
@@ -98,6 +98,6 @@ def test_policy_must_be_owned_by_the_same_symbol() -> None:
     with pytest.raises(ValueError, match="symbol"):
         evaluate_eligibility(
             eligible_context(),
-            replace(policy(), symbol="PEPEUSDT"),
+            replace(policy(), symbol="1000PEPEUSDT"),
             now=NOW,
         )
