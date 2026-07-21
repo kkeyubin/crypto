@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { SymbolEvidence } from "../apiClient";
 
@@ -69,7 +69,7 @@ export function SymbolCard({ evidence, focusToken, onDisable, onEnable, onMutati
     return Number.isNaN(parsed.getTime()) ? t("unknownValue") : `${dateTimeFormat.format(parsed)} UTC`;
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (confirmingDisable) {
       dialogWasOpen.current = true;
       confirmButton.current?.focus();
@@ -79,7 +79,7 @@ export function SymbolCard({ evidence, focusToken, onDisable, onEnable, onMutati
     }
   }, [confirmingDisable]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (focusToken !== undefined) {
       actionButton.current?.focus();
       if (document.activeElement === actionButton.current) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AddSymbolForm } from "./components/AddSymbolForm";
 import { disableSymbol, enableSymbol, type SymbolEvidenceState } from "./apiClient";
@@ -60,7 +60,7 @@ function RecoverableSymbolState({ item, focusToken, onRetry }: {
   const owner = useRef<HTMLElement>(null);
   const retry = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (focusToken === undefined) {
       return;
     }

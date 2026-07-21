@@ -854,7 +854,7 @@ test("requires a focused confirmation before disabling collection and preserves 
   await waitFor(() => expect(profileRefreshRequested).toBe(true));
   expect(screen.queryByRole("alertdialog", { name: "确认停用 BTCUSDT" })).not.toBeInTheDocument();
   const updating = screen.getByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
-  expect(updating).toHaveFocus();
+  await waitFor(() => expect(updating).toHaveFocus());
   freshProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
 
   expect(await screen.findByRole("status", { name: "币种已停用" })).toHaveTextContent("BTCUSDT 已停用；历史数据已保留。");
@@ -893,7 +893,9 @@ test("shows a symbol-scoped error and no success notice when post-disable eviden
 
   const refreshError = await screen.findByRole("article", { name: "BTCUSDT 最新数据确认失败" });
   expect(refreshError).toHaveTextContent("BTCUSDT 的采集状态已经改变，但最新数据证据暂时无法确认。请重试；不会显示操作前的旧证据。");
-  expect(within(refreshError).getByRole("button", { name: "重试确认 BTCUSDT 最新数据" })).toHaveFocus();
+  await waitFor(() => expect(
+    within(refreshError).getByRole("button", { name: "重试确认 BTCUSDT 最新数据" }),
+  ).toHaveFocus());
   expect(screen.queryByRole("status", { name: "币种已停用" })).not.toBeInTheDocument();
 });
 
@@ -1069,7 +1071,7 @@ test.each(["delete-first", "list-first"] as const)(
         updated_at: "2026-07-21T10:01:00Z",
       }));
       const updatingBeforeList = await screen.findByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
-      expect(updatingBeforeList).toHaveFocus();
+      await waitFor(() => expect(updatingBeforeList).toHaveFocus());
       staleReload.resolve(jsonResponse(staleSymbols()));
     } else {
       staleReload.resolve(jsonResponse(staleSymbols()));
@@ -1085,7 +1087,7 @@ test.each(["delete-first", "list-first"] as const)(
     }
 
     const updating = await screen.findByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
-    expect(updating).toHaveFocus();
+    await waitFor(() => expect(updating).toHaveFocus());
     const filter = screen.getByRole("searchbox", { name: "筛选已加载币种" });
     if (raceOrder === "list-first") {
       act(() => filter.focus());
@@ -1118,7 +1120,7 @@ test.each(["delete-first", "list-first"] as const)(
       expect(filter).toHaveFocus();
       expect(replacementAction).not.toHaveFocus();
     } else {
-      expect(replacementAction).toHaveFocus();
+      await waitFor(() => expect(replacementAction).toHaveFocus());
     }
     expect(await screen.findAllByRole("status", { name: "币种已停用" })).toHaveLength(1);
     expect(symbolPosts).toBe(1);
@@ -1179,7 +1181,7 @@ test("keeps focus with the most recent mutation when an earlier symbol finishes 
     updated_at: "2026-07-21T10:01:00Z",
   }));
   const pepeOwner = await screen.findByRole("article", { name: "正在确认 PEPEUSDT 最新数据" });
-  expect(pepeOwner).toHaveFocus();
+  await waitFor(() => expect(pepeOwner).toHaveFocus());
 
   committed.add("BTCUSDT");
   btcDelete.resolve(jsonResponse({
@@ -1199,7 +1201,9 @@ test("keeps focus with the most recent mutation when an earlier symbol finishes 
 
   pepeProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
   const disabledPepe = await screen.findByRole("article", { name: "PEPEUSDT 数据证据" });
-  expect(within(disabledPepe).getByRole("button", { name: "重新启用 PEPEUSDT 数据采集" })).toHaveFocus();
+  await waitFor(() => expect(
+    within(disabledPepe).getByRole("button", { name: "重新启用 PEPEUSDT 数据采集" }),
+  ).toHaveFocus());
 });
 
 test("keeps the newer successful notice when its evidence completes before an older symbol", async () => {
@@ -1541,7 +1545,7 @@ test("suppresses committed notice and focus when a newer opposite server state w
   await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
   await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "确认停用" }));
   const updating = await screen.findByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
-  expect(updating).toHaveFocus();
+  await waitFor(() => expect(updating).toHaveFocus());
 
   serverSuperseded = true;
   newerList.resolve(jsonResponse([
