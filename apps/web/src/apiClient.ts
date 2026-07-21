@@ -330,22 +330,6 @@ export async function loadMarketDataHealth(signal?: AbortSignal): Promise<Market
   return decodeHealth(await getJson("/api/operations/market-data", signal));
 }
 
-export async function loadSymbolsDashboard(signal?: AbortSignal): Promise<SymbolsDashboard> {
-  const symbols = await listSymbols(signal);
-  const healthPromise = loadMarketDataHealth(signal).then(
-    (health): MarketDataHealthState => ({ status: "ready", health }),
-    (): MarketDataHealthState => ({ status: "error" }),
-  );
-  const items = await Promise.all(symbols.map(async (symbol): Promise<SymbolEvidenceState> => {
-    try {
-      return { status: "ready", symbol, evidence: await loadSymbolEvidence(symbol, signal) };
-    } catch {
-      return { status: "error", symbol };
-    }
-  }));
-  return { health: await healthPromise, items, symbolsTruncated: symbols.length === 100 };
-}
-
 export interface AddSymbolInput {
   readonly symbol: string;
   readonly historyStart: string;

@@ -13,6 +13,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as Response;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 const baseSymbol = {
   enabled: true,
   history_start: "2026-07-01T00:00:00Z",
@@ -239,6 +249,29 @@ test("keeps BTC and PEPE evidence independent and separates data-health dimensio
   expect(within(pepe).getByText("必需流不完整，无法确认新鲜度")).toBeInTheDocument();
 });
 
+test("publishes health and ready symbol evidence while another symbol request is still pending", async () => {
+  const pepeProfile = deferred<Response>();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = String(input);
+      return path.endsWith("PEPEUSDT/profile")
+        ? pepeProfile.promise
+        : Promise.resolve(dashboardResponse(path));
+    }),
+  );
+
+  render(<SymbolsPage />);
+
+  expect(await screen.findByRole("region", { name: "数据来源与健康" })).toBeInTheDocument();
+  expect(await screen.findByRole("article", { name: "BTCUSDT 数据证据" })).toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "正在加载 PEPEUSDT 数据" })).toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "正在加载币种与数据" })).not.toBeInTheDocument();
+
+  pepeProfile.resolve(dashboardResponse("/api/symbols/PEPEUSDT/profile"));
+  expect(await screen.findByRole("article", { name: "PEPEUSDT 数据证据" })).toBeInTheDocument();
+});
+
 test("shows backend stale status while retaining the oldest exact required-stream event", async () => {
   vi.stubGlobal(
     "fetch",
@@ -424,6 +457,7 @@ test("keeps symbol evidence visible when operations health fails and retries hea
 test("adds a symbol with inclusive UTC days converted to a planner-compatible half-open range", async () => {
   const user = userEvent.setup();
   const requests: Array<{ path: string; body: unknown }> = [];
+  let listRequests = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -466,6 +500,7 @@ test("adds a symbol with inclusive UTC days converted to a planner-compatible ha
         });
       }
       if (path.startsWith("/api/symbols?")) {
+        listRequests += 1;
         return jsonResponse([]);
       }
       return jsonResponse({
@@ -503,6 +538,7 @@ test("adds a symbol with inclusive UTC days converted to a planner-compatible ha
   expect(progress).toHaveTextContent("已创建 4 个回填任务");
   expect(progress).toHaveTextContent("运行中");
   expect(progress).toHaveTextContent("排队中");
+  await waitFor(() => expect(listRequests).toBe(3));
   await user.click(within(progress).getByRole("button", { name: "刷新回填进度" }));
   expect(await within(progress).findAllByText("已完成")).toHaveLength(4);
   expect(requests).toEqual([
@@ -608,7 +644,7 @@ test("keeps a configured symbol visible and retries only backfill after partial 
           symbol: "SOLUSDT",
           history_start: "2026-07-01T00:00:00Z",
           history_end: "2026-07-21T00:00:00Z",
-          data_status: "requested",
+          data_status: backfillPosts >= 2 ? "backfilling" : "requested",
           metadata_status: "metadata_unverified",
         }] : []);
       }
@@ -657,6 +693,8 @@ test("keeps a configured symbol visible and retries only backfill after partial 
 
   await user.click(within(partial).getByRole("button", { name: "仅重试创建回填任务" }));
   expect(await screen.findByRole("status", { name: "回填任务已创建" })).toHaveTextContent("已创建 3 个回填任务");
+  const refreshedCard = await screen.findByRole("article", { name: "SOLUSDT 数据证据" });
+  await waitFor(() => expect(within(refreshedCard).getByText(/采集状态/)).toHaveTextContent("回填中"));
   expect(symbolPosts).toBe(1);
   expect(backfillPosts).toBe(2);
 });
@@ -664,18 +702,36 @@ test("keeps a configured symbol visible and retries only backfill after partial 
 test("requires a focused confirmation before disabling collection and preserves history", async () => {
   const user = userEvent.setup();
   const disabled: string[] = [];
+  const disableRequest = deferred<Response>();
+  const freshProfile = deferred<Response>();
+  let collectionDisabled = false;
+  let profileRefreshRequested = false;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (init?.method === "DELETE") {
         disabled.push(path);
+        return disableRequest.promise;
+      }
+      if (collectionDisabled && path.endsWith("BTCUSDT/profile")) {
+        profileRefreshRequested = true;
+        return freshProfile.promise;
+      }
+      if (collectionDisabled && path.endsWith("BTCUSDT/eligibility")) {
         return jsonResponse({
-          ...baseSymbol,
           symbol: "BTCUSDT",
-          enabled: false,
-          data_status: "disabled",
+          eligible: false,
+          reason_codes: ["data_not_ready"],
+          evaluated_at: "2026-07-21T10:01:00Z",
         });
+      }
+      if (collectionDisabled && (
+        path.includes("BTCUSDT/partitions") ||
+        path.includes("BTCUSDT/gaps") ||
+        path.includes("BTCUSDT/streams")
+      )) {
+        return jsonResponse([]);
       }
       return dashboardResponse(path);
     }),
@@ -708,20 +764,80 @@ test("requires a focused confirmation before disabling collection and preserves 
   confirm = within(dialog).getByRole("button", { name: "确认停用" });
   await user.click(confirm);
 
+  expect(confirm).toHaveFocus();
+  expect(confirm).not.toBeDisabled();
+  expect(confirm).toHaveAttribute("aria-disabled", "true");
+  await user.click(confirm);
+  expect(disabled).toEqual(["/api/symbols/BTCUSDT"]);
+  await user.tab();
+  expect(within(dialog).getByRole("button", { name: "取消" })).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(screen.getByRole("alertdialog", { name: "确认停用 BTCUSDT" })).toBeInTheDocument();
+  await user.tab({ shift: true });
+  expect(confirm).toHaveFocus();
+
+  collectionDisabled = true;
+  disableRequest.resolve(jsonResponse({
+    ...baseSymbol,
+    symbol: "BTCUSDT",
+    enabled: false,
+    data_status: "disabled",
+  }));
+
+  await waitFor(() => expect(profileRefreshRequested).toBe(true));
+  expect(screen.getByRole("alertdialog", { name: "确认停用 BTCUSDT" })).toBeInTheDocument();
+  expect(confirm).toHaveFocus();
+  freshProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
+
   expect(await screen.findByRole("status", { name: "币种已停用" })).toHaveTextContent("BTCUSDT 已停用；历史数据已保留。");
   expect(disabled).toEqual(["/api/symbols/BTCUSDT"]);
-  await waitFor(() => expect(screen.getByRole("button", { name: "重新启用 BTCUSDT 数据采集" })).toHaveFocus());
+  const disabledCard = screen.getByRole("article", { name: "BTCUSDT 数据证据" });
+  expect(within(disabledCard).getByText("画像构建中")).toBeInTheDocument();
+  expect(within(disabledCard).getByText("数据尚未就绪")).toBeInTheDocument();
+  expect(within(disabledCard).queryByText("120,000")).not.toBeInTheDocument();
+  await waitFor(() => expect(within(disabledCard).getByRole("button", { name: "重新启用 BTCUSDT 数据采集" })).toHaveFocus());
+});
+
+test("shows a symbol-scoped error and no success notice when post-disable evidence refresh fails", async () => {
+  const user = userEvent.setup();
+  let disabled = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === "DELETE") {
+      disabled = true;
+      return jsonResponse({
+        ...baseSymbol,
+        symbol: "BTCUSDT",
+        enabled: false,
+        data_status: "disabled",
+      });
+    }
+    if (disabled && path.endsWith("BTCUSDT/profile")) {
+      return jsonResponse({ detail: "profile unavailable" }, 503);
+    }
+    return dashboardResponse(path);
+  }));
+
+  render(<SymbolsPage />);
+  const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+  await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "确认停用" }));
+
+  expect(await screen.findByRole("article", { name: "BTCUSDT 数据加载失败" })).toBeInTheDocument();
+  expect(screen.queryByRole("status", { name: "币种已停用" })).not.toBeInTheDocument();
 });
 
 test("re-enables a disabled symbol with its immutable history identity and no automatic backfill", async () => {
   const user = userEvent.setup();
   const posts: Array<{ path: string; body: unknown }> = [];
+  let enabled = false;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (init?.method === "POST") {
         posts.push({ path, body: JSON.parse(String(init.body)) as unknown });
+        enabled = true;
         return jsonResponse({
           ...baseSymbol,
           symbol: "BTCUSDT",
@@ -739,6 +855,24 @@ test("re-enables a disabled symbol with its immutable history identity and no au
           history_start: "2026-07-01T00:00:00Z",
           history_end: "2026-07-21T00:00:00Z",
         }]);
+      }
+      if (!enabled && path.endsWith("BTCUSDT/profile")) {
+        return jsonResponse({ detail: "not ready" }, 404);
+      }
+      if (!enabled && path.endsWith("BTCUSDT/eligibility")) {
+        return jsonResponse({
+          symbol: "BTCUSDT",
+          eligible: false,
+          reason_codes: ["data_not_ready"],
+          evaluated_at: "2026-07-21T10:00:00Z",
+        });
+      }
+      if (!enabled && (
+        path.includes("BTCUSDT/partitions") ||
+        path.includes("BTCUSDT/gaps") ||
+        path.includes("BTCUSDT/streams")
+      )) {
+        return jsonResponse([]);
       }
       return dashboardResponse(path);
     }),
@@ -761,6 +895,9 @@ test("re-enables a disabled symbol with its immutable history identity and no au
     },
   }]);
   expect(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" })).toBeInTheDocument();
+  expect(within(btc).getByText("120,000")).toBeInTheDocument();
+  expect(within(btc).getByText("符合数据启用条件")).toBeInTheDocument();
+  expect(within(btc).queryByText("数据尚未就绪")).not.toBeInTheDocument();
 });
 
 test("filters the full symbol grid from the title and action row", async () => {
@@ -773,12 +910,38 @@ test("filters the full symbol grid from the title and action row", async () => {
   render(<SymbolsPage />);
   await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
 
-  const filter = screen.getByRole("searchbox", { name: "筛选币种" });
+  const filter = screen.getByRole("searchbox", { name: "筛选已加载币种" });
   await user.type(filter, "pepe");
 
   expect(screen.queryByRole("article", { name: "BTCUSDT 数据证据" })).not.toBeInTheDocument();
   expect(screen.getByRole("article", { name: "PEPEUSDT 数据证据" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "添加币种" })).toBeInTheDocument();
+});
+
+test("states that a truncated symbol filter searches only the loaded first 100 items", async () => {
+  const user = userEvent.setup();
+  const symbols = Array.from({ length: 100 }, (_, index) => ({
+    ...baseSymbol,
+    symbol: `S${String(index).padStart(3, "0")}USDT`,
+  }));
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.startsWith("/api/symbols?")) {
+      return Promise.resolve(jsonResponse(symbols));
+    }
+    if (path === "/api/operations/market-data") {
+      return Promise.resolve(dashboardResponse(path));
+    }
+    return new Promise<Response>(() => undefined);
+  }));
+
+  render(<SymbolsPage />);
+
+  expect(await screen.findByText("当前仅加载并显示前 100 个币种；筛选只搜索这 100 个已加载项，不会搜索其余配置。")).toBeInTheDocument();
+  await user.type(screen.getByRole("searchbox", { name: "筛选已加载币种" }), "BTC");
+  expect(screen.getByRole("status", { name: "没有匹配的币种" })).toHaveTextContent(
+    "当前筛选在已加载的前 100 个币种中没有匹配；其余配置尚未检查。",
+  );
 });
 
 test("shows a filtered-empty state and clears the filter without implying the catalog is empty", async () => {
@@ -790,7 +953,7 @@ test("shows a filtered-empty state and clears the filter without implying the ca
 
   render(<SymbolsPage />);
   await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
-  await user.type(screen.getByRole("searchbox", { name: "筛选币种" }), "doge");
+  await user.type(screen.getByRole("searchbox", { name: "筛选已加载币种" }), "doge");
 
   const empty = screen.getByRole("status", { name: "没有匹配的币种" });
   expect(empty).toHaveTextContent("当前筛选没有匹配项；已监控币种并未被删除。");
@@ -810,7 +973,7 @@ test("keeps the filter and primary action reachable in keyboard order", async ()
   await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
 
   await user.tab();
-  expect(screen.getByRole("searchbox", { name: "筛选币种" })).toHaveFocus();
+  expect(screen.getByRole("searchbox", { name: "筛选已加载币种" })).toHaveFocus();
   await user.tab();
   expect(screen.getByRole("button", { name: "添加币种" })).toHaveFocus();
 });

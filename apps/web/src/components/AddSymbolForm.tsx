@@ -5,6 +5,7 @@ import type { IngestionJobView } from "../contracts";
 
 interface AddSymbolFormProps {
   onAdded: () => void;
+  onBackfillsCreated: () => void;
 }
 
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
@@ -48,7 +49,7 @@ export function toArchiveUtcRange(
   };
 }
 
-export function AddSymbolForm({ onAdded }: AddSymbolFormProps) {
+export function AddSymbolForm({ onAdded, onBackfillsCreated }: AddSymbolFormProps) {
   const { t } = useTranslation();
   const [symbol, setSymbol] = useState("");
   const [historyStart, setHistoryStart] = useState("");
@@ -66,6 +67,7 @@ export function AddSymbolForm({ onAdded }: AddSymbolFormProps) {
     try {
       setJobs(await createBackfills(input));
       setBackfillPending(false);
+      onBackfillsCreated();
     } catch {
       setBackfillPending(true);
     }

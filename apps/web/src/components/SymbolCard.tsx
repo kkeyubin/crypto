@@ -71,9 +71,16 @@ export function SymbolCard({ evidence, onDisable, onEnable }: SymbolCardProps) {
     }
   }, [confirmingDisable]);
 
-  const closeConfirmation = () => setConfirmingDisable(false);
+  const closeConfirmation = () => {
+    if (!disabling) {
+      setConfirmingDisable(false);
+    }
+  };
 
   const confirmDisable = async () => {
+    if (disabling) {
+      return;
+    }
     setDisabling(true);
     try {
       await onDisable(symbol.symbol);
@@ -191,7 +198,9 @@ export function SymbolCard({ evidence, onDisable, onEnable }: SymbolCardProps) {
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault();
-              closeConfirmation();
+              if (!disabling) {
+                closeConfirmation();
+              }
             } else if (event.key === "Tab") {
               if (event.shiftKey && document.activeElement === cancelButton.current) {
                 event.preventDefault();
@@ -206,8 +215,8 @@ export function SymbolCard({ evidence, onDisable, onEnable }: SymbolCardProps) {
           <h3>{t("confirmDisableTitle", { symbol: symbol.symbol })}</h3>
           <p>{t("disablePreservesHistory")}</p>
           <div className="confirmation-actions">
-            <button ref={cancelButton} type="button" onClick={closeConfirmation}>{t("cancel")}</button>
-            <button ref={confirmButton} className="danger-action" type="button" disabled={disabling} onClick={() => void confirmDisable()}>
+            <button ref={cancelButton} type="button" aria-disabled={disabling} onClick={closeConfirmation}>{t("cancel")}</button>
+            <button ref={confirmButton} className="danger-action" type="button" aria-disabled={disabling} onClick={() => void confirmDisable()}>
               {disabling ? t("disabling") : t("confirmDisable")}
             </button>
           </div>

@@ -21,8 +21,9 @@ export function SymbolsPage() {
     setActionNotice(null);
     try {
       const disabled = await disableSymbol(symbol);
-      symbols.replaceSymbol(disabled);
-      setActionNotice({ kind: "disabled", symbol });
+      if (await symbols.refreshSymbol(disabled)) {
+        setActionNotice({ kind: "disabled", symbol });
+      }
     } catch {
       setActionNotice({ kind: "disableError" });
     }
@@ -32,8 +33,9 @@ export function SymbolsPage() {
     setActionNotice(null);
     try {
       const enabled = await enableSymbol(symbol);
-      symbols.replaceSymbol(enabled);
-      setActionNotice({ kind: "enabled", symbol: symbol.symbol });
+      if (await symbols.refreshSymbol(enabled)) {
+        setActionNotice({ kind: "enabled", symbol: symbol.symbol });
+      }
     } catch {
       setActionNotice({ kind: "enableError" });
     }
@@ -60,7 +62,7 @@ export function SymbolsPage() {
           </button>
         </div>
       </div>
-      {showAddForm ? <AddSymbolForm onAdded={symbols.reload} /> : null}
+      {showAddForm ? <AddSymbolForm onAdded={symbols.reload} onBackfillsCreated={symbols.reload} /> : null}
       {actionNotice === null ? null : actionNotice.kind === "disabled" || actionNotice.kind === "enabled" ? (
         <p className="action-notice" role="status" aria-label={t(actionNotice.kind === "disabled" ? "symbolDisabledLabel" : "symbolEnabledLabel")}>
           {t(actionNotice.kind === "disabled" ? "symbolDisabledNotice" : "symbolEnabledNotice", { symbol: actionNotice.symbol })}
@@ -98,7 +100,7 @@ export function SymbolsPage() {
           {normalizedFilter.length > 0 && visibleItems.length === 0 ? (
             <section className="page-state filtered-empty" role="status" aria-label={t("filteredEmptyTitle")}>
               <h2>{t("filteredEmptyTitle")}</h2>
-              <p>{t("filteredEmptyDescription")}</p>
+              <p>{t(symbols.dashboard.symbolsTruncated ? "filteredEmptyTruncatedDescription" : "filteredEmptyDescription")}</p>
               <button type="button" onClick={() => setFilter("")}>{t("clearFilter")}</button>
             </section>
           ) : null}

@@ -70,7 +70,7 @@ test("translates the symbols title, filter, and action after a persisted English
   await user.click(screen.getByRole("button", { name: "切换为英文" }));
 
   expect(screen.getByRole("heading", { name: "Symbols & Data" })).toBeInTheDocument();
-  expect(screen.getByRole("searchbox", { name: "Filter symbols" })).toBeInTheDocument();
+  expect(screen.getByRole("searchbox", { name: "Filter loaded symbols" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Add symbol" })).toBeInTheDocument();
   expect(localStorage.getItem("crypto-locale")).toBe("en");
 });

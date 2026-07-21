@@ -18,6 +18,12 @@ The initial implementation and every review correction were driven by a failing 
 8. The disable dialog did not trap focus or return focus after Escape, cancel, or confirmation.
 9. Disabled symbols had no immutable-identity re-enable action.
 10. A non-matching filter rendered an unexplained blank grid.
+11. Initial rendering waited for every per-symbol evidence request, so one hung symbol also hid ready symbols and operations health.
+12. Symbol and health retries had no abort signal or temporal fence, allowing an older response to overwrite a newer retry or full reload.
+13. Disable and re-enable replaced only `SymbolView` while retaining stale profile, eligibility, partitions, gaps, and streams.
+14. Successful initial and retried backfill creation left the symbol card at its pre-backfill status.
+15. The 100-symbol notice incorrectly implied that the client-side filter could search configurations that were not loaded.
+16. A slow disable request disabled the focused confirmation control and could break the modal keyboard/focus lifecycle.
 
 Focused tests were observed failing for the missing behavior and then passing after each minimal correction.
 
@@ -35,7 +41,10 @@ Focused tests were observed failing for the missing behavior and then passing af
 - If configuration succeeds but backfill creation fails, the configured symbol is reloaded into the grid and the form shows a partial-success state.
 - The recovery button retries only the deterministic backfill POST; it never repeats symbol creation and therefore preserves backend idempotency.
 - Symbol evidence requests resolve independently. A PEPE failure produces a PEPE retry card while BTC remains available; the retry reloads only PEPE.
+- Once the bounded symbol list is available, the dashboard publishes loading cards immediately. Operations health and each symbol then settle independently, so a hung PEPE request cannot hide ready BTC evidence or health.
 - Operations health has its own unavailable/loading/retry state and does not hide symbol evidence.
+- Every list, health, and per-symbol evidence load has an `AbortController`. A monotonically increasing dashboard generation fences full reloads and unmounts; per-resource operation tokens fence overlapping symbol and health retries. Stale promises cannot commit even when a transport mock ignores abort.
+- Unmount aborts outstanding work, suppresses every later state commit, and prevents a retained refresh callback from starting another request.
 - Server error bodies are never rendered; all exposed errors remain localized and generic.
 
 ## Evidence invariants
@@ -52,15 +61,19 @@ Focused tests were observed failing for the missing behavior and then passing af
 - Partition and gap values are labeled as visible counts; truncated values use “at least” and include a not-total notice, so zero or total is never implied when more records may exist.
 - The partition metric is named “approved catalog rows” because the public API does not distinguish archive and live partitions.
 - A full 100-symbol page displays a bounded-list notice rather than claiming the complete configured universe.
-- A filter with no matches has its own state and clear-filter action; it does not imply that monitored symbols were deleted.
+- The filter label and bounded-list notice state that filtering searches only the loaded first 100 items; it never implies that unloaded configurations can be found.
+- A filter with no matches has its own state and clear-filter action. When the list is truncated, the empty result explicitly says that remaining configurations were not searched; otherwise it does not imply that monitored symbols were deleted.
 
 ## Controlled actions and accessibility
 
 - `agg_trade` history still requires symbol-level and backfill-level explicit opt-ins.
 - Backfill status remains manually refreshable through `GET /api/backfills/{job_id}`.
-- Disablement explains history preservation and uses a modal focus trap. Tab and Shift+Tab stay inside; Escape and cancel close it; focus returns to the opener.
-- After confirmation, the card updates in place and focus returns to the replacement re-enable action.
+- Disablement explains history preservation and uses a modal focus trap. Tab and Shift+Tab stay inside; Escape and cancel close it before submission; focus returns to the opener.
+- During a slow disable request, the focused confirmation control remains focusable with `aria-disabled`, repeat activation is guarded, Tab and Shift+Tab remain trapped, and Escape cannot dismiss an in-flight action.
+- After disable or re-enable succeeds, the client fetches a complete fresh evidence bundle for the returned `SymbolView` and installs it atomically before reporting success. Old eligibility, profile, partitions, gaps, or streams are never carried forward. Refresh failure becomes a symbol-scoped error and does not emit a false success notice.
+- The disable dialog stays mounted while the authoritative evidence request is pending. After the atomic replacement, focus returns to the replacement re-enable action.
 - Re-enable POSTs the card's immutable `history_start`, `history_end`, and `include_agg_trades` values through the existing `/api/symbols` endpoint. It never creates backfills automatically, and both the copy and completion notice say so.
+- Every successful `createBackfills` path triggers a fresh dashboard load, including partial-success retry. A failed backfill still leaves the newly configured symbol visible and retryable.
 - Chinese remains the default; English translations cover every added state and action.
 
 ## Browser visual self-review
@@ -74,7 +87,7 @@ Review-hardening states reuse the same surface, border, focus, warning, and resp
 All commands below were run after the final review corrections:
 
 - `npm run contracts:check-types` — passed.
-- `npm run web:test -- --run` — 3 files, 31 tests passed.
+- `npm run web:test -- --run` — 4 files, 38 tests passed.
 - `npm run web:build` — passed; 56 modules transformed.
 - `cd services/api && .venv/bin/pytest -q tests/routes/test_symbols.py tests/routes/test_data.py tests/routes/test_operations.py tests/routes/test_control.py` — 26 tests passed, including the real archive-planner range test.
 - `cd services/api && .venv/bin/ruff check src tests` — passed.
