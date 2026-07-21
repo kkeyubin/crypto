@@ -121,7 +121,7 @@ active catalog.
 ```text
 cd services/api
 .venv/bin/pytest -q
-# 340 passed, 1 skipped
+# 341 passed, 1 skipped
 
 .venv/bin/ruff check src tests
 # All checks passed!
@@ -158,3 +158,21 @@ The final independent review approved the implementation with no remaining
 Critical or Important findings. Its targeted publish-heartbeat verification
 passed; the real PostgreSQL dual-session composition remains in the opt-in
 integration suite described above.
+
+## PostgreSQL gate follow-up
+
+The first real PostgreSQL run exposed that scalar FK IDs alone did not give the
+SQLAlchemy unit of work an ORM relationship topology. A single flush containing
+new source, partition, and manifest rows could therefore emit the manifest
+INSERT before its partition and fail `fk_data_manifests_partition_source`.
+
+A focused RED fake-session regression reproduced the actual constraint order
+as `manifest FK observed before partition INSERT`. Catalog approval now flushes
+new source, then partition, then manifest explicitly, while keeping all three
+flushes inside the same uncommitted transaction. The same regression also
+exposed strict Pydantic reloading of a JSON-mode dump; persisted manifests now
+exclude computed `resolved_url` and are rehydrated through JSON validation.
+
+Focused verification passed with `21 passed, 1 skipped`; final API verification
+passed with `341 passed, 1 skipped`. The skipped case remains the opt-in real
+PostgreSQL suite when `CRYPTO_TEST_DATABASE_URL` is absent.

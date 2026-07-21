@@ -18,11 +18,13 @@ from crypto_research.contracts.manifest import (
     ValidationState,
 )
 from crypto_research.contracts.strategy import InstrumentRef
+from crypto_research.db.models import DataManifestRow, DataPartitionRow, SourceObjectRow
 from crypto_research.market.catalog import (
     CatalogCandidate,
     CatalogValidationError,
     InMemoryCatalogRepository,
     SecureDuckDBCatalog,
+    SqlAlchemyCatalogRepository,
 )
 
 START = datetime(2024, 1, 1, tzinfo=UTC)
@@ -355,5 +357,70 @@ def test_catalog_rejects_sub_millisecond_query_boundaries() -> None:
                 START.replace(microsecond=1),
                 END,
             )
+
+    asyncio.run(scenario())
+
+
+def test_sql_catalog_flushes_source_then_partition_then_manifest() -> None:
+    class EmptyResult:
+        def first(self):
+            return None
+
+        def all(self):
+            return []
+
+        def scalars(self):
+            return self
+
+    class ForeignKeyOrderingSession:
+        def __init__(self) -> None:
+            self.pending: list[object] = []
+            self.persisted: list[object] = []
+            self.flush_batches: list[tuple[type[object], ...]] = []
+
+        async def execute(self, _statement):
+            return EmptyResult()
+
+        def add(self, row: object) -> None:
+            self.pending.append(row)
+
+        async def flush(self) -> None:
+            if any(isinstance(row, DataManifestRow) for row in self.pending) and not any(
+                isinstance(row, DataPartitionRow) for row in self.persisted
+            ):
+                raise RuntimeError("manifest FK observed before partition INSERT")
+            if any(isinstance(row, DataPartitionRow) for row in self.pending) and not any(
+                isinstance(row, SourceObjectRow) for row in self.persisted
+            ):
+                raise RuntimeError("partition FK observed before source INSERT")
+            self.flush_batches.append(tuple(type(row) for row in self.pending))
+            self.persisted.extend(self.pending)
+            self.pending.clear()
+
+    async def scenario() -> None:
+        session = ForeignKeyOrderingSession()
+        repository = SqlAlchemyCatalogRepository(session)  # type: ignore[arg-type]
+
+        await repository.approve(
+            CatalogCandidate(
+                manifest(
+                    "00000000-0000-0000-0000-000000000151",
+                    "a" * 64,
+                    "b" * 64,
+                    "normalized/ordered.parquet",
+                ),
+                validations(),
+            )
+        )
+
+        assert session.flush_batches == [
+            (SourceObjectRow,),
+            (DataPartitionRow,),
+            (DataManifestRow,),
+        ]
+        stored = next(
+            row for row in session.persisted if isinstance(row, DataManifestRow)
+        )
+        assert "resolved_url" not in stored.manifest["source"]
 
     asyncio.run(scenario())

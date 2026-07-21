@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 from collections.abc import Iterator, Mapping
@@ -199,7 +200,7 @@ class SqlAlchemyCatalogRepository:
         active_rows = (await self._session.execute(active_statement)).all()
         exact_versions: list[DataPartitionRow] = []
         for partition, stored in active_rows:
-            existing_manifest = DataManifest.model_validate(stored.manifest)
+            existing_manifest = _stored_data_manifest(stored.manifest)
             if _partition_identity(existing_manifest) == _partition_identity(manifest):
                 exact_versions.append(partition)
             elif existing_manifest.start < manifest.end and existing_manifest.end > manifest.start:
@@ -227,6 +228,7 @@ class SqlAlchemyCatalogRepository:
                 checksum_sha256=manifest.source_checksum,
             )
             self._session.add(source)
+            await self._session.flush()
 
         partition_id = str(
             uuid5(
@@ -262,9 +264,10 @@ class SqlAlchemyCatalogRepository:
             source_object_id=source.id,
             source_url=manifest.source.resolved_url,
             source_checksum=manifest.source_checksum,
-            manifest=manifest.model_dump(mode="json"),
+            manifest=manifest.model_dump(mode="json", exclude_computed_fields=True),
         )
         self._session.add(partition)
+        await self._session.flush()
         self._session.add(stored_manifest)
         await self._session.flush()
         return _catalog_partition(partition, stored_manifest)
@@ -475,7 +478,7 @@ def _epoch_milliseconds(value: datetime) -> int:
 def _catalog_partition(
     partition: DataPartitionRow, stored_manifest: DataManifestRow
 ) -> CatalogPartition:
-    manifest = DataManifest.model_validate(stored_manifest.manifest)
+    manifest = _stored_data_manifest(stored_manifest.manifest)
     return CatalogPartition(
         partition_id=partition.id,
         manifest_id=stored_manifest.manifest_id,
@@ -491,3 +494,7 @@ def _catalog_partition(
         row_count=manifest.row_count,
         manifest=manifest,
     )
+
+
+def _stored_data_manifest(payload: Mapping[str, object]) -> DataManifest:
+    return DataManifest.model_validate_json(json.dumps(payload))

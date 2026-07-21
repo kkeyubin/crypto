@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
@@ -195,7 +196,7 @@ class SqlAlchemyApprovedCoverageResolver:
                 )
             ):
                 continue
-            manifest = DataManifest.model_validate(stored.manifest)
+            manifest = DataManifest.model_validate_json(json.dumps(stored.manifest))
             base = {
                 "symbol": partition.symbol,
                 "data_type": DataType(partition.dataset),
