@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: crypto_research
+      POSTGRES_USER: crypto
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crypto -d crypto_research"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    environment:
+      CRYPTO_ENVIRONMENT: production
+      CRYPTO_DATABASE_URL: postgresql+asyncpg://crypto:${POSTGRES_PASSWORD}@postgres:5432/crypto_research
+      CRYPTO_DATA_ROOT: /srv/crypto-research/data
+      CRYPTO_INTERNAL_TIMEZONE: UTC
+      CRYPTO_DEFAULT_LOCALE: zh-CN
+      CRYPTO_ALLOWED_HOSTS: '["127.0.0.1","localhost","192.168.1.4"]'
+      CRYPTO_SESSION_SECRET: ${CRYPTO_SESSION_SECRET:?set CRYPTO_SESSION_SECRET}
+    volumes:
+      - ${CRYPTO_DATA_ROOT:-/srv/crypto-research/data}:/srv/crypto-research/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    ports:
+      - "127.0.0.1:8088:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

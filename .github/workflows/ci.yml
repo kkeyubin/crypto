@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e './services/api[dev]'
+      - run: pytest -q
+        working-directory: services/api
+      - run: ruff check src tests
+        working-directory: services/api
+      - run: python scripts/export_schemas.py --check
+        working-directory: services/api
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run contracts:test-generation
+      - run: npm run contracts:check-types
+      - run: npm run contracts:types
+      - run: git diff --exit-code contracts
+      - run: npm run web:test -- --run
+      - run: npm run web:build

@@ -1990,7 +1990,7 @@ git commit -m "feat: add Chinese-first console shell"
 - Consumes: `.env`, repository source, generated contracts, and Docker Compose.
 - Produces: `api`, `web`, and `postgres` services; CI checks backend, schema drift, Skill policy, Web tests/build, and copyrighted-source exclusion.
 
-- [ ] **Step 1: Add the repository-safety regression test**
+- [x] **Step 1: Add the repository-safety regression test**
 
 ```python
 # services/api/tests/repository/test_no_source_books_tracked.py
@@ -2007,13 +2007,13 @@ def test_copyrighted_source_books_are_not_tracked() -> None:
     assert result.stdout.strip() == ""
 ```
 
-- [ ] **Step 2: Run the safety test**
+- [x] **Step 2: Run the safety test**
 
 Run: `cd services/api && .venv/bin/pytest tests/repository/test_no_source_books_tracked.py -q`
 
 Expected: PASS; the test becomes a permanent regression guard.
 
-- [ ] **Step 3: Add production container definitions**
+- [x] **Step 3: Add production container definitions**
 
 ```dockerfile
 # deploy/api.Dockerfile
@@ -2124,7 +2124,7 @@ TimeoutStartSec=600
 WantedBy=multi-user.target
 ```
 
-- [ ] **Step 4: Add CI with independent backend and Web gates**
+- [x] **Step 4: Add CI with independent backend and Web gates**
 
 ```yaml
 # .github/workflows/ci.yml
@@ -2159,7 +2159,7 @@ jobs:
       - run: npm run web:build
 ```
 
-- [ ] **Step 5: Document exact local and server commands**
+- [x] **Step 5: Document exact local and server commands**
 
 ````markdown
 # Crypto Research
@@ -2227,7 +2227,7 @@ Replace its `Project Structure & Module Organization` section with:
 Python services live under `services/`; the Phase 0 API is `services/api/src/crypto_research/` with tests in `services/api/tests/`. The React console lives in `apps/web/`. Canonical generated schemas and TypeScript declarations live in `contracts/`. Repository-owned Skills live in `skills/<skill-name>/`; architecture, product decisions, specs, plans, and runbooks live in `docs/`. Deployment files belong in `deploy/`. Do not commit source books, market data, reports, dependencies, secrets, or `.superpowers/` sessions.
 ```
 
-- [ ] **Step 6: Run the complete local Phase 0 verification matrix**
+- [x] **Step 6: Run the complete local Phase 0 verification matrix**
 
 Run locally:
 
@@ -2264,7 +2264,7 @@ curl --fail http://127.0.0.1:8088/api/health/live
 
 Expected: `postgres`, `api`, and `web` are healthy/running and the health endpoint returns the stable JSON shape. Do not expose port `8088` publicly in this task.
 
-- [ ] **Step 8: Commit operations and CI**
+- [x] **Step 8: Commit operations and CI**
 
 ```bash
 git add deploy .github README.md AGENTS.md services/api/tests/repository/test_no_source_books_tracked.py

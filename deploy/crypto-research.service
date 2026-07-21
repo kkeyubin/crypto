@@ -1,0 +1,16 @@
+[Unit]
+Description=Crypto Research System
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/crypto-research/repo/deploy
+EnvironmentFile=/srv/crypto-research/config/runtime.env
+ExecStart=/usr/bin/docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml up -d --build
+ExecStop=/usr/bin/docker compose --env-file /srv/crypto-research/config/runtime.env -f /srv/crypto-research/repo/deploy/compose.yaml down
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
