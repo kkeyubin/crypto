@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -129,13 +129,15 @@ class SqlAlchemyDataStateRepository:
 
     async def add_symbol(self, command: AddSymbolCommand) -> SymbolState:
         symbol = normalize_symbol(command.symbol)
+        history_start = _as_utc_datetime(command.history_start)
+        history_end = _as_utc_datetime(command.history_end)
         row = await self._session.get(SymbolRow, symbol)
         if row is None:
             row = SymbolRow(
                 symbol=symbol,
                 enabled=True,
-                history_start=_as_utc_datetime(command.history_start),
-                history_end=_as_utc_datetime(command.history_end),
+                history_start=history_start,
+                history_end=history_end,
                 include_agg_trades=command.include_agg_trades,
             )
             self._session.add(row)
@@ -155,6 +157,8 @@ class SqlAlchemyDataStateRepository:
         return _symbol_state(row)
 
     async def create_backfill(self, command: BackfillCommand) -> IngestionJob:
+        requested_start = _optional_utc_datetime(command.requested_start)
+        requested_end = _optional_utc_datetime(command.requested_end)
         existing = await self._session.get(IngestionJobRow, command.id)
         if existing is not None:
             return _ingestion_job(existing)
@@ -166,8 +170,8 @@ class SqlAlchemyDataStateRepository:
             symbol=symbol,
             dataset=command.dataset,
             status="queued",
-            requested_start=command.requested_start,
-            requested_end=command.requested_end,
+            requested_start=requested_start,
+            requested_end=requested_end,
         )
         self._session.add(row)
         self._add_audit("backfill_created", "ingestion_job", row.id)
@@ -210,6 +214,8 @@ class SqlAlchemyDataStateRepository:
         return _data_partition(row)
 
     async def record_gap(self, gap: GapRecord) -> DataGap:
+        start_at = _require_utc(gap.start_at)
+        end_at = _require_utc(gap.end_at)
         existing = await self._session.get(DataGapRow, gap.id)
         if existing is not None:
             return _data_gap(existing)
@@ -217,8 +223,8 @@ class SqlAlchemyDataStateRepository:
             id=gap.id,
             symbol=normalize_symbol(gap.symbol),
             dataset=gap.dataset,
-            start_at=_require_utc(gap.start_at),
-            end_at=_require_utc(gap.end_at),
+            start_at=start_at,
+            end_at=end_at,
             reason=gap.reason,
             status="open",
         )
@@ -241,19 +247,20 @@ class SqlAlchemyDataStateRepository:
 
     async def update_stream(self, state: StreamState) -> None:
         symbol = normalize_symbol(state.symbol)
+        last_event_at = _optional_utc_datetime(state.last_event_at)
         row = await self._session.get(StreamStateRow, (symbol, state.stream_name))
         if row is None:
             row = StreamStateRow(
                 symbol=symbol,
                 stream_name=state.stream_name,
                 status=state.status,
-                last_event_at=state.last_event_at,
+                last_event_at=last_event_at,
                 details=state.details or {},
             )
             self._session.add(row)
         else:
             row.status = state.status
-            row.last_event_at = state.last_event_at
+            row.last_event_at = last_event_at
             row.details = state.details or {}
         await self._session.flush()
 
@@ -276,10 +283,14 @@ def _as_utc_datetime(value: str | datetime) -> datetime:
     return _require_utc(parsed)
 
 
+def _optional_utc_datetime(value: datetime | None) -> datetime | None:
+    return None if value is None else _require_utc(value)
+
+
 def _require_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise ValueError("datetime must be UTC-aware with a zero offset")
+    return value
 
 
 def _symbol_state(row: SymbolRow) -> SymbolState:

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -53,8 +53,8 @@ def test_add_disable_symbol_is_idempotent_and_audited() -> None:
         repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
         command = AddSymbolCommand(
             symbol="btcusdt",
-            history_start="2026-01-01",
-            history_end="2026-01-02",
+            history_start="2026-01-01T00:00:00Z",
+            history_end="2026-01-02T00:00:00Z",
         )
 
         first = await repository.add_symbol(command)
@@ -75,8 +75,12 @@ def test_symbols_and_backfills_are_independent() -> None:
     async def scenario() -> None:
         session = FakeAsyncSession()
         repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
-        await repository.add_symbol(AddSymbolCommand("BTCUSDT", "2026-01-01", "2026-01-02"))
-        await repository.add_symbol(AddSymbolCommand("pepeusdt", "2026-02-01", "2026-02-02"))
+        await repository.add_symbol(
+            AddSymbolCommand("BTCUSDT", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z")
+        )
+        await repository.add_symbol(
+            AddSymbolCommand("pepeusdt", "2026-02-01T00:00:00Z", "2026-02-02T00:00:00Z")
+        )
 
         btc = await repository.create_backfill(
             BackfillCommand(
@@ -104,7 +108,9 @@ def test_job_transitions_accept_only_legal_next_states() -> None:
     async def scenario() -> None:
         session = FakeAsyncSession()
         repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
-        await repository.add_symbol(AddSymbolCommand("BTCUSDT", "2026-01-01", "2026-01-02"))
+        await repository.add_symbol(
+            AddSymbolCommand("BTCUSDT", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z")
+        )
         job = await repository.create_backfill(
             BackfillCommand(
                 id="00000000-0000-0000-0000-000000000003",
@@ -187,5 +193,57 @@ def test_stream_heartbeat_upsert_preserves_one_row_per_stream() -> None:
         streams = [row for row in session.rows if isinstance(row, StreamStateRow)]
         assert len(streams) == 1
         assert streams[0].last_event_at == later_seen
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "invalid_at",
+    [
+        datetime(2026, 7, 20),
+        datetime(2026, 7, 20, tzinfo=timezone(timedelta(hours=8))),
+    ],
+    ids=["naive", "non-utc"],
+)
+def test_repository_rejects_non_utc_datetimes_at_every_command_boundary(
+    invalid_at: datetime,
+) -> None:
+    async def scenario() -> None:
+        session = FakeAsyncSession()
+        repository = SqlAlchemyDataStateRepository(session)  # type: ignore[arg-type]
+        await repository.add_symbol(
+            AddSymbolCommand("BTCUSDT", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z")
+        )
+
+        operations = [
+            lambda: repository.add_symbol(
+                AddSymbolCommand("PEPEUSDT", invalid_at, datetime(2026, 1, 2, tzinfo=UTC))
+            ),
+            lambda: repository.create_backfill(
+                BackfillCommand(
+                    id="00000000-0000-0000-0000-000000000031",
+                    symbol="BTCUSDT",
+                    dataset="klines_1m",
+                    requested_start=invalid_at,
+                )
+            ),
+            lambda: repository.record_gap(
+                GapRecord(
+                    id="00000000-0000-0000-0000-000000000032",
+                    symbol="BTCUSDT",
+                    dataset="klines_1m",
+                    start_at=invalid_at,
+                    end_at=datetime(2026, 7, 20, 0, 1, tzinfo=UTC),
+                    reason="disconnect",
+                )
+            ),
+            lambda: repository.update_stream(
+                StreamState("BTCUSDT", "kline", invalid_at, "connected")
+            ),
+        ]
+
+        for operation in operations:
+            with pytest.raises(ValueError, match="UTC-aware"):
+                await operation()
 
     asyncio.run(scenario())

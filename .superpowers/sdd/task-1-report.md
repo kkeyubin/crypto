@@ -102,3 +102,77 @@ Results:
 ## Concerns
 
 - Repository behavior is exercised with an explicitly injected fake async session, as requested to avoid Docker/testcontainers. PostgreSQL constraint execution is validated through the generated Alembic SQL rather than a live database integration test.
+
+## Review remediation: persistence invariants
+
+### Implemented fixes
+
+- Repository datetime boundaries now reject both naive values and non-zero UTC offsets before lookup, mutation, or flush. This covers symbol history ranges, backfill request ranges, gap ranges, and stream event timestamps. UTC-aware, zero-offset values are retained without conversion.
+- `api-entrypoint.py` now prints an explicit error and exits with code `2` when `/app/alembic.ini` is absent; it no longer silently skips migrations.
+- Added `tests/db/test_postgres_integration.py`, which is gated only when `CRYPTO_TEST_DATABASE_URL` is absent. When supplied, it runs `alembic upgrade head` and then validates table creation, UTC timestamp round-trip, naive backfill rejection before insert, the source URL/checksum unique constraint, the partition identity/version unique constraint, and the ingestion-job state check constraint.
+
+### RED/GREEN evidence
+
+1. UTC and entrypoint tests were added before their implementation:
+
+   ```bash
+   cd services/api
+   .venv/bin/pytest -q \
+     tests/db/test_repositories.py::test_repository_rejects_non_utc_datetimes_at_every_command_boundary \
+     tests/repository/test_api_entrypoint.py::test_entrypoint_fails_explicitly_when_migration_config_is_missing
+   ```
+
+   RED result: three failures. Both naive and `+08:00` repository cases did not raise `ValueError`; a missing `alembic.ini` did not raise `SystemExit`.
+
+2. After implementing strict zero-offset UTC validation and explicit entrypoint failure:
+
+   ```bash
+   .venv/bin/pytest -q tests/db/test_repositories.py tests/repository/test_api_entrypoint.py
+   ```
+
+   GREEN result: `11 passed`.
+
+3. The opt-in PostgreSQL test is deterministic in ordinary local runs:
+
+   ```bash
+   .venv/bin/pytest -q tests/db/test_postgres_integration.py
+   ```
+
+   Result without a supplied URL: `1 skipped`; the skip reason explicitly says to set `CRYPTO_TEST_DATABASE_URL`.
+
+4. A supplied but unreachable loopback test URL does not skip and fails during migration/database connection as intended:
+
+   ```bash
+   CRYPTO_TEST_DATABASE_URL='postgresql+asyncpg://crypto:REDACTED@127.0.0.1:65432/crypto_research_test' \
+     .venv/bin/pytest -q tests/db/test_postgres_integration.py
+   ```
+
+   Result: expected non-zero exit with `ConnectionRefusedError: [Errno 61] Connect call failed ('127.0.0.1', 65432)`.
+
+### Available verification
+
+```bash
+cd services/api
+.venv/bin/pytest -q tests/db/test_repositories.py tests/repository/test_api_entrypoint.py tests/db/test_postgres_integration.py
+.venv/bin/ruff check src tests migrations
+.venv/bin/pytest -q
+```
+
+Results: focused `11 passed, 1 skipped`; Ruff `All checks passed!`; full suite `145 passed, 1 skipped in 7.93s`.
+
+### Disposable PostgreSQL execution status
+
+The requested local PostgreSQL 17 container could not be launched on this workstation because no supported container or PostgreSQL runtime is installed. The exact availability check was:
+
+```bash
+docker version --format '{{.Server.Version}}'
+docker ps --format '{{.Names}} {{.Image}} {{.Ports}}'
+command -v podman
+command -v colima
+command -v nerdctl
+command -v lima
+command -v psql
+command -v pg_ctl
+```
+
+Result: `docker: command not found`; all subsequent runtime/binary lookups returned no path. No LAN server was used. Real execution of the env-gated PostgreSQL integration test is deferred to Task 8 remote acceptance; it is not waived.
