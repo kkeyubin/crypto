@@ -1496,7 +1496,7 @@ def _data_gap(row: DataGapRow) -> DataGap:
 def _manifest_partition(
     row: DataPartitionRow, stored: DataManifestRow
 ) -> DataPartition:
-    manifest = DataManifest.model_validate(stored.manifest)
+    manifest = DataManifest.model_validate_json(json.dumps(stored.manifest))
     return DataPartition(
         id=row.id,
         symbol=row.symbol,

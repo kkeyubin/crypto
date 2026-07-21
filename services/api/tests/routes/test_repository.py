@@ -160,6 +160,31 @@ def test_partition_api_repository_reads_only_approved_bounded_symbol_rows() -> N
     asyncio.run(scenario())
 
 
+def test_partition_api_rehydrates_strict_manifest_from_database_json() -> None:
+    class PartitionSession(CapturingSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.partition, self.manifest = archive_row(DataType.KLINE_1M, 7)
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            if len(self.statements) == 1:
+                return ValuesResult([(self.partition, self.manifest)])
+            return ValuesResult([])
+
+    async def scenario() -> None:
+        repository = SqlAlchemyDataStateRepository(PartitionSession())  # type: ignore[arg-type]
+
+        partitions = await repository.list_partitions("BTCUSDT", limit=20, offset=0)
+
+        assert len(partitions) == 1
+        assert partitions[0].start_at == datetime(2026, 6, 1, tzinfo=UTC)
+        assert partitions[0].end_at == datetime(2026, 7, 1, tzinfo=UTC)
+        assert partitions[0].row_count == 1
+
+    asyncio.run(scenario())
+
+
 def test_symbol_summary_uses_current_validated_manifests_with_bounded_sql() -> None:
     class SummarySession(CapturingSession):
         async def execute(self, statement):
