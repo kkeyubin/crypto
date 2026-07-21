@@ -9,7 +9,7 @@
   },
   "scripts": {
     "contracts:types": "node contracts/generate-types.mjs",
-    "contracts:check-types": "tsc --noEmit --strict --lib es2015 contracts/types/*.ts",
+    "contracts:check-types": "tsc -p contracts/tsconfig.json",
     "contracts:test-generation": "node contracts/test-generate-types.mjs",
     "web:dev": "npm --workspace @crypto-research/web run dev",
     "web:test": "npm --workspace @crypto-research/web run test --",

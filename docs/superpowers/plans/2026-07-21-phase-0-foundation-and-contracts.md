@@ -1243,6 +1243,7 @@ git commit -m "feat: define runtime audit contracts"
 - Create: `package.json`
 - Create: `services/api/scripts/export_schemas.py`
 - Create: `contracts/generate-types.mjs`
+- Create: `contracts/tsconfig.json`
 - Generate: `contracts/jsonschema/*.schema.json`
 - Generate: `contracts/types/*.ts`
 - Test: `services/api/tests/contracts/test_schema_export.py`
@@ -1341,7 +1342,7 @@ if __name__ == "__main__":
   "engines": { "node": ">=24 <25" },
   "scripts": {
     "contracts:types": "node contracts/generate-types.mjs",
-    "contracts:check-types": "tsc --noEmit --strict --lib es2015 contracts/types/*.ts",
+    "contracts:check-types": "tsc -p contracts/tsconfig.json",
     "contracts:test-generation": "node contracts/test-generate-types.mjs"
   },
   "devDependencies": {
@@ -1396,7 +1397,7 @@ npm run contracts:check-types
 npm run contracts:test-generation
 ```
 
-Expected: schema check exits 0 without writing files, normal export removes stale generated schemas, npm creates `package-lock.json`, TypeScript type-checking passes with an explicit ES2015 library for transitive declaration compatibility, the generator safety test preserves manual TypeScript and removes only header-marked generated files, and `contracts/types/index.ts` exports the four root model types from isolated generated modules without duplicate nested declarations.
+Expected: schema check exits 0 without writing files, normal export removes stale generated schemas, npm creates `package-lock.json`, TypeScript type-checking uses the isolated `contracts/tsconfig.json` with ES2015 and no ambient package types, the generator safety test preserves manual TypeScript and removes only header-marked generated files, and `contracts/types/index.ts` exports the four root model types from isolated generated modules without duplicate nested declarations.
 
 - [ ] **Step 6: Run all backend checks**
 
@@ -1688,7 +1689,7 @@ Expected: FAIL because the Web workspace and `App` do not exist.
 
 - [ ] **Step 3: Configure the npm workspace and test runner**
 
-Replace root `package.json` with:
+Merge the Web workspace and scripts into the existing root `package.json`, preserving the generated-contract scripts and TypeScript dependency:
 
 ```json
 {
@@ -1698,12 +1699,15 @@ Replace root `package.json` with:
   "engines": { "node": ">=24 <25" },
   "scripts": {
     "contracts:types": "node contracts/generate-types.mjs",
-    "web:dev": "npm --workspace apps/web run dev",
-    "web:test": "npm --workspace apps/web run test --",
-    "web:build": "npm --workspace apps/web run build"
+    "contracts:check-types": "tsc -p contracts/tsconfig.json",
+    "contracts:test-generation": "node contracts/test-generate-types.mjs",
+    "web:dev": "npm --workspace @crypto-research/web run dev",
+    "web:test": "npm --workspace @crypto-research/web run test --",
+    "web:build": "npm --workspace @crypto-research/web run build"
   },
   "devDependencies": {
-    "json-schema-to-typescript": "^15.0.4"
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.9.3"
   }
 }
 ```

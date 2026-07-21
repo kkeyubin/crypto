@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": true,
+    "lib": ["ES2015"],
+    "types": []
+  },
+  "include": ["types/*.ts"]
+}
