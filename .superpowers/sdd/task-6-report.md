@@ -211,13 +211,31 @@ checking, generated-schema drift checks, Web tests, the Web production build
 and whitespace checks passed. Alembic has one head: `20260721_0004`; the review
 required no schema change, so no `0005` migration was added.
 
-The single skipped module is the PostgreSQL integration suite gated by
-`CRYPTO_TEST_DATABASE_URL`. It now includes real two-session Task 6 concurrency
-and invariant coverage. On this machine `CRYPTO_TEST_DATABASE_URL` is unset,
-Docker is unavailable, and no PostgreSQL listener is present on
-`127.0.0.1:5432`, so that opt-in acceptance run could not be executed locally.
-The test is committed and remains the explicit environment-dependent
-verification risk; it is not reported as passed.
+The single skipped module in the local matrix is the PostgreSQL integration
+suite gated by `CRYPTO_TEST_DATABASE_URL`. The controller executed that suite
+against PostgreSQL 17 as recorded below.
+
+## Controller PostgreSQL gate
+
+The controller pushed commit `bbb4cf2`, checked out that exact branch on
+`keyubin@192.168.1.4`, and ran the opt-in suite against a fresh PostgreSQL 17
+container published only on temporary loopback port `55442`:
+
+```text
+CRYPTO_TEST_DATABASE_URL=postgresql+asyncpg://crypto_test:[redacted]@127.0.0.1:55442/crypto_test \
+  pytest -q tests/db/test_postgres_integration.py
+# 2 passed in 4.39s
+```
+
+This executed migrations through `20260721_0004`, the existing persistence and
+catalog gates, plus the new Task 6 two-session scenarios: advisory-lock
+blocking, concurrent symbol/job idempotency, exactly-once audit events,
+disable/re-enable claim behavior, durable object status projection, continuous
+three-dataset archive coverage, and the four-stream eligibility gate. The
+temporary database container, checkout, and test environment were removed
+afterward; existing Phase 0 containers were not changed.
+
+The final independent review approved Task 6 with no remaining findings.
 
 ## Files
 
