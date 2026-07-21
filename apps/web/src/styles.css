@@ -27,17 +27,17 @@ body {
   background: var(--page);
 }
 
-button,
-a {
+.app-shell button,
+.app-shell a {
   font: inherit;
 }
 
-a {
+.app-shell a {
   color: inherit;
 }
 
-button:focus-visible,
-a:focus-visible {
+.app-shell button:focus-visible,
+.app-shell a:focus-visible {
   outline: 3px solid var(--blue-soft);
   outline-offset: 3px;
 }
@@ -92,19 +92,28 @@ a:focus-visible {
   border-right: 1px solid var(--border);
 }
 
-nav {
+.sidebar nav {
   display: grid;
   gap: 6px;
 }
 
-nav a {
+.sidebar nav a,
+.sidebar nav button {
   padding: 10px 12px;
   color: var(--muted);
+  text-align: left;
+  background: transparent;
+  border: 0;
   border-radius: 8px;
   text-decoration: none;
 }
 
-nav a[aria-current="page"] {
+.sidebar nav button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.sidebar nav a[aria-current="page"] {
   color: var(--blue-soft);
   background: var(--raised);
 }
@@ -129,19 +138,19 @@ nav a[aria-current="page"] {
   text-transform: uppercase;
 }
 
-h1,
-h2,
-p {
+.main-content h1,
+.main-content h2,
+.main-content p {
   margin-top: 0;
 }
 
-h1 {
+.main-content h1 {
   margin-bottom: 10px;
   font-size: clamp(2rem, 4vw, 3.25rem);
   line-height: 1.08;
 }
 
-h2 {
+.main-content h2 {
   margin-bottom: 8px;
   font-size: 1rem;
 }
@@ -162,7 +171,7 @@ h2 {
   gap: 20px;
 }
 
-article {
+.status-grid > article {
   min-width: 0;
   padding: 22px;
   background: var(--surface);
@@ -178,6 +187,18 @@ article {
   margin: 18px 0 0;
   font-variant-numeric: tabular-nums;
   font-weight: 650;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .status--healthy {
@@ -224,7 +245,7 @@ article {
     display: none;
   }
 
-  nav {
+  .sidebar nav {
     display: flex;
     min-width: max-content;
   }

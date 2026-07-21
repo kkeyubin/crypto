@@ -1623,6 +1623,7 @@ git commit -m "feat: add unified crypto research skill"
 - Modify: `package.json`
 - Create: `apps/web/package.json`
 - Create: `apps/web/tsconfig.json`
+- Create: `apps/web/tsconfig.test.json`
 - Create: `apps/web/vite.config.ts`
 - Create: `apps/web/index.html`
 - Create: `apps/web/src/main.tsx`
@@ -1632,11 +1633,17 @@ git commit -m "feat: add unified crypto research skill"
 - Create: `apps/web/src/contracts.ts`
 - Create: `apps/web/src/styles.css`
 - Test: `apps/web/src/App.test.tsx`
+- Test: `apps/web/src/useHealth.test.tsx`
 - Test: `apps/web/src/setupTests.ts`
 
 **Interfaces:**
 - Consumes: `GET /api/health/live` and generated types from `contracts/types/index.ts`.
 - Produces: a responsive `zh-CN` default shell with persisted `en` selection, accessible state labels, API health, design tokens, and reduced-motion behavior.
+
+**Implemented refinements:**
+- Treat health as healthy only when the JSON payload is `status: "ok"`, `service: "api"`, and has a valid semantic version; failures, malformed data, and JSON errors are unavailable.
+- Keep only the overview as a live Phase 0 navigation target. Pending sections are localized disabled controls with an accessible unavailable state.
+- Scope shell selectors to console regions. Production TypeScript uses browser types only; `tsconfig.test.json` type-checks tests with Vitest and Testing Library globals before Vitest runs.
 
 - [ ] **Step 1: Write failing locale and health tests**
 
@@ -1722,7 +1729,7 @@ Create `apps/web/package.json` with:
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "vitest",
+    "test": "tsc -p tsconfig.test.json && vitest",
     "build": "tsc -b && vite build"
   },
   "dependencies": {
@@ -1766,9 +1773,22 @@ Create `apps/web/tsconfig.json` with:
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "types": ["vitest/globals", "@testing-library/jest-dom"]
+    "types": ["vite/client"]
   },
-  "include": ["src", "../../contracts/types/index.ts"]
+  "include": ["src", "../../contracts/types/index.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/setupTests.ts"]
+}
+```
+
+Create `apps/web/tsconfig.test.json` so production compilation remains browser-only while test files are type-checked with their test globals:
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
+  },
+  "exclude": []
 }
 ```
 
@@ -1780,7 +1800,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   plugins: [react()],
   server: { proxy: { "/api": "http://127.0.0.1:8000" } },
-  test: { environment: "jsdom", setupFiles: "./src/setupTests.ts" },
+  test: { css: true, environment: "jsdom", setupFiles: "./src/setupTests.ts" },
 });
 ```
 

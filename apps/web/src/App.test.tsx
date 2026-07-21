@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
-import i18n from "./i18n";
+import i18n, { resolveInitialLocale } from "./i18n";
 import styles from "./styles.css?raw";
 
 beforeEach(async () => {
@@ -31,7 +31,7 @@ test("persists an explicit English selection and updates the document language",
   const user = userEvent.setup();
   render(<App />);
 
-  await user.click(screen.getByRole("button", { name: "EN" }));
+  await user.click(screen.getByRole("button", { name: "切换为英文" }));
 
   expect(screen.getByRole("heading", { name: "Command Center" })).toBeInTheDocument();
   expect(localStorage.getItem("crypto-locale")).toBe("en");
@@ -43,6 +43,22 @@ test("keeps navigation accessible and marks the active shell view", () => {
 
   expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "总览", current: "page" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "币种（尚未开放）" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "策略（尚未开放）" })).toBeDisabled();
+});
+
+test("localizes header and locale controls", () => {
+  render(<App />);
+
+  expect(screen.getByRole("link", { name: "加密研究首页" })).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "语言" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "切换为英文" })).toBeInTheDocument();
+});
+
+test("resolves only an explicit English preference to English", () => {
+  expect(resolveInitialLocale("en")).toBe("en");
+  expect(resolveInitialLocale(null)).toBe("zh-CN");
+  expect(resolveInitialLocale("fr")).toBe("zh-CN");
 });
 
 test("stacks header, navigation, and content into explicit mobile grid rows", () => {
@@ -53,4 +69,13 @@ test("stacks header, navigation, and content into explicit mobile grid rows", ()
   expect(mobileLayout).toContain("grid-template-rows: 64px auto minmax(0, 1fr);");
   expect(mobileLayout).toContain("scrollbar-width: none;");
   expect(styles).toContain(".sidebar::-webkit-scrollbar");
+});
+
+test("scopes shell CSS selectors away from future pages", () => {
+  expect(styles).toContain(".sidebar nav {");
+  expect(styles).toContain(".main-content h1,");
+  expect(styles).toContain(".status-grid > article {");
+  expect(styles).not.toMatch(/^nav\s*\{/m);
+  expect(styles).not.toMatch(/^article\s*\{/m);
+  expect(styles).not.toMatch(/^h1,\s*$/m);
 });

@@ -3,18 +3,7 @@ import type { StrategySpec } from "./contracts";
 import { setLocale } from "./i18n";
 import { useHealth } from "./useHealth";
 
-const navigationKeys = ["overview", "symbols", "strategies", "backtests", "paper", "operations"] as const;
-
-type NavigationKey = (typeof navigationKeys)[number];
-
-const navigationHref: Record<NavigationKey, string> = {
-  overview: "#overview",
-  symbols: "#symbols",
-  strategies: "#strategies",
-  backtests: "#backtests",
-  paper: "#paper",
-  operations: "#operations",
-};
+const pendingNavigationKeys = ["symbols", "strategies", "backtests", "paper", "operations"] as const;
 
 const noStrategyLoaded: StrategySpec | undefined = undefined;
 
@@ -29,10 +18,10 @@ export function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <a className="product-name" href="#overview" aria-label="Crypto Research home">
+        <a className="product-name" href="#overview" aria-label={t("homeLabel")}>
           CRYPTO RESEARCH
         </a>
-        <div className="locale-switch" aria-label="Language">
+        <div className="locale-switch" role="group" aria-label={t("languageLabel")}>
           <button
             type="button"
             aria-label={t("switchToChinese")}
@@ -43,7 +32,7 @@ export function App() {
           </button>
           <button
             type="button"
-            aria-label="EN"
+            aria-label={t("switchToEnglish")}
             aria-pressed={i18n.language === "en"}
             onClick={() => void setLocale("en")}
           >
@@ -54,10 +43,11 @@ export function App() {
 
       <aside className="sidebar">
         <nav aria-label={t("navigationLabel")}>
-          {navigationKeys.map((key) => (
-            <a key={key} href={navigationHref[key]} aria-current={key === "overview" ? "page" : undefined}>
-              {t(key)}
-            </a>
+          <a href="#overview" aria-current="page">{t("overview")}</a>
+          {pendingNavigationKeys.map((key) => (
+            <button key={key} type="button" disabled aria-label={t("unavailableNavigation", { label: t(key) })}>
+              {t(key)} <span className="sr-only">{t("notAvailable")}</span>
+            </button>
           ))}
         </nav>
       </aside>

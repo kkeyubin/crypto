@@ -25,8 +25,12 @@ const resources = {
       navigationLabel: "主导航",
       healthDescription: "服务健康检查",
       activeView: "当前页面",
+      homeLabel: "加密研究首页",
+      languageLabel: "语言",
       switchToChinese: "切换为中文",
-      switchToEnglish: "Switch to English",
+      switchToEnglish: "切换为英文",
+      notAvailable: "尚未开放",
+      unavailableNavigation: "{{label}}（尚未开放）",
     },
   },
   en: {
@@ -50,14 +54,21 @@ const resources = {
       navigationLabel: "Primary navigation",
       healthDescription: "Service health check",
       activeView: "Current page",
+      homeLabel: "Crypto Research home",
+      languageLabel: "Language",
       switchToChinese: "Switch to Chinese",
       switchToEnglish: "Switch to English",
+      notAvailable: "Not available in Phase 0",
+      unavailableNavigation: "{{label}} (not available)",
     },
   },
 };
 
-const storedLocale = localStorage.getItem("crypto-locale");
-const initialLocale: Locale = storedLocale === "en" ? "en" : "zh-CN";
+export function resolveInitialLocale(storedLocale: string | null): Locale {
+  return storedLocale === "en" ? "en" : "zh-CN";
+}
+
+const initialLocale = resolveInitialLocale(localStorage.getItem("crypto-locale"));
 
 document.documentElement.lang = initialLocale;
 

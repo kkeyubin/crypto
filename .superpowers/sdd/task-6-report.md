@@ -48,7 +48,7 @@ Implemented only the Phase 0 React shell and API liveness presentation. The shel
 ## Controller validation after the responsive fix
 
 - Independent headless Chrome CDP mobile emulation used `Emulation.setDeviceMetricsOverride` with `width: 390`, `height: 844`, and `mobile: true` against the local Vite server.
-- Measured result: `innerWidth: 390`, `clientWidth: 390`, `scrollWidth: 390`, `navBottom: 116`, `contentTop: 151`. The content now follows the navigation instead of starting at the prior `337.48px` implicit-row gap; there is no whole-document horizontal overflow.
+- Final controller measurement: `innerWidth: 390`, `clientWidth: 390`, `scrollWidth: 390`, `.sidebar.bottom: 127`, `.main-content.top: 127`. The content now follows the navigation instead of starting at the prior `337.48px` implicit-row gap; there is no whole-document horizontal overflow. The earlier `navBottom: 116` and `contentTop: 151` values were from a preliminary measurement and are superseded by this final controller result.
 - `npm run web:dev -- --host 127.0.0.1 --port 4173` listened on `127.0.0.1:4173` during verification and was terminated afterwards; a subsequent listener check was empty.
 
 ## Environment and verification
@@ -69,7 +69,7 @@ services/api/.venv/bin/ruff check services/api/src services/api/tests
 git diff --check
 ```
 
-Results: Web Vitest `4/4` passed; production Vite build emitted `apps/web/dist`; generated contract safety/type checks passed without drift; API regression suite `61 passed`; Ruff passed.
+Results: Web Vitest `10/10` across the shell and health suites passed after test TypeScript checking; production Vite build emitted `apps/web/dist`; generated contract safety/type checks passed without drift; API regression suite `61 passed`; Ruff passed.
 
 Final browser-compatible regression verification reran:
 
@@ -84,7 +84,15 @@ services/api/.venv/bin/ruff check services/api/src services/api/tests
 git diff --check
 ```
 
-All commands passed: focused Web tests `4/4`, Vite build, generated-contract safety/type checks, API `61 passed`, Ruff, and whitespace diff check.
+All commands passed: focused Web tests `10/10` after test type-checking, Vite build, generated-contract safety/type checks, API `61 passed`, Ruff, and whitespace diff check.
+
+## Review hardening follow-up
+
+- Health now accepts a liveness response only when JSON is an object with `status: "ok"`, `service: "api"`, and a non-empty semantic version. Non-2xx responses, network failures, invalid JSON, malformed payloads, and invalid versions all produce the accessible unavailable state; abort and active guards remain in place.
+- The overview link is the only Phase 0 navigation target. Other navigation controls are localized disabled buttons whose accessible labels state that the destination is not available, avoiding fabricated hash routes.
+- Header and language-control accessible text now comes from translations. Locale initialization is exercised through `resolveInitialLocale`, allowing only stored `en` to choose English.
+- Shell CSS scopes navigation, controls, typography, cards, and responsive navigation selectors to the console regions rather than global element selectors.
+- The Web workspace now self-declares TypeScript and separates browser production checking from test type checking: `tsconfig.json` has only Vite browser types and excludes test files, while `tsconfig.test.json` includes test globals and is run before Vitest.
 
 ## Files
 
