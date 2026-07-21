@@ -26,6 +26,9 @@ The initial implementation and every review correction were driven by a failing 
 16. A slow disable request disabled the focused confirmation control and could break the modal keyboard/focus lifecycle.
 17. A successful disable mutation and its evidence refresh shared one awaited promise, so a hung refresh kept the confirmation modal locked indefinitely.
 18. After symbol creation succeeded, the add form could still be collapsed while backfill creation or partial-success recovery was unresolved, discarding the only visible retry path.
+19. Normal Overview/Symbols navigation conditionally unmounted the console, aborting a protected backfill request and losing its retry-only form state.
+20. A full reload immediately replaced a ready dashboard with global loading and trusted a stale list over an already committed disable or enable mutation.
+21. When one request inside a symbol evidence bundle failed, sibling requests sharing the operation signal were not aborted and could remain unresolved across retries.
 
 Focused tests were observed failing for the missing behavior and then passing after each minimal correction.
 
@@ -46,6 +49,8 @@ Focused tests were observed failing for the missing behavior and then passing af
 - Once the bounded symbol list is available, the dashboard publishes loading cards immediately. Operations health and each symbol then settle independently, so a hung PEPE request cannot hide ready BTC evidence or health.
 - Operations health has its own unavailable/loading/retry state and does not hide symbol evidence.
 - Every list, health, and per-symbol evidence load has an `AbortController`. A monotonically increasing dashboard generation fences full reloads and unmounts; per-resource operation tokens fence overlapping symbol and health retries. Stale promises cannot commit even when a transport mock ignores abort.
+- A ready dashboard stays mounted while a replacement list loads in the background. Only the winning list advances the generation and restarts dependent evidence, so a slow list does not remove an active recovery or its focus owner.
+- Every evidence bundle shares one operation controller. Failure, invalid evidence, or timeout aborts that controller before the operation is cleared, cancelling still-pending sibling requests; a later retry starts with no live work from the failed operation.
 - Unmount aborts outstanding work, suppresses every later state commit, and prevents a retained refresh callback from starting another request.
 - Post-mutation evidence refresh is independent from the committed mutation and bounded to 10 seconds. Rejection or timeout replaces stale evidence with a truthful symbol-scoped recovery card; retry refreshes evidence only and cannot repeat the disable POST.
 - Server error bodies are never rendered; all exposed errors remain localized and generic.
@@ -75,9 +80,11 @@ Focused tests were observed failing for the missing behavior and then passing af
 - During a slow disable request, the focused confirmation control remains focusable with `aria-disabled`, repeat activation is guarded, Tab and Shift+Tab remain trapped, and Escape cannot dismiss an in-flight action.
 - As soon as the disable POST succeeds, the confirmation closes and focus moves to a stable symbol-owned refreshing surface; the committed mutation is no longer coupled to the evidence request.
 - A fresh evidence bundle is installed atomically before reporting the completed evidence state. Old eligibility, profile, partitions, gaps, or streams are never carried forward. Refresh failure or timeout becomes a focused symbol-scoped retry state and does not emit a false success notice. After a successful refresh, focus moves to the replacement action.
+- The hook registers each returned mutation as a symbol-scoped committed override before evidence loading starts. Stale enabled/disabled list rows cannot replace that truth; reload restarts recoverable evidence from the override. The record survives failure, timeout, and reload, and is cleared only after fresh evidence succeeds and a current-enough list acknowledges the mutation. Different symbols and later mutations use independent tokens.
 - Re-enable POSTs the card's immutable `history_start`, `history_end`, and `include_agg_trades` values through the existing `/api/symbols` endpoint. It never creates backfills automatically, and both the copy and completion notice say so.
 - Every successful `createBackfills` path triggers a fresh dashboard load, including partial-success retry. A failed backfill still leaves the newly configured symbol visible and retryable.
 - Once a valid add submission starts, the form cannot be collapsed while the add request is busy or a backfill recovery remains pending. Partial failure preserves the retry-only state and lock; successful recovery releases it. Unmount aborts active add/backfill requests and fences all later state writes.
+- The Symbols view is mounted lazily on first navigation, so Overview has no up-front symbol-data fan-out. After that first visit it remains mounted under a unique hidden `#symbols` container while inactive. The hidden subtree leaves the accessibility tree, but normal App navigation preserves protected form fields, in-flight backfill completion, and retry-only state without repeating symbol creation.
 - Chinese remains the default; English translations cover every added state and action.
 
 ## Browser visual self-review
@@ -91,7 +98,7 @@ Review-hardening states reuse the same surface, border, focus, warning, and resp
 All commands below were run after the final review corrections:
 
 - `npm run contracts:check-types` — passed.
-- `npm run web:test -- --run` — 4 files, 40 tests passed.
+- `npm run web:test -- --run` — 4 files, 48 tests passed.
 - `npm run web:build` — passed; 56 modules transformed.
 - `cd services/api && .venv/bin/pytest -q tests/routes/test_symbols.py tests/routes/test_data.py tests/routes/test_operations.py tests/routes/test_control.py` — 26 tests passed, including the real archive-planner range test.
 - `cd services/api && .venv/bin/ruff check src tests` — passed.
@@ -103,3 +110,4 @@ All commands below were run after the final review corrections:
 - Backfill progress is deliberately user-refreshed. Continuous polling, push notifications, and background alerts remain outside Task 7.
 - Re-enabling collection deliberately does not infer that historical backfills should be duplicated; any later backfill is a separate explicit action.
 - The post-mutation evidence refresh has a deliberate 10-second client timeout; timeout is recoverable through the symbol-scoped retry action without replaying the mutation.
+- Protected add/backfill workflow state survives normal in-App navigation after the Symbols view is first mounted. It remains in-memory UI state and is not durable across a full browser reload or tab close.

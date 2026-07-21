@@ -24,6 +24,13 @@ interface Operation {
   readonly controller: AbortController;
 }
 
+interface CommittedMutation {
+  readonly token: number;
+  readonly symbol: SymbolView;
+  evidenceConfirmed: boolean;
+  listAcknowledged: boolean;
+}
+
 const SYMBOL_REFRESH_TIMEOUT_MS = 10_000;
 
 type EvidenceLoadMode = "initial" | "retry" | "recoverable";
@@ -60,13 +67,22 @@ function replaceItem(
   };
 }
 
+function acknowledgesMutation(listed: SymbolView, committed: SymbolView): boolean {
+  return (
+    listed.enabled === committed.enabled &&
+    Date.parse(listed.updated_at) >= Date.parse(committed.updated_at)
+  );
+}
+
 export function useSymbols(): SymbolsState {
   const [state, setState] = useState<SymbolsLoadState>({ status: "loading" });
   const stateRef = useRef(state);
   const mountedRef = useRef(false);
   const generationRef = useRef(0);
   const nextTokenRef = useRef(0);
+  const nextMutationTokenRef = useRef(0);
   const operationsRef = useRef(new Map<string, Operation>());
+  const committedMutationsRef = useRef(new Map<string, CommittedMutation>());
   stateRef.current = state;
 
   const abortAll = useCallback(() => {
@@ -103,6 +119,7 @@ export function useSymbols(): SymbolsState {
     symbol: SymbolView,
     generation: number,
     mode: EvidenceLoadMode,
+    committedToken?: number,
   ): Promise<boolean> => {
     if (!mountedRef.current || generationRef.current !== generation) {
       return false;
@@ -127,6 +144,15 @@ export function useSymbols(): SymbolsState {
       if (!isCurrent(generation, key, operation.token)) {
         return false;
       }
+      if (committedToken !== undefined) {
+        const committed = committedMutationsRef.current.get(symbol.symbol);
+        if (committed?.token === committedToken) {
+          committed.evidenceConfirmed = true;
+          if (committed.listAcknowledged) {
+            committedMutationsRef.current.delete(symbol.symbol);
+          }
+        }
+      }
       setState((value) => value.status === "ready" ? {
         status: "ready",
         dashboard: replaceItem(value.dashboard, symbol.symbol, {
@@ -138,6 +164,7 @@ export function useSymbols(): SymbolsState {
       } : value);
       return true;
     } catch {
+      operation.controller.abort();
       if (!isCurrent(generation, key, operation.token)) {
         return false;
       }
@@ -193,38 +220,79 @@ export function useSymbols(): SymbolsState {
     if (!mountedRef.current) {
       return;
     }
-    const generation = generationRef.current + 1;
-    generationRef.current = generation;
-    abortAll();
-    setState({ status: "loading" });
+    const listGeneration = generationRef.current;
+    if (stateRef.current.status !== "ready") {
+      setState({ status: "loading" });
+    }
 
     const key = "symbols";
     const operation = beginOperation(key);
     void listSymbols(operation.controller.signal).then(
       (symbols) => {
-        if (!isCurrent(generation, key, operation.token)) {
+        if (!isCurrent(listGeneration, key, operation.token)) {
           return;
         }
         finishOperation(key, operation.token);
-        setState({
-          status: "ready",
-          dashboard: {
-            health: { status: "loading" },
-            items: symbols.map((symbol) => ({ status: "loading" as const, symbol })),
-            symbolsTruncated: symbols.length === 100,
-          },
+        const generation = generationRef.current + 1;
+        generationRef.current = generation;
+        abortAll();
+
+        for (const listed of symbols) {
+          const committed = committedMutationsRef.current.get(listed.symbol);
+          if (committed !== undefined && acknowledgesMutation(listed, committed.symbol)) {
+            committed.listAcknowledged = true;
+            if (committed.evidenceConfirmed) {
+              committedMutationsRef.current.delete(listed.symbol);
+            }
+          }
+        }
+        const listedBySymbol = new Map(symbols.map((listed) => [listed.symbol, listed]));
+        const mergedSymbols = symbols.map((listed) => (
+          committedMutationsRef.current.get(listed.symbol)?.symbol ?? listed
+        ));
+        for (const committed of committedMutationsRef.current.values()) {
+          if (!listedBySymbol.has(committed.symbol.symbol)) {
+            mergedSymbols.push(committed.symbol);
+          }
+        }
+
+        setState((value) => {
+          const currentDashboard = value.status === "ready" ? value.dashboard : undefined;
+          return {
+            status: "ready",
+            dashboard: {
+              health: currentDashboard?.health ?? { status: "loading" },
+              items: mergedSymbols.map((mergedSymbol) => {
+                const committed = committedMutationsRef.current.get(mergedSymbol.symbol);
+                if (committed !== undefined) {
+                  return { status: "refreshing" as const, symbol: committed.symbol };
+                }
+                return currentDashboard?.items.find((item) => item.symbol.symbol === mergedSymbol.symbol)
+                  ?? { status: "loading" as const, symbol: mergedSymbol };
+              }),
+              symbolsTruncated: symbols.length === 100,
+            },
+          };
         });
         void loadHealth(generation, false);
-        for (const symbol of symbols) {
-          void loadEvidence(symbol, generation, "initial");
+        for (const mergedSymbol of mergedSymbols) {
+          const committed = committedMutationsRef.current.get(mergedSymbol.symbol);
+          void loadEvidence(
+            committed?.symbol ?? mergedSymbol,
+            generation,
+            committed === undefined ? "initial" : "recoverable",
+            committed?.token,
+          );
         }
       },
       () => {
-        if (!isCurrent(generation, key, operation.token)) {
+        if (!isCurrent(listGeneration, key, operation.token)) {
           return;
         }
         finishOperation(key, operation.token);
-        setState({ status: "error" });
+        if (stateRef.current.status !== "ready") {
+          setState({ status: "error" });
+        }
       },
     );
   }, [abortAll, beginOperation, finishOperation, isCurrent, loadEvidence, loadHealth]);
@@ -252,6 +320,7 @@ export function useSymbols(): SymbolsState {
       current.symbol,
       generationRef.current,
       current.status === "refresh_error" ? "recoverable" : "retry",
+      committedMutationsRef.current.get(symbolName)?.token,
     );
   }, [loadEvidence]);
 
@@ -262,9 +331,20 @@ export function useSymbols(): SymbolsState {
     await loadHealth(generationRef.current, true);
   }, [loadHealth]);
 
-  const refreshSymbol = useCallback(async (updated: SymbolView) => (
-    loadEvidence(updated, generationRef.current, "recoverable")
-  ), [loadEvidence]);
+  const refreshSymbol = useCallback(async (updated: SymbolView) => {
+    if (!mountedRef.current) {
+      return false;
+    }
+    const committed = {
+      token: nextMutationTokenRef.current + 1,
+      symbol: updated,
+      evidenceConfirmed: false,
+      listAcknowledged: false,
+    };
+    nextMutationTokenRef.current = committed.token;
+    committedMutationsRef.current.set(updated.symbol, committed);
+    return loadEvidence(updated, generationRef.current, "recoverable", committed.token);
+  }, [loadEvidence]);
 
   return { ...state, reload, retrySymbol, retryHealth, refreshSymbol };
 }

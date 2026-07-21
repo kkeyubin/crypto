@@ -1,9 +1,25 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
 import i18n, { resolveInitialLocale } from "./i18n";
 import styles from "./styles.css?raw";
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as Response;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(async () => {
   localStorage.clear();
@@ -60,6 +76,126 @@ test("enables the symbols navigation and marks the data console as current", asy
   expect(screen.getByRole("button", { name: "策略（尚未开放）" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "回测（尚未开放）" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "模拟盘（尚未开放）" })).toBeDisabled();
+});
+
+test("keeps a protected backfill recovery mounted across normal App navigation", async () => {
+  const user = userEvent.setup();
+  const firstBackfill = deferred<Response>();
+  let configured = false;
+  let listRequests = 0;
+  let symbolPosts = 0;
+  let backfillPosts = 0;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path === "/api/health/live") {
+      return jsonResponse({ status: "ok", service: "api", version: "0.1.0" });
+    }
+    if (init?.method === "POST" && path === "/api/symbols") {
+      symbolPosts += 1;
+      configured = true;
+      return jsonResponse({
+        symbol: "SOLUSDT",
+        enabled: true,
+        history_start: "2026-07-01T00:00:00Z",
+        history_end: "2026-07-21T00:00:00Z",
+        include_agg_trades: false,
+        data_status: "requested",
+        metadata_status: "metadata_unverified",
+        created_at: "2026-07-21T10:00:00Z",
+        updated_at: "2026-07-21T10:00:00Z",
+      });
+    }
+    if (init?.method === "POST" && path === "/api/symbols/SOLUSDT/backfills") {
+      backfillPosts += 1;
+      if (backfillPosts === 1) {
+        return firstBackfill.promise;
+      }
+      return jsonResponse([{
+        job_id: "00000000-0000-0000-0000-000000000510",
+        symbol: "SOLUSDT",
+        data_type: "kline_1m",
+        status: "queued",
+        requested_start: "2026-07-01T00:00:00Z",
+        requested_end: "2026-07-21T00:00:00Z",
+        created_at: "2026-07-21T10:00:00Z",
+        updated_at: "2026-07-21T10:00:00Z",
+      }]);
+    }
+    if (path.startsWith("/api/symbols?")) {
+      listRequests += 1;
+      return jsonResponse(configured ? [{
+        symbol: "SOLUSDT",
+        enabled: true,
+        history_start: "2026-07-01T00:00:00Z",
+        history_end: "2026-07-21T00:00:00Z",
+        include_agg_trades: false,
+        data_status: "requested",
+        metadata_status: "metadata_unverified",
+        created_at: "2026-07-21T10:00:00Z",
+        updated_at: "2026-07-21T10:00:00Z",
+      }] : []);
+    }
+    if (path === "/api/operations/market-data") {
+      return jsonResponse({
+        source_mode: "direct",
+        archive_healthy: true,
+        rest_healthy: true,
+        worker_heartbeat_at: "2026-07-21T10:00:00Z",
+        streams: [],
+        checked_at: "2026-07-21T10:00:01Z",
+      });
+    }
+    if (path.endsWith("/profile")) {
+      return jsonResponse({ detail: "not ready" }, 404);
+    }
+    if (path.endsWith("/eligibility")) {
+      return jsonResponse({
+        symbol: "SOLUSDT",
+        eligible: false,
+        reason_codes: ["data_not_ready"],
+        evaluated_at: "2026-07-21T10:00:00Z",
+      });
+    }
+    if (path.includes("/partitions") || path.includes("/gaps") || path.includes("/streams")) {
+      return jsonResponse([]);
+    }
+    throw new Error(`Unexpected mock request: ${path}`);
+  }));
+
+  render(<App />);
+  await screen.findByText("API 正常");
+  expect(listRequests).toBe(0);
+  expect(document.querySelectorAll("#overview")).toHaveLength(1);
+  expect(document.querySelectorAll("#symbols")).toHaveLength(0);
+
+  await user.click(screen.getByRole("link", { name: "币种" }));
+  await screen.findByText("尚未监控任何币种");
+  await user.click(screen.getByRole("button", { name: "添加币种" }));
+  const form = screen.getByRole("form", { name: "添加监控币种" });
+  await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
+  await waitFor(() => expect(backfillPosts).toBe(1));
+
+  await user.click(screen.getByRole("link", { name: "总览" }));
+  expect(screen.getByRole("heading", { name: "指挥台" })).toBeInTheDocument();
+  expect(screen.queryByRole("form", { name: "添加监控币种" })).not.toBeInTheDocument();
+  expect(document.querySelectorAll("#symbols")).toHaveLength(1);
+  expect(document.getElementById("symbols")).toHaveAttribute("hidden");
+  firstBackfill.resolve(jsonResponse({ detail: "planner temporarily unavailable" }, 503));
+
+  await user.click(screen.getByRole("link", { name: "币种" }));
+  const recoveredForm = await screen.findByRole("form", { name: "添加监控币种" });
+  const partial = within(recoveredForm).getByRole("status", { name: "币种已添加，回填尚未启动" });
+  expect(within(recoveredForm).getByLabelText("币种代码")).toHaveValue("SOLUSDT");
+  expect(within(partial).getByRole("button", { name: "仅重试创建回填任务" })).toBeInTheDocument();
+  expect(symbolPosts).toBe(1);
+
+  await user.click(within(partial).getByRole("button", { name: "仅重试创建回填任务" }));
+  expect(await within(recoveredForm).findByRole("status", { name: "回填任务已创建" })).toBeInTheDocument();
+  expect(symbolPosts).toBe(1);
+  expect(backfillPosts).toBe(2);
 });
 
 test("translates the symbols title, filter, and action after a persisted English switch", async () => {

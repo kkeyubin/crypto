@@ -11,9 +11,9 @@ const noStrategyLoaded: StrategySpec | undefined = undefined;
 
 export function App() {
   const { i18n, t } = useTranslation();
-  const [view, setView] = useState<"overview" | "symbols">(
-    window.location.hash === "#symbols" ? "symbols" : "overview",
-  );
+  const initialView = window.location.hash === "#symbols" ? "symbols" : "overview";
+  const [view, setView] = useState<"overview" | "symbols">(initialView);
+  const [symbolsMounted, setSymbolsMounted] = useState(initialView === "symbols");
   const health = useHealth();
   const healthText = t(
     health === "healthy" ? "apiHealthy" : health === "loading" ? "apiLoading" : "apiUnavailable",
@@ -22,7 +22,11 @@ export function App() {
 
   useEffect(() => {
     const updateView = () => {
-      setView(window.location.hash === "#symbols" ? "symbols" : "overview");
+      const nextView = window.location.hash === "#symbols" ? "symbols" : "overview";
+      setView(nextView);
+      if (nextView === "symbols") {
+        setSymbolsMounted(true);
+      }
     };
     window.addEventListener("hashchange", updateView);
     return () => window.removeEventListener("hashchange", updateView);
@@ -66,30 +70,37 @@ export function App() {
         </nav>
       </aside>
 
-      <main id={view} className="main-content">
-        {view === "symbols" ? <SymbolsPage /> : <div className="content-frame">
-          <p className="eyebrow">{t("shellNotice")}</p>
-          <h1>{t("commandCenter")}</h1>
-          <p className="muted evidence-notice">{t("evidenceNotice")}</p>
+      <main className="main-content">
+        <div id="overview" hidden={view !== "overview"}>
+          <div className="content-frame">
+            <p className="eyebrow">{t("shellNotice")}</p>
+            <h1>{t("commandCenter")}</h1>
+            <p className="muted evidence-notice">{t("evidenceNotice")}</p>
 
-          <section className="status-grid" aria-label={t("foundation")}>
-            <article>
-              <h2>{t("foundation")}</h2>
-              <p className="muted">{t("healthDescription")}</p>
-              <p className={`status status--${health}`} aria-label={t("apiStatusLabel", { status: healthStatus })}>
-                <span aria-hidden="true">●</span>
-                {healthText}
-              </p>
-            </article>
-            <article>
-              <h2>{t("scope")}</h2>
-              <p className="muted">{t("shellDescription")}</p>
-              <p className="shell-state" aria-label={t("activeView")}>
-                {t("overview")}
-              </p>
-            </article>
-          </section>
-        </div>}
+            <section className="status-grid" aria-label={t("foundation")}>
+              <article>
+                <h2>{t("foundation")}</h2>
+                <p className="muted">{t("healthDescription")}</p>
+                <p className={`status status--${health}`} aria-label={t("apiStatusLabel", { status: healthStatus })}>
+                  <span aria-hidden="true">●</span>
+                  {healthText}
+                </p>
+              </article>
+              <article>
+                <h2>{t("scope")}</h2>
+                <p className="muted">{t("shellDescription")}</p>
+                <p className="shell-state" aria-label={t("activeView")}>
+                  {t("overview")}
+                </p>
+              </article>
+            </section>
+          </div>
+        </div>
+        {symbolsMounted ? (
+          <div id="symbols" hidden={view !== "symbols"}>
+            <SymbolsPage />
+          </div>
+        ) : null}
       </main>
     </div>
   );

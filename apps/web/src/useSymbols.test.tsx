@@ -33,6 +33,18 @@ const symbol: SymbolView = {
   updated_at: "2026-07-21T10:00:00Z",
 };
 
+const disabledSymbol: SymbolView = {
+  ...symbol,
+  enabled: false,
+  data_status: "disabled",
+  updated_at: "2026-07-21T10:01:00Z",
+};
+
+const pepeSymbol: SymbolView = {
+  ...symbol,
+  symbol: "PEPEUSDT",
+};
+
 function profile(sampleCount: number) {
   return {
     symbol: "BTCUSDT",
@@ -90,6 +102,10 @@ function readyProfileCount(state: ReturnType<typeof useSymbols>): number | null 
   }
   const item = state.dashboard.items[0];
   return item?.status === "ready" ? item.evidence.profile?.sample_count ?? null : null;
+}
+
+function firstSymbolState(state: ReturnType<typeof useSymbols>) {
+  return state.status === "ready" ? state.dashboard.items[0] : undefined;
 }
 
 test("aborts and fences an older symbol retry when a newer retry wins", async () => {
@@ -255,4 +271,248 @@ test("aborts every in-flight initial dashboard request on unmount", async () => 
   await expect(refreshAfterUnmount(symbol)).resolves.toBe(false);
   expect(fetchMock).toHaveBeenCalledTimes(requestsAtUnmount);
   pendingProfile.resolve(jsonResponse(profile(120000)));
+});
+
+test("keeps a committed disabled override when a stale reload resolves after the mutation", async () => {
+  const staleReload = deferred<Response>();
+  const committedProfile = deferred<Response>();
+  let listRequests = 0;
+  let profileRequests = 0;
+  let committedProfileSignal: AbortSignal | undefined;
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path.startsWith("/api/symbols?")) {
+      listRequests += 1;
+      return listRequests === 2 ? staleReload.promise : Promise.resolve(jsonResponse([symbol]));
+    }
+    if (path.endsWith("/profile")) {
+      profileRequests += 1;
+      if (profileRequests === 2) {
+        committedProfileSignal = init?.signal ?? undefined;
+        return committedProfile.promise;
+      }
+      return Promise.resolve(jsonResponse(profile(profileRequests === 1 ? 120000 : 333333)));
+    }
+    return Promise.resolve(baseResponse(path));
+  }));
+
+  const { result } = renderHook(() => useSymbols());
+  await waitFor(() => expect(readyProfileCount(result.current)).toBe(120000));
+
+  act(() => result.current.reload());
+  await waitFor(() => expect(listRequests).toBe(2));
+  expect(result.current.status).toBe("ready");
+
+  let committedRefresh!: Promise<boolean>;
+  act(() => {
+    committedRefresh = result.current.refreshSymbol(disabledSymbol);
+  });
+  await waitFor(() => {
+    const item = firstSymbolState(result.current);
+    expect(item?.status).toBe("refreshing");
+    expect(item?.symbol.enabled).toBe(false);
+  });
+
+  staleReload.resolve(jsonResponse([symbol]));
+  await waitFor(() => {
+    const item = firstSymbolState(result.current);
+    expect(item?.status).toBe("ready");
+    expect(item?.symbol.enabled).toBe(false);
+    expect(item?.status === "ready" ? item.evidence.profile?.sample_count : null).toBe(333333);
+  });
+  expect(committedProfileSignal?.aborted).toBe(true);
+  committedProfile.resolve(jsonResponse(profile(111111)));
+  await expect(committedRefresh).resolves.toBe(false);
+});
+
+test("lets a committed disabled mutation win when the stale reload resolves first", async () => {
+  const staleReload = deferred<Response>();
+  const staleProfile = deferred<Response>();
+  let listRequests = 0;
+  let profileRequests = 0;
+  let staleProfileSignal: AbortSignal | undefined;
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path.startsWith("/api/symbols?")) {
+      listRequests += 1;
+      return listRequests === 2 ? staleReload.promise : Promise.resolve(jsonResponse([symbol]));
+    }
+    if (path.endsWith("/profile")) {
+      profileRequests += 1;
+      if (profileRequests === 2) {
+        staleProfileSignal = init?.signal ?? undefined;
+        return staleProfile.promise;
+      }
+      return Promise.resolve(jsonResponse(profile(profileRequests === 1 ? 120000 : 444444)));
+    }
+    return Promise.resolve(baseResponse(path));
+  }));
+
+  const { result } = renderHook(() => useSymbols());
+  await waitFor(() => expect(readyProfileCount(result.current)).toBe(120000));
+
+  act(() => result.current.reload());
+  await waitFor(() => expect(listRequests).toBe(2));
+  expect(result.current.status).toBe("ready");
+  staleReload.resolve(jsonResponse([symbol]));
+  await waitFor(() => expect(staleProfileSignal).toBeDefined());
+
+  await act(async () => {
+    await result.current.refreshSymbol(disabledSymbol);
+  });
+  const item = firstSymbolState(result.current);
+  expect(item?.status).toBe("ready");
+  expect(item?.symbol.enabled).toBe(false);
+  expect(item?.status === "ready" ? item.evidence.profile?.sample_count : null).toBe(444444);
+  expect(staleProfileSignal?.aborted).toBe(true);
+  staleProfile.resolve(jsonResponse(profile(111111)));
+});
+
+test("aborts sibling evidence requests after one endpoint fails and retries without old work", async () => {
+  const neverSettlingProfile = deferred<Response>();
+  let evidenceLoads = 0;
+  let firstProfileSignal: AbortSignal | undefined;
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path.startsWith("/api/symbols?")) {
+      return Promise.resolve(jsonResponse([symbol]));
+    }
+    if (path.includes("/partitions")) {
+      evidenceLoads += 1;
+      return evidenceLoads === 1
+        ? Promise.resolve(jsonResponse({ detail: "unavailable" }, 503))
+        : Promise.resolve(jsonResponse([]));
+    }
+    if (path.endsWith("/profile")) {
+      if (evidenceLoads === 1) {
+        firstProfileSignal = init?.signal ?? undefined;
+        return neverSettlingProfile.promise;
+      }
+      return Promise.resolve(jsonResponse(profile(555555)));
+    }
+    return Promise.resolve(baseResponse(path));
+  }));
+
+  const { result } = renderHook(() => useSymbols());
+  await waitFor(() => expect(firstSymbolState(result.current)?.status).toBe("error"));
+  expect(firstProfileSignal?.aborted).toBe(true);
+
+  await act(async () => {
+    await result.current.retrySymbol("BTCUSDT");
+  });
+  expect(readyProfileCount(result.current)).toBe(555555);
+  expect(evidenceLoads).toBe(2);
+  neverSettlingProfile.resolve(jsonResponse(profile(111111)));
+});
+
+test("keeps failed and successful committed mutations isolated across a stale reload", async () => {
+  let mutating = false;
+  const partitionLoads = new Map<string, number>();
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const path = String(input);
+    const symbolName = path.includes("PEPEUSDT") ? "PEPEUSDT" : "BTCUSDT";
+    if (path.startsWith("/api/symbols?")) {
+      return Promise.resolve(jsonResponse([symbol, pepeSymbol]));
+    }
+    if (path === "/api/operations/market-data") {
+      return Promise.resolve(jsonResponse(health()));
+    }
+    if (path.includes("/partitions")) {
+      const loads = (partitionLoads.get(symbolName) ?? 0) + 1;
+      partitionLoads.set(symbolName, loads);
+      if (mutating && symbolName === "BTCUSDT" && loads === 2) {
+        return Promise.resolve(jsonResponse({ detail: "unavailable" }, 503));
+      }
+      return Promise.resolve(jsonResponse([]));
+    }
+    if (path.endsWith("/profile")) {
+      return Promise.resolve(jsonResponse({ ...profile(symbolName === "BTCUSDT" ? 120000 : 300), symbol: symbolName }));
+    }
+    if (path.endsWith("/eligibility")) {
+      return Promise.resolve(jsonResponse({
+        symbol: symbolName,
+        eligible: !mutating,
+        reason_codes: mutating ? ["data_not_ready"] : [],
+        evaluated_at: "2026-07-21T10:00:00Z",
+      }));
+    }
+    if (path.includes("/gaps") || path.includes("/streams")) {
+      return Promise.resolve(jsonResponse([]));
+    }
+    throw new Error(`Unexpected mock request: ${path}`);
+  }));
+
+  const { result } = renderHook(() => useSymbols());
+  await waitFor(() => {
+    expect(result.current.status === "ready" ? result.current.dashboard.items.every((item) => item.status === "ready") : false).toBe(true);
+  });
+  mutating = true;
+
+  await act(async () => {
+    await result.current.refreshSymbol(disabledSymbol);
+  });
+  expect(result.current.status === "ready"
+    ? result.current.dashboard.items.find((item) => item.symbol.symbol === "BTCUSDT")?.status
+    : null).toBe("refresh_error");
+
+  await act(async () => {
+    await result.current.refreshSymbol({
+      ...pepeSymbol,
+      enabled: false,
+      data_status: "disabled",
+      updated_at: "2026-07-21T10:01:00Z",
+    });
+  });
+  expect(result.current.status === "ready"
+    ? result.current.dashboard.items.find((item) => item.symbol.symbol === "BTCUSDT")?.status
+    : null).toBe("refresh_error");
+  expect(result.current.status === "ready"
+    ? result.current.dashboard.items.find((item) => item.symbol.symbol === "PEPEUSDT")?.symbol.enabled
+    : null).toBe(false);
+
+  act(() => result.current.reload());
+  await waitFor(() => {
+    if (result.current.status !== "ready") {
+      throw new Error("dashboard is not ready");
+    }
+    const btc = result.current.dashboard.items.find((item) => item.symbol.symbol === "BTCUSDT");
+    const pepe = result.current.dashboard.items.find((item) => item.symbol.symbol === "PEPEUSDT");
+    expect(btc?.status).toBe("ready");
+    expect(btc?.symbol.enabled).toBe(false);
+    expect(pepe?.status).toBe("ready");
+    expect(pepe?.symbol.enabled).toBe(false);
+  });
+});
+
+test("keeps a committed enable override when a reload still lists the symbol disabled", async () => {
+  const staleDisabled = {
+    ...disabledSymbol,
+    updated_at: "2026-07-21T10:00:00Z",
+  };
+  const committedEnabled = {
+    ...symbol,
+    updated_at: "2026-07-21T10:01:00Z",
+  };
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.startsWith("/api/symbols?")) {
+      return Promise.resolve(jsonResponse([staleDisabled]));
+    }
+    return Promise.resolve(baseResponse(path));
+  }));
+
+  const { result } = renderHook(() => useSymbols());
+  await waitFor(() => expect(firstSymbolState(result.current)?.status).toBe("ready"));
+  expect(firstSymbolState(result.current)?.symbol.enabled).toBe(false);
+
+  await act(async () => {
+    await result.current.refreshSymbol(committedEnabled);
+  });
+  expect(firstSymbolState(result.current)?.symbol.enabled).toBe(true);
+
+  act(() => result.current.reload());
+  await waitFor(() => {
+    expect(firstSymbolState(result.current)?.status).toBe("ready");
+    expect(firstSymbolState(result.current)?.symbol.enabled).toBe(true);
+  });
 });

@@ -958,6 +958,159 @@ test("times out a never-settling post-disable refresh and recovers without repea
   expect(deletes).toBe(1);
 });
 
+test.each(["delete-first", "list-first"] as const)(
+  "keeps committed disable truth and focus through an add/backfill reload race: %s",
+  async (raceOrder) => {
+    const user = userEvent.setup();
+    const deleteRequest = deferred<Response>();
+    const staleReload = deferred<Response>();
+    const backfillRequest = deferred<Response>();
+    const disabledProfile = deferred<Response>();
+    let configured = false;
+    let collectionDisabled = false;
+    let listRequests = 0;
+    let symbolPosts = 0;
+    let backfillPosts = 0;
+    let deletes = 0;
+
+    const staleSymbols = () => [{ ...baseSymbol, symbol: "BTCUSDT" }, ...(configured ? [{
+      ...baseSymbol,
+      symbol: "SOLUSDT",
+      data_status: "requested",
+      metadata_status: "metadata_unverified",
+    }] : [])];
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (init?.method === "POST" && path === "/api/symbols") {
+        symbolPosts += 1;
+        configured = true;
+        return jsonResponse({
+          ...baseSymbol,
+          symbol: "SOLUSDT",
+          data_status: "requested",
+          metadata_status: "metadata_unverified",
+        });
+      }
+      if (init?.method === "POST" && path === "/api/symbols/SOLUSDT/backfills") {
+        backfillPosts += 1;
+        return backfillRequest.promise;
+      }
+      if (init?.method === "DELETE" && path === "/api/symbols/BTCUSDT") {
+        deletes += 1;
+        return deleteRequest.promise;
+      }
+      if (path.startsWith("/api/symbols?")) {
+        listRequests += 1;
+        return listRequests === 2 ? staleReload.promise : jsonResponse(staleSymbols());
+      }
+      if (path === "/api/operations/market-data") {
+        return dashboardResponse(path);
+      }
+      if (path.includes("SOLUSDT/profile")) {
+        return jsonResponse({ detail: "not ready" }, 404);
+      }
+      if (path.includes("SOLUSDT/eligibility")) {
+        return jsonResponse({
+          symbol: "SOLUSDT",
+          eligible: false,
+          reason_codes: ["data_not_ready"],
+          evaluated_at: "2026-07-21T10:00:00Z",
+        });
+      }
+      if (path.includes("SOLUSDT/partitions") || path.includes("SOLUSDT/gaps") || path.includes("SOLUSDT/streams")) {
+        return jsonResponse([]);
+      }
+      if (collectionDisabled && path.includes("BTCUSDT/profile")) {
+        return disabledProfile.promise;
+      }
+      if (collectionDisabled && path.includes("BTCUSDT/eligibility")) {
+        return jsonResponse({
+          symbol: "BTCUSDT",
+          eligible: false,
+          reason_codes: ["data_not_ready"],
+          evaluated_at: "2026-07-21T10:01:00Z",
+        });
+      }
+      if (collectionDisabled && (
+        path.includes("BTCUSDT/partitions") ||
+        path.includes("BTCUSDT/gaps") ||
+        path.includes("BTCUSDT/streams")
+      )) {
+        return jsonResponse([]);
+      }
+      return dashboardResponse(path);
+    }));
+
+    render(<SymbolsPage />);
+    await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+    await user.click(screen.getByRole("button", { name: "添加币种" }));
+    const form = screen.getByRole("form", { name: "添加监控币种" });
+    await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
+    fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
+    fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+    await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
+    await waitFor(() => {
+      expect(listRequests).toBe(2);
+      expect(backfillPosts).toBe(1);
+    });
+
+    const btc = screen.getByRole("article", { name: "BTCUSDT 数据证据" });
+    await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "确认停用" }));
+
+    if (raceOrder === "delete-first") {
+      collectionDisabled = true;
+      deleteRequest.resolve(jsonResponse({
+        ...baseSymbol,
+        symbol: "BTCUSDT",
+        enabled: false,
+        data_status: "disabled",
+        updated_at: "2026-07-21T10:01:00Z",
+      }));
+      const updatingBeforeList = await screen.findByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
+      expect(updatingBeforeList).toHaveFocus();
+      staleReload.resolve(jsonResponse(staleSymbols()));
+    } else {
+      staleReload.resolve(jsonResponse(staleSymbols()));
+      await screen.findByRole("article", { name: "SOLUSDT 数据证据" });
+      collectionDisabled = true;
+      deleteRequest.resolve(jsonResponse({
+        ...baseSymbol,
+        symbol: "BTCUSDT",
+        enabled: false,
+        data_status: "disabled",
+        updated_at: "2026-07-21T10:01:00Z",
+      }));
+    }
+
+    const updating = await screen.findByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
+    expect(updating).toHaveFocus();
+    backfillRequest.resolve(jsonResponse([{
+      job_id: "00000000-0000-0000-0000-000000000520",
+      symbol: "SOLUSDT",
+      data_type: "kline_1m",
+      status: "queued",
+      requested_start: "2026-07-01T00:00:00Z",
+      requested_end: "2026-07-21T00:00:00Z",
+      created_at: "2026-07-21T10:00:00Z",
+      updated_at: "2026-07-21T10:00:00Z",
+    }]));
+    await waitFor(() => expect(listRequests).toBe(3));
+    const updatingAfterReload = screen.getByRole("article", { name: "正在确认 BTCUSDT 最新数据" });
+    expect(updatingAfterReload).toBe(updating);
+    expect(updatingAfterReload).toHaveFocus();
+
+    disabledProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
+    const disabledCard = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+    expect(within(disabledCard).queryByText("符合数据启用条件")).not.toBeInTheDocument();
+    expect(within(disabledCard).getByRole("button", { name: "重新启用 BTCUSDT 数据采集" })).toHaveFocus();
+    expect(symbolPosts).toBe(1);
+    expect(backfillPosts).toBe(1);
+    expect(deletes).toBe(1);
+  },
+);
+
 test("re-enables a disabled symbol with its immutable history identity and no automatic backfill", async () => {
   const user = userEvent.setup();
   const posts: Array<{ path: string; body: unknown }> = [];
