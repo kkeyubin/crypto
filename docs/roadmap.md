@@ -4,7 +4,7 @@ This file preserves both committed and deferred work. A deferred item is not per
 
 ## Phase 0 — Repository and Contracts
 
-**Status:** planned
+**Status:** complete (2026-07-21)
 
 - Unified Nison/Volman/Aronson research Skill.
 - StrategySpec, MarketSnapshot, AIAssessment, and data-manifest schemas.
@@ -13,7 +13,7 @@ This file preserves both committed and deferred work. A deferred item is not per
 
 ## Phase 1 — Binance Data Foundation
 
-**Status:** planned
+**Status:** in progress (2026-07-21)
 
 - Dynamic USDⓈ-M symbol watchlist.
 - Independent symbol onboarding, empirical volatility/liquidity/cost profile, and eligibility state.
