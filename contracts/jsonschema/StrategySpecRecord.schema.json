@@ -446,6 +446,11 @@
     "bar": {
       "$ref": "#/$defs/BarSpec"
     },
+    "content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
     "evidence": {
       "$ref": "#/$defs/EvidencePlan"
     },
@@ -516,8 +521,9 @@
     "bar",
     "volman",
     "parameters",
-    "evidence"
+    "evidence",
+    "content_hash"
   ],
-  "title": "StrategySpec",
+  "title": "StrategySpecRecord",
   "type": "object"
 }

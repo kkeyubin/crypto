@@ -30,6 +30,13 @@ for shadow assessment. Trace book-derived statements through
 
 ## StrategySpec Contract
 
+`StrategySpec` is the author/input contract: callers omit `content_hash`, while
+the Python object may compute it as a non-serialized convenience property.
+`StrategySpecRecord` is the persisted/output contract: it keeps the same flat
+payload, requires the canonical SHA-256 `content_hash`, and rejects a hash that
+does not match the payload. Convert validated input to a record explicitly;
+never invent or independently supply the hash.
+
 All seven families—BB, RB, DD, FB, SB, IRB, and ARB—may use `mode: observation`.
 Only BB and RB may use `mode: executable`. Executable mode requires both `execution` and `risk`.
 Observation mode rejects `execution`, `risk`, and `identity.state: paper_enabled`.
@@ -45,8 +52,7 @@ version, state, author), at least two `provenance` references, one `instrument`
 (`BINANCE`, `USD_M_PERPETUAL`, one uppercase contract symbol), one `bar`,
 `volman`, `parameters.fixed`, `parameters.search_space`, and ordered
 `evidence.train_end`, `validation_end`, and `test_end`, plus benchmark and
-multiple-testing method. `content_hash` is computed by the contract; do not
-invent or supply it as an independent input.
+multiple-testing method.
 
 Nison context is optional. Nison conditions, if used, are separate
 `nison_context` hypotheses with `name`, `expression`, and `source_section`;

@@ -5,5 +5,5 @@
     "lib": ["ES2015"],
     "types": []
   },
-  "include": ["types/*.ts"]
+  "include": ["types/*.ts", "type-tests/*.ts"]
 }

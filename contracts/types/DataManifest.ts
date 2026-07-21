@@ -1,5 +1,14 @@
 // Generated. Do not edit.
 
+type DeepReadonly<T> =
+  T extends (...arguments_: never[]) => unknown
+    ? T
+    : T extends readonly unknown[]
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T extends object
+        ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+        : T;
+
 export type Checksum = string;
 export type DataType = "kline_1m" | "mark_price" | "funding" | "agg_trade" | "best_bid_ask";
 export type End = string;
@@ -20,7 +29,7 @@ export type RetrievedAt = string;
 export type SchemaVersion = string;
 export type Start1 = string;
 
-export interface DataManifest {
+interface DataManifestShape {
   checksum: Checksum;
   data_type: DataType;
   end: End;
@@ -48,3 +57,5 @@ export interface RepairRecord {
   source: Source;
   started_at: StartedAt;
 }
+
+export type DataManifest = DeepReadonly<DataManifestShape>;

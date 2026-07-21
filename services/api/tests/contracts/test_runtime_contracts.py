@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -5,7 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from crypto_research.contracts.ai import AIAssessment, AIOpinion, PrincipleCitation
-from crypto_research.contracts.manifest import DataManifest, DataType
+from crypto_research.contracts.manifest import (
+    DataManifest,
+    DataType,
+    MissingInterval,
+    RepairRecord,
+)
 from crypto_research.contracts.market import (
     BestBidAsk,
     FundingObservation,
@@ -26,7 +32,7 @@ def test_snapshot_rejects_bar_after_cutoff() -> None:
             cutoff=NOW,
             data_manifest_id=uuid4(),
             strategy_spec_hash="a" * 64,
-            bars=[
+            bars=(
                 OHLCVBar(
                     timestamp=NOW + timedelta(minutes=1),
                     open=1,
@@ -34,8 +40,8 @@ def test_snapshot_rejects_bar_after_cutoff() -> None:
                     low=1,
                     close=1,
                     volume=1,
-                )
-            ],
+                ),
+            ),
         )
 
 
@@ -47,7 +53,7 @@ def test_snapshot_rejects_best_bid_ask_after_cutoff() -> None:
             cutoff=NOW,
             data_manifest_id=uuid4(),
             strategy_spec_hash="a" * 64,
-            bars=[],
+            bars=(),
             best_bid_ask=BestBidAsk(
                 timestamp=NOW + timedelta(seconds=1), bid=1, ask=1
             ),
@@ -62,7 +68,7 @@ def test_snapshot_rejects_funding_after_cutoff() -> None:
             cutoff=NOW,
             data_manifest_id=uuid4(),
             strategy_spec_hash="a" * 64,
-            bars=[],
+            bars=(),
             funding=FundingObservation(
                 timestamp=NOW + timedelta(seconds=1), rate=0.0001
             ),
@@ -80,7 +86,7 @@ def test_snapshot_accepts_and_serializes_funding_at_or_before_cutoff(
         cutoff=NOW,
         data_manifest_id=uuid4(),
         strategy_spec_hash="a" * 64,
-        bars=[],
+        bars=(),
         funding=funding,
     )
 
@@ -123,6 +129,22 @@ def test_ohlcv_requires_valid_price_bounds(
         OHLCVBar(timestamp=NOW, **bar)
 
 
+@pytest.mark.parametrize("field", ["open", "high", "low", "close", "volume"])
+def test_ohlcv_rejects_numeric_strings(field: str) -> None:
+    payload: dict[str, object] = {
+        "timestamp": NOW,
+        "open": 1.0,
+        "high": 1.0,
+        "low": 1.0,
+        "close": 1.0,
+        "volume": 1.0,
+    }
+    payload[field] = "1.0"
+
+    with pytest.raises(ValidationError):
+        OHLCVBar.model_validate(payload)
+
+
 def test_best_bid_ask_requires_non_negative_spread() -> None:
     with pytest.raises(ValidationError, match="ask must be"):
         BestBidAsk(timestamp=NOW, bid=2, ask=1)
@@ -134,13 +156,13 @@ def test_ai_schema_rejects_order_authority() -> None:
             assessment_id=uuid4(),
             snapshot_id=uuid4(),
             opinion=AIOpinion.UNCERTAIN,
-            reasons=["sample too small"],
-            citations=[
+            reasons=("sample too small",),
+            citations=(
                 PrincipleCitation(
                     skill="aronson-evidence-based-technical-analysis", section="ch06"
-                )
-            ],
-            risk_notes=["cost sensitivity unknown"],
+                ),
+            ),
+            risk_notes=("cost sensitivity unknown",),
             market_data_cutoff=NOW,
             model_id="model-x",
             prompt_version="1.0.0",
@@ -154,9 +176,9 @@ def test_runtime_contract_collections_are_immutable() -> None:
         assessment_id=uuid4(),
         snapshot_id=uuid4(),
         opinion=AIOpinion.UNCERTAIN,
-        reasons=["sample too small"],
-        citations=[PrincipleCitation(skill="aronson", section="ch06")],
-        risk_notes=["cost sensitivity unknown"],
+        reasons=("sample too small",),
+        citations=(PrincipleCitation(skill="aronson", section="ch06"),),
+        risk_notes=("cost sensitivity unknown",),
         market_data_cutoff=NOW,
         model_id="model-x",
         prompt_version="1.0.0",
@@ -168,7 +190,7 @@ def test_runtime_contract_collections_are_immutable() -> None:
         cutoff=NOW,
         data_manifest_id=uuid4(),
         strategy_spec_hash="a" * 64,
-        bars=[OHLCVBar(timestamp=NOW, open=1, high=1, low=1, close=1, volume=1)],
+        bars=(OHLCVBar(timestamp=NOW, open=1, high=1, low=1, close=1, volume=1),),
     )
 
     with pytest.raises(AttributeError):
@@ -237,8 +259,8 @@ def test_manifest_collections_are_immutable() -> None:
         checksum="a" * 64,
         schema_version="1.0.0",
         normalization_version="1.0.0",
-        missing_intervals=[],
-        repair_history=[],
+        missing_intervals=(),
+        repair_history=(),
     )
 
     with pytest.raises(AttributeError):
@@ -246,3 +268,68 @@ def test_manifest_collections_are_immutable() -> None:
 
     assert isinstance(manifest.missing_intervals, tuple)
     assert isinstance(manifest.repair_history, tuple)
+
+
+def test_missing_interval_requires_positive_duration() -> None:
+    with pytest.raises(ValidationError, match="missing interval end must be after start"):
+        MissingInterval(start=NOW, end=NOW)
+
+
+def test_repair_record_cannot_complete_before_it_starts() -> None:
+    with pytest.raises(ValidationError, match="repair completion cannot precede start"):
+        RepairRecord(
+            started_at=NOW,
+            completed_at=NOW - timedelta(seconds=1),
+            source="archive",
+            result="repaired",
+        )
+
+
+@pytest.mark.parametrize(
+    ("missing_start", "missing_end"),
+    [
+        (NOW - timedelta(seconds=1), NOW + timedelta(seconds=1)),
+        (NOW + timedelta(seconds=30), NOW + timedelta(minutes=1, seconds=1)),
+    ],
+)
+def test_manifest_rejects_missing_interval_outside_coverage(
+    missing_start: datetime, missing_end: datetime
+) -> None:
+    with pytest.raises(ValidationError, match="missing interval must be within manifest range"):
+        DataManifest(
+            manifest_id=uuid4(),
+            instrument=INSTRUMENT,
+            data_type=DataType.KLINE_1M,
+            start=NOW,
+            end=NOW + timedelta(minutes=1),
+            retrieved_at=NOW + timedelta(minutes=1),
+            checksum="a" * 64,
+            schema_version="1.0.0",
+            normalization_version="1.0.0",
+            missing_intervals=(MissingInterval(start=missing_start, end=missing_end),),
+        )
+
+
+def test_strict_contracts_parse_json_uuid_datetime_and_enum_strings() -> None:
+    manifest_id = uuid4()
+    payload = {
+        "manifest_id": str(manifest_id),
+        "instrument": {
+            "venue": "BINANCE",
+            "market": "USD_M_PERPETUAL",
+            "symbol": "BTCUSDT",
+        },
+        "data_type": "kline_1m",
+        "start": NOW.isoformat(),
+        "end": (NOW + timedelta(minutes=1)).isoformat(),
+        "retrieved_at": (NOW + timedelta(minutes=1)).isoformat(),
+        "checksum": "a" * 64,
+        "schema_version": "1.0.0",
+        "normalization_version": "1.0.0",
+    }
+
+    manifest = DataManifest.model_validate_json(json.dumps(payload))
+
+    assert manifest.manifest_id == manifest_id
+    assert manifest.data_type is DataType.KLINE_1M
+    assert manifest.start == NOW

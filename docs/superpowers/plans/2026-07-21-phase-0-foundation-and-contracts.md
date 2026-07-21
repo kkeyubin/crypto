@@ -377,7 +377,7 @@ git commit -m "feat: add validated API foundation"
 
 ---
 
-### Task 2: Canonical StrategySpec Contract
+### Task 2: Canonical StrategySpec Input and Record Contracts
 
 **Files:**
 - Create: `services/api/src/crypto_research/contracts/base.py`
@@ -387,9 +387,17 @@ git commit -m "feat: add validated API foundation"
 
 **Interfaces:**
 - Consumes: UTC `+00:00` timestamps and exactly one `InstrumentRef` fixed to venue `BINANCE` and market `USD_M_PERPETUAL`.
-- Produces: computed `StrategySpec.content_hash -> str`, plus `StrategyMode`, `StrategyFamily`, `StrategyState`, `EvidenceConclusion`, `InstrumentRef`, `BarSpec`, and deeply frozen nested contract models.
+- Produces: author/input `StrategySpec`, persisted/output `StrategySpecRecord`, a non-serialized `StrategySpec.content_hash -> str` convenience property, plus `StrategyMode`, `StrategyFamily`, `StrategyState`, `EvidenceConclusion`, `InstrumentRef`, `BarSpec`, and deeply frozen nested contract models.
 - Contract boundary: `executable` mode permits only BB/RB and requires execution plus risk; `observation` mode permits all seven families, rejects execution/risk, and rejects `paper_enabled` state.
 - Parameter mappings use a genuine `Mapping` backed only by immutable key/value tuples; Pydantic accepts dict input and emits JSON objects/object schemas without exposing a mutable dict.
+
+**Reviewed design correction (2026-07-21):** `StrategySpec` rejects caller-provided
+`content_hash` and omits the convenience property from serialized input. The
+explicit `StrategySpecRecord.from_spec(...)` conversion computes the canonical
+SHA-256 and returns the same flat payload plus required `content_hash`;
+deserializing a record recomputes and rejects mismatches. `StrictFrozenModel`
+uses Pydantic strict mode so Python scalar coercions are rejected while JSON
+UUID/datetime/enum strings retain their documented JSON decoding behavior.
 
 - [ ] **Step 1: Write failing mode, strict instrument, UTC, immutability, timing, and hash tests**
 
@@ -414,6 +422,7 @@ from crypto_research.contracts.strategy import (
     StrategyIdentity,
     StrategyMode,
     StrategySpec,
+    StrategySpecRecord,
     StrategyState,
     VolmanRules,
 )
@@ -433,15 +442,15 @@ def build_spec(
     return StrategySpec(
         mode=mode,
         identity=StrategyIdentity(name="bb-btc-event", version="1.0.0", state=state),
-        provenance=[
+        provenance=(
             ProvenanceRef(skill="volman-forex-price-action-scalping", section="ch10"),
             ProvenanceRef(skill="aronson-evidence-based-technical-analysis", section="ch06"),
-        ],
+        ),
         instrument=InstrumentRef(venue="BINANCE", market="USD_M_PERPETUAL", symbol="BTCUSDT"),
         bar=BarSpec(kind=BarKind.EVENT, trade_count=70),
         volman=VolmanRules(
             family=family,
-            chronology=["box_known", "signal_line_frozen", "breakout"],
+            chronology=("box_known", "signal_line_frozen", "breakout"),
             frozen_signal_line="box_high_at_t",
             trigger="trade_price >= signal_line + breakout_bps",
             clear_path="target_distance_bps >= minimum_path_bps",
@@ -451,7 +460,7 @@ def build_spec(
         risk=risk,
         parameters=ParameterFamily(
             fixed={"side": "long"},
-            search_space={"breakout_bps": [1.0, 2.0], "minimum_path_bps": [8.0, 12.0]},
+            search_space={"breakout_bps": (1.0, 2.0), "minimum_path_bps": (8.0, 12.0)},
         ),
         evidence=EvidencePlan(
             train_end=datetime(2024, 1, 1, tzinfo=UTC),
@@ -467,7 +476,10 @@ def test_strategy_hash_is_stable() -> None:
     spec = build_spec()
     assert spec.content_hash == build_spec().content_hash
     assert len(spec.content_hash) == 64
-    assert spec.model_dump(mode="json")["content_hash"] == spec.content_hash
+    assert "content_hash" not in spec.model_dump(mode="json")
+    record = StrategySpecRecord.from_spec(spec)
+    assert record.content_hash == spec.content_hash
+    assert StrategySpecRecord.model_validate_json(record.model_dump_json()) == record
 
 
 def test_event_bar_requires_exactly_one_event_threshold() -> None:
@@ -650,7 +662,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class StrictFrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 Key = TypeVar("Key")
@@ -710,7 +722,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, Field, PlainSerializer, computed_field, model_validator
+from pydantic import AfterValidator, Field, PlainSerializer, model_validator
 
 from crypto_research.contracts.base import FrozenMapping, StrictFrozenModel, UTCModel
 
@@ -860,7 +872,7 @@ class EvidencePlan(UTCModel):
         return self
 
 
-class StrategySpec(StrictFrozenModel):
+class _StrategySpecPayload(StrictFrozenModel):
     schema_version: str = "1.0.0"
     mode: StrategyMode
     identity: StrategyIdentity
@@ -875,7 +887,7 @@ class StrategySpec(StrictFrozenModel):
     evidence: EvidencePlan
 
     @model_validator(mode="after")
-    def validate_mode_boundaries(self) -> "StrategySpec":
+    def validate_mode_boundaries(self) -> "_StrategySpecPayload":
         if self.mode is StrategyMode.EXECUTABLE:
             if self.volman.family not in {StrategyFamily.BB, StrategyFamily.RB}:
                 raise ValueError("executable mode permits only BB or RB")
@@ -888,22 +900,46 @@ class StrategySpec(StrictFrozenModel):
                 raise ValueError("observation mode cannot be paper_enabled")
         return self
 
-    @computed_field
+
+def _canonical_content_hash(payload: Mapping[str, object]) -> str:
+    canonical_json = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(canonical_json).hexdigest()
+
+
+class StrategySpec(_StrategySpecPayload):
     @property
     def content_hash(self) -> str:
-        payload = json.dumps(
-            self.model_dump(mode="json", exclude={"content_hash"}),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        return hashlib.sha256(payload).hexdigest()
+        return _canonical_content_hash(self.model_dump(mode="json"))
+
+
+class StrategySpecRecord(_StrategySpecPayload):
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @classmethod
+    def from_spec(cls, spec: StrategySpec) -> "StrategySpecRecord":
+        return cls.model_validate(
+            {**spec.model_dump(mode="python"), "content_hash": spec.content_hash}
+        )
+
+    @model_validator(mode="after")
+    def validate_content_hash(self) -> "StrategySpecRecord":
+        expected = _canonical_content_hash(
+            self.model_dump(mode="json", exclude={"content_hash"})
+        )
+        if self.content_hash != expected:
+            raise ValueError("content_hash does not match canonical strategy payload")
+        return self
 ```
 
 ```python
 # services/api/src/crypto_research/contracts/__init__.py
-from crypto_research.contracts.strategy import StrategySpec
+from crypto_research.contracts.strategy import StrategySpec, StrategySpecRecord
 
-__all__ = ["StrategySpec"]
+__all__ = ["StrategySpec", "StrategySpecRecord"]
 ```
 
 - [ ] **Step 5: Run focused and full API tests**
@@ -1249,8 +1285,14 @@ git commit -m "feat: define runtime audit contracts"
 - Test: `services/api/tests/contracts/test_schema_export.py`
 
 **Interfaces:**
-- Consumes: four Pydantic root models.
-- Produces: committed deterministic JSON Schema files and TypeScript declarations. `contracts/jsonschema/` is generated-only: normal export owns and replaces its complete `*.schema.json` set, while `--check` is read-only and exits nonzero for missing, modified, or stale files.
+- Consumes: five Pydantic root models, including separate `StrategySpec` input and `StrategySpecRecord` persisted/output roots.
+- Produces: committed deterministic JSON Schema files and deeply readonly TypeScript root declarations. `contracts/jsonschema/` is generated-only: normal export owns and replaces its complete `*.schema.json` set, while `--check` is read-only and exits nonzero for missing, modified, or stale files.
+
+**Reviewed design correction (2026-07-21):** generated root aliases are
+`DeepReadonly` views of internal shapes, recursively covering nested objects,
+arrays, tuples, and index signatures. A compiled negative fixture uses
+`@ts-expect-error` to prove nested `StrategySpec` mutations are rejected. The
+generated index continues to export roots only.
 
 - [ ] **Step 1: Write the failing schema-drift test**
 
@@ -1288,9 +1330,15 @@ import json
 import sys
 from pathlib import Path
 
-from crypto_research.contracts import AIAssessment, DataManifest, MarketSnapshot, StrategySpec
+from crypto_research.contracts import (
+    AIAssessment,
+    DataManifest,
+    MarketSnapshot,
+    StrategySpec,
+    StrategySpecRecord,
+)
 
-MODELS = [AIAssessment, DataManifest, MarketSnapshot, StrategySpec]
+MODELS = [AIAssessment, DataManifest, MarketSnapshot, StrategySpec, StrategySpecRecord]
 ROOT = Path(__file__).resolve().parents[3]
 OUTPUT = ROOT / "contracts" / "jsonschema"
 
@@ -1359,7 +1407,19 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const generatedHeader = "// Generated. Do not edit.";
-const expectedRoots = ["AIAssessment", "DataManifest", "MarketSnapshot", "StrategySpec"];
+const expectedRoots = [
+  "AIAssessment",
+  "DataManifest",
+  "MarketSnapshot",
+  "StrategySpec",
+  "StrategySpecRecord",
+];
+const deepReadonly = `type DeepReadonly<T> =
+  T extends readonly unknown[]
+    ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+    : T extends object
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T;`;
 const inputDir = path.resolve("contracts/jsonschema");
 const outputDir = path.resolve("contracts/types");
 const files = (await readdir(inputDir)).filter((name) => name.endsWith(".schema.json")).sort();
@@ -1374,7 +1434,14 @@ for (const existing of await readdir(outputDir, { withFileTypes: true })) {
 for (const file of files) {
   const root = file.replace(".schema.json", "");
   const declaration = await compileFromFile(path.join(inputDir, file), { bannerComment: "" });
-  await writeFile(path.join(outputDir, `${root}.ts`), `${generatedHeader}\n\n${declaration}`);
+  const rootShape = declaration.replace(
+    `export interface ${root} {`,
+    `interface ${root}Shape {`,
+  );
+  await writeFile(
+    path.join(outputDir, `${root}.ts`),
+    `${generatedHeader}\n\n${deepReadonly}\n\n${rootShape}\nexport type ${root} = DeepReadonly<${root}Shape>;\n`,
+  );
 }
 const index = roots.map((root) => `export type { ${root} } from "./${root}";`).join("\n");
 await writeFile(path.join(outputDir, "index.ts"), "// Generated. Do not edit.\n\n" + index + "\n");
@@ -1397,7 +1464,7 @@ npm run contracts:check-types
 npm run contracts:test-generation
 ```
 
-Expected: schema check exits 0 without writing files, normal export removes stale generated schemas, npm creates `package-lock.json`, TypeScript type-checking uses the isolated `contracts/tsconfig.json` with ES2015 and no ambient package types, the generator safety test preserves manual TypeScript and removes only header-marked generated files, and `contracts/types/index.ts` exports the four root model types from isolated generated modules without duplicate nested declarations.
+Expected: schema check exits 0 without writing files, normal export removes stale generated schemas, npm creates `package-lock.json`, TypeScript type-checking uses the isolated `contracts/tsconfig.json` with ES2015 and no ambient package types, the generator safety test preserves manual TypeScript and removes only header-marked generated files, and `contracts/types/index.ts` exports the five deeply readonly root model types from isolated generated modules without duplicate nested declarations.
 
 - [ ] **Step 6: Run all backend checks**
 

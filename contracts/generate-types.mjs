@@ -8,7 +8,26 @@ const EXPECTED_ROOTS = [
   "DataManifest",
   "MarketSnapshot",
   "StrategySpec",
+  "StrategySpecRecord",
 ];
+
+const DEEP_READONLY = `type DeepReadonly<T> =
+  T extends (...arguments_: never[]) => unknown
+    ? T
+    : T extends readonly unknown[]
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T extends object
+        ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+        : T;`;
+
+function makeRootDeepReadonly(root, declaration) {
+  const exportedRoot = `export interface ${root} {`;
+  if (!declaration.includes(exportedRoot)) {
+    throw new Error(`generated declaration is missing root interface: ${root}`);
+  }
+  const internalShape = declaration.replace(exportedRoot, `interface ${root}Shape {`);
+  return `${DEEP_READONLY}\n\n${internalShape.trimEnd()}\n\nexport type ${root} = DeepReadonly<${root}Shape>;\n`;
+}
 
 function parseArguments(arguments_) {
   const values = {
@@ -53,7 +72,7 @@ for (const file of files) {
   });
   await writeFile(
     path.join(outputDir, `${root}.ts`),
-    `${GENERATED_HEADER}\n\n${declaration}`,
+    `${GENERATED_HEADER}\n\n${makeRootDeepReadonly(root, declaration)}`,
   );
 }
 const index = roots

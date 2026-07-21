@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
+from crypto_research.contracts import StrategySpecRecord
 from crypto_research.contracts.strategy import (
     BarKind,
     BarSpec,
@@ -36,19 +37,19 @@ def build_spec(
     return StrategySpec(
         mode=mode,
         identity=StrategyIdentity(name="bb-btc-event", version="1.0.0", state=state),
-        provenance=[
+        provenance=(
             ProvenanceRef(skill="volman-forex-price-action-scalping", section="ch10"),
             ProvenanceRef(
                 skill="aronson-evidence-based-technical-analysis", section="ch06"
             ),
-        ],
+        ),
         instrument=InstrumentRef(
             venue="BINANCE", market="USD_M_PERPETUAL", symbol="BTCUSDT"
         ),
         bar=BarSpec(kind=BarKind.EVENT, trade_count=70),
         volman=VolmanRules(
             family=family,
-            chronology=["box_known", "signal_line_frozen", "breakout"],
+            chronology=("box_known", "signal_line_frozen", "breakout"),
             frozen_signal_line="box_high_at_t",
             trigger="trade_price >= signal_line + breakout_bps",
             clear_path="target_distance_bps >= minimum_path_bps",
@@ -59,8 +60,8 @@ def build_spec(
         parameters=ParameterFamily(
             fixed={"side": "long"},
             search_space={
-                "breakout_bps": [1.0, 2.0],
-                "minimum_path_bps": [8.0, 12.0],
+                "breakout_bps": (1.0, 2.0),
+                "minimum_path_bps": (8.0, 12.0),
             },
         ),
         evidence=EvidencePlan(
@@ -73,12 +74,48 @@ def build_spec(
     )
 
 
-def test_strategy_hash_is_stable() -> None:
+def test_strategy_input_dump_omits_computed_hash() -> None:
     spec = build_spec()
 
     assert spec.content_hash == build_spec().content_hash
     assert len(spec.content_hash) == 64
-    assert spec.model_dump(mode="json")["content_hash"] == spec.content_hash
+    assert "content_hash" not in spec.model_dump(mode="json")
+    assert "content_hash" not in json.loads(spec.model_dump_json())
+
+
+def test_strategy_input_rejects_caller_provided_hash() -> None:
+    payload = build_spec().model_dump(mode="json", exclude={"content_hash"})
+
+    with pytest.raises(ValidationError, match="content_hash"):
+        StrategySpec.model_validate({**payload, "content_hash": "a" * 64})
+
+
+def test_strategy_record_factory_computes_canonical_hash() -> None:
+    spec = build_spec()
+
+    record = StrategySpecRecord.from_spec(spec)
+
+    assert record.content_hash == spec.content_hash
+    assert record.model_dump(mode="json", exclude={"content_hash"}) == spec.model_dump(
+        mode="json"
+    )
+
+
+def test_strategy_record_json_round_trip() -> None:
+    record = StrategySpecRecord.from_spec(build_spec())
+
+    restored = StrategySpecRecord.model_validate_json(record.model_dump_json())
+
+    assert restored == record
+    assert restored.model_dump_json() == record.model_dump_json()
+
+
+def test_strategy_record_rejects_tampered_hash() -> None:
+    payload = StrategySpecRecord.from_spec(build_spec()).model_dump(mode="json")
+    payload["content_hash"] = "0" * 64
+
+    with pytest.raises(ValidationError, match="content_hash does not match"):
+        StrategySpecRecord.model_validate_json(json.dumps(payload))
 
 
 def test_event_bar_requires_exactly_one_event_threshold() -> None:
@@ -224,6 +261,19 @@ def test_parameter_mappings_keep_object_schema_and_json_serialization() -> None:
     assert dumped_parameters["fixed"] == {"side": "long"}
     assert isinstance(dumped_parameters["fixed"], dict)
     assert json.loads(spec.model_dump_json())["parameters"]["fixed"] == {"side": "long"}
+
+
+def test_integer_contract_fields_reject_booleans() -> None:
+    with pytest.raises(ValidationError):
+        BarSpec(kind=BarKind.EVENT, trade_count=True)
+
+    with pytest.raises(ValidationError):
+        ExecutionSpec(latency_ms=True)
+
+
+def test_risk_values_reject_numeric_strings() -> None:
+    with pytest.raises(ValidationError):
+        RiskSpec(risk_fraction="0.01")
 
 
 def test_evidence_plan_rejects_naive_timestamps() -> None:

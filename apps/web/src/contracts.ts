@@ -3,4 +3,5 @@ export type {
   DataManifest,
   MarketSnapshot,
   StrategySpec,
+  StrategySpecRecord,
 } from "../../../contracts/types/index";

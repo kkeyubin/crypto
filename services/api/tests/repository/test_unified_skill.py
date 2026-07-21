@@ -84,6 +84,18 @@ def test_strategy_modes_and_source_weighting_are_explicit() -> None:
     assert set(re.findall(r"\b(?:BB|RB|DD|FB|SB|IRB|ARB)\b", text)) >= ALL_FAMILIES
 
 
+def test_strategy_contract_lifecycle_and_mode_specific_workflow_are_explicit() -> None:
+    entrypoint = read("SKILL.md")
+    workflow = read("references/strategy-workflow.md")
+
+    assert "`StrategySpec` is the author/input contract" in entrypoint
+    assert "`StrategySpecRecord` is the persisted/output contract" in entrypoint
+    assert (
+        "For executable BB/RB, declare execution and risk; for observation mode, "
+        "omit both"
+    ) in workflow
+
+
 def test_each_symbol_requires_an_independent_gate_and_owner_approval() -> None:
     text = "\n".join([read("SKILL.md"), read("references/strategy-workflow.md")])
 

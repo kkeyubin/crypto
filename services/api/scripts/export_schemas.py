@@ -8,9 +8,16 @@ from crypto_research.contracts import (
     DataManifest,
     MarketSnapshot,
     StrategySpec,
+    StrategySpecRecord,
 )
 
-MODELS = [AIAssessment, DataManifest, MarketSnapshot, StrategySpec]
+MODELS = [
+    AIAssessment,
+    DataManifest,
+    MarketSnapshot,
+    StrategySpec,
+    StrategySpecRecord,
+]
 ROOT = Path(__file__).resolve().parents[3]
 OUTPUT = ROOT / "contracts" / "jsonschema"
 

@@ -14,6 +14,7 @@ export type Interval = string | null;
 export type BarKind = "time" | "event";
 export type TradeCount = number | null;
 export type Volume = number | null;
+export type ContentHash = string;
 export type Benchmark = string;
 export type MultipleTesting = string;
 export type TestEnd = string;
@@ -63,8 +64,9 @@ export type FrozenSignalLine = string;
 export type Invalidation = string;
 export type Trigger = string;
 
-interface StrategySpecShape {
+interface StrategySpecRecordShape {
   bar: BarSpec;
+  content_hash: ContentHash;
   evidence: EvidencePlan;
   execution?: ExecutionSpec | null;
   identity: StrategyIdentity;
@@ -149,4 +151,4 @@ export interface VolmanRules {
   trigger: Trigger;
 }
 
-export type StrategySpec = DeepReadonly<StrategySpecShape>;
+export type StrategySpecRecord = DeepReadonly<StrategySpecRecordShape>;

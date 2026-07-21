@@ -61,4 +61,3 @@ PEPEUSDT 必须从独立的 symbol profile 开始：冻结其 BINANCE/USD_M_PERP
 ## 总评
 
 **GREEN PASS（3/3）。** 三个回答均维持研究规格、跨标的证据隔离与 shadow-only 权限边界；没有发现需修订实现的实质违例。
-

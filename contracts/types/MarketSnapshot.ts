@@ -1,5 +1,14 @@
 // Generated. Do not edit.
 
+type DeepReadonly<T> =
+  T extends (...arguments_: never[]) => unknown
+    ? T
+    : T extends readonly unknown[]
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T extends object
+        ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+        : T;
+
 export type Close = number;
 export type High = number;
 export type Low = number;
@@ -22,7 +31,7 @@ export type SchemaVersion = string;
 export type SnapshotId = string;
 export type StrategySpecHash = string;
 
-export interface MarketSnapshot {
+interface MarketSnapshotShape {
   bars: Bars;
   best_bid_ask?: BestBidAsk | null;
   cutoff: Cutoff;
@@ -56,3 +65,5 @@ export interface InstrumentRef {
   symbol: Symbol;
   venue: Venue;
 }
+
+export type MarketSnapshot = DeepReadonly<MarketSnapshotShape>;

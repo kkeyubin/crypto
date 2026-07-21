@@ -1,5 +1,14 @@
 // Generated. Do not edit.
 
+type DeepReadonly<T> =
+  T extends (...arguments_: never[]) => unknown
+    ? T
+    : T extends readonly unknown[]
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T extends object
+        ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+        : T;
+
 export type AssessmentId = string;
 /**
  * @minItems 1
@@ -20,7 +29,7 @@ export type SchemaVersion = string;
 export type SkillVersion = string;
 export type SnapshotId = string;
 
-export interface AIAssessment {
+interface AIAssessmentShape {
   assessment_id: AssessmentId;
   citations: Citations;
   market_data_cutoff: MarketDataCutoff;
@@ -37,3 +46,5 @@ export interface PrincipleCitation {
   section: Section;
   skill: Skill;
 }
+
+export type AIAssessment = DeepReadonly<AIAssessmentShape>;

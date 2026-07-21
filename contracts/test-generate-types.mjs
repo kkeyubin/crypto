@@ -15,6 +15,7 @@ const expectedRoots = [
   "DataManifest",
   "MarketSnapshot",
   "StrategySpec",
+  "StrategySpecRecord",
 ];
 const temporaryRoot = await mkdtemp(path.join(tmpdir(), "crypto-contract-types-"));
 const inputDir = path.join(temporaryRoot, "jsonschema");
@@ -58,6 +59,16 @@ try {
       .slice(2),
     expectedRoots.map((rootName) => `export type { ${rootName} } from "./${rootName}";`),
   );
+  for (const rootName of expectedRoots) {
+    const declaration = await readFile(path.join(outputDir, `${rootName}.ts`), "utf8");
+    assert.match(declaration, /type DeepReadonly<T> =/);
+    assert.match(declaration, new RegExp(`interface ${rootName}Shape \\{`));
+    assert.match(
+      declaration,
+      new RegExp(`export type ${rootName} = DeepReadonly<${rootName}Shape>;`),
+    );
+    assert.doesNotMatch(declaration, new RegExp(`export interface ${rootName} \\{`));
+  }
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }

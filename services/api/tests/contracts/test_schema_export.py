@@ -7,6 +7,7 @@ EXPECTED_ROOTS = {
     "DataManifest.schema.json",
     "MarketSnapshot.schema.json",
     "StrategySpec.schema.json",
+    "StrategySpecRecord.schema.json",
 }
 
 
@@ -28,6 +29,13 @@ def test_committed_json_schemas_match_models() -> None:
     output = api_root.parents[1] / "contracts" / "jsonschema"
     result = run_export(api_root, output, check=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_committed_json_schema_set_has_input_and_record_contracts() -> None:
+    api_root = Path(__file__).resolve().parents[2]
+    output = api_root.parents[1] / "contracts" / "jsonschema"
+
+    assert {path.name for path in output.glob("*.schema.json")} == EXPECTED_ROOTS
 
 
 def test_check_reports_missing_schema_without_creating_output(

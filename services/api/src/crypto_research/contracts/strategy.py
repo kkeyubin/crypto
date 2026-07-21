@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, Field, PlainSerializer, computed_field, model_validator
+from pydantic import AfterValidator, Field, PlainSerializer, model_validator
 
 from crypto_research.contracts.base import FrozenMapping, StrictFrozenModel, UTCModel
 
@@ -159,7 +159,7 @@ class EvidencePlan(UTCModel):
         return self
 
 
-class StrategySpec(StrictFrozenModel):
+class _StrategySpecPayload(StrictFrozenModel):
     schema_version: str = "1.0.0"
     mode: StrategyMode
     identity: StrategyIdentity
@@ -174,7 +174,7 @@ class StrategySpec(StrictFrozenModel):
     evidence: EvidencePlan
 
     @model_validator(mode="after")
-    def validate_mode_boundaries(self) -> "StrategySpec":
+    def validate_mode_boundaries(self) -> "_StrategySpecPayload":
         if self.mode is StrategyMode.EXECUTABLE:
             if self.volman.family not in {StrategyFamily.BB, StrategyFamily.RB}:
                 raise ValueError("executable mode permits only BB or RB")
@@ -187,12 +187,41 @@ class StrategySpec(StrictFrozenModel):
                 raise ValueError("observation mode cannot be paper_enabled")
         return self
 
-    @computed_field
+
+def _canonical_content_hash(payload: Mapping[str, object]) -> str:
+    canonical_json = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(canonical_json).hexdigest()
+
+
+class StrategySpec(_StrategySpecPayload):
     @property
     def content_hash(self) -> str:
-        payload = json.dumps(
-            self.model_dump(mode="json", exclude={"content_hash"}),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        return hashlib.sha256(payload).hexdigest()
+        """Return the canonical payload hash without serializing it as input data."""
+        return _canonical_content_hash(self.model_dump(mode="json"))
+
+
+class StrategySpecRecord(_StrategySpecPayload):
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @classmethod
+    def from_spec(cls, spec: StrategySpec) -> "StrategySpecRecord":
+        """Create the persisted/output form of an author input contract."""
+        return cls.model_validate(
+            {
+                **spec.model_dump(mode="python"),
+                "content_hash": spec.content_hash,
+            }
+        )
+
+    @model_validator(mode="after")
+    def validate_content_hash(self) -> "StrategySpecRecord":
+        expected = _canonical_content_hash(
+            self.model_dump(mode="json", exclude={"content_hash"})
+        )
+        if self.content_hash != expected:
+            raise ValueError("content_hash does not match canonical strategy payload")
+        return self

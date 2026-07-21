@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class StrictFrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 Key = TypeVar("Key")

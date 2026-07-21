@@ -20,12 +20,24 @@ class MissingInterval(UTCModel):
     start: datetime
     end: datetime
 
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "MissingInterval":
+        if self.end <= self.start:
+            raise ValueError("missing interval end must be after start")
+        return self
+
 
 class RepairRecord(UTCModel):
     started_at: datetime
     completed_at: datetime
     source: str
     result: str
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "RepairRecord":
+        if self.completed_at < self.started_at:
+            raise ValueError("repair completion cannot precede start")
+        return self
 
 
 class DataManifest(UTCModel):
@@ -47,4 +59,9 @@ class DataManifest(UTCModel):
             raise ValueError("manifest end must be after start")
         if self.retrieved_at < self.end:
             raise ValueError("retrieval cannot precede dataset end")
+        if any(
+            interval.start < self.start or interval.end > self.end
+            for interval in self.missing_intervals
+        ):
+            raise ValueError("missing interval must be within manifest range")
         return self

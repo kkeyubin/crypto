@@ -35,7 +35,8 @@ Use the following order before any outcome is read:
 4. Add any Nison signal solely as a separately searchable `nison_context`
    variable. Its source section and quantitative expression must be frozen
    before validation data is read.
-5. Declare execution and risk: fill timing, fees, spread, slippage, latency,
+5. For executable BB/RB, declare execution and risk; for observation mode, omit both.
+   Executable declarations cover fill timing, fees, spread, slippage, latency,
    funding, liquidation/precision assumptions, stop/target state machine,
    maximum hold, circuit breakers, and collision handling.
 6. Preregister bounded `parameters.fixed` and `parameters.search_space`; retain
