@@ -389,6 +389,7 @@ git commit -m "feat: add validated API foundation"
 - Consumes: UTC `+00:00` timestamps and exactly one `InstrumentRef` fixed to venue `BINANCE` and market `USD_M_PERPETUAL`.
 - Produces: computed `StrategySpec.content_hash -> str`, plus `StrategyMode`, `StrategyFamily`, `StrategyState`, `EvidenceConclusion`, `InstrumentRef`, `BarSpec`, and deeply frozen nested contract models.
 - Contract boundary: `executable` mode permits only BB/RB and requires execution plus risk; `observation` mode permits all seven families, rejects execution/risk, and rejects `paper_enabled` state.
+- Parameter mappings use a genuine `Mapping` backed only by immutable key/value tuples; Pydantic accepts dict input and emits JSON objects/object schemas without exposing a mutable dict.
 
 - [ ] **Step 1: Write failing mode, strict instrument, UTC, immutability, timing, and hash tests**
 
@@ -573,7 +574,11 @@ def test_strategy_nested_collections_are_deeply_immutable() -> None:
     original_hash = spec.content_hash
 
     with pytest.raises(TypeError):
+        dict.__setitem__(spec.parameters.fixed, "side", "short")
+    with pytest.raises(TypeError):
         spec.parameters.fixed["side"] = "short"
+    with pytest.raises(AttributeError):
+        spec.parameters.fixed._FrozenMapping__items = (("side", "short"),)
     with pytest.raises(TypeError):
         spec.parameters.search_space["breakout_bps"] = (3.0,)
     with pytest.raises(AttributeError):
@@ -583,15 +588,25 @@ def test_strategy_nested_collections_are_deeply_immutable() -> None:
 
     assert isinstance(spec.provenance, tuple)
     assert isinstance(spec.nison_context, tuple)
+    assert isinstance(spec.parameters.search_space["breakout_bps"], tuple)
+    assert not hasattr(spec.parameters.fixed, "__dict__")
+    assert isinstance(
+        object.__getattribute__(spec.parameters.fixed, "_FrozenMapping__items"), tuple
+    )
     assert spec.content_hash == original_hash
 
 
 def test_parameter_mappings_keep_object_schema_and_json_serialization() -> None:
     spec = build_spec()
     parameter_schema = StrategySpec.model_json_schema()["$defs"]["ParameterFamily"]
+    dumped_parameters = spec.model_dump(mode="json")["parameters"]
 
     assert parameter_schema["properties"]["fixed"]["type"] == "object"
+    assert "additionalProperties" in parameter_schema["properties"]["fixed"]
     assert parameter_schema["properties"]["search_space"]["type"] == "object"
+    assert "additionalProperties" in parameter_schema["properties"]["search_space"]
+    assert dumped_parameters["fixed"] == {"side": "long"}
+    assert isinstance(dumped_parameters["fixed"], dict)
     assert json.loads(spec.model_dump_json())["parameters"]["fixed"] == {"side": "long"}
 
 
@@ -627,6 +642,7 @@ Expected: FAIL because strict mode, instrument, deep immutability, and UTC-offse
 
 ```python
 # services/api/src/crypto_research/contracts/base.py
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta
 from typing import NoReturn, TypeVar
 
@@ -641,22 +657,33 @@ Key = TypeVar("Key")
 Value = TypeVar("Value")
 
 
-class FrozenDict(dict[Key, Value]):
-    """A JSON-serializable mapping that rejects in-place mutation."""
+class FrozenMapping(Mapping[Key, Value]):
+    """A mapping backed only by immutable key/value pairs."""
 
-    @staticmethod
-    def _immutable(*args: object, **kwargs: object) -> NoReturn:
-        del args, kwargs
-        raise TypeError("FrozenDict is immutable")
+    __slots__ = ("__items",)
 
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
-    __ior__ = _immutable
+    def __init__(self, values: Mapping[Key, Value]) -> None:
+        object.__setattr__(self, "_FrozenMapping__items", tuple(values.items()))
+
+    def __getitem__(self, key: Key) -> Value:
+        for item_key, item_value in self.__items:
+            if item_key == key:
+                return item_value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[Key]:
+        return (key for key, _ in self.__items)
+
+    def __len__(self) -> int:
+        return len(self.__items)
+
+    def __setattr__(self, name: str, value: object) -> NoReturn:
+        del name, value
+        raise AttributeError("FrozenMapping is immutable")
+
+    def __delattr__(self, name: str) -> NoReturn:
+        del name
+        raise AttributeError("FrozenMapping is immutable")
 
 
 class UTCModel(StrictFrozenModel):
@@ -678,15 +705,32 @@ class UTCModel(StrictFrozenModel):
 # services/api/src/crypto_research/contracts/strategy.py
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import AfterValidator, Field, PlainSerializer, computed_field, model_validator
 
-from crypto_research.contracts.base import FrozenDict, StrictFrozenModel, UTCModel
+from crypto_research.contracts.base import FrozenMapping, StrictFrozenModel, UTCModel
 
 ParameterValue = bool | int | float | str
+FixedParameters = Annotated[
+    Mapping[str, ParameterValue],
+    AfterValidator(FrozenMapping),
+    PlainSerializer(
+        lambda value: dict(value.items()),
+        return_type=dict[str, ParameterValue],
+    ),
+]
+SearchSpace = Annotated[
+    Mapping[str, tuple[ParameterValue, ...]],
+    AfterValidator(FrozenMapping),
+    PlainSerializer(
+        lambda value: dict(value.items()),
+        return_type=dict[str, tuple[ParameterValue, ...]],
+    ),
+]
 
 
 class StrategyFamily(StrEnum):
@@ -798,17 +842,8 @@ class RiskSpec(StrictFrozenModel):
 
 
 class ParameterFamily(StrictFrozenModel):
-    fixed: dict[str, ParameterValue]
-    search_space: dict[str, tuple[ParameterValue, ...]]
-
-    @field_validator("fixed", "search_space", mode="after")
-    @classmethod
-    def freeze_mapping(
-        cls,
-        value: dict[str, ParameterValue]
-        | dict[str, tuple[ParameterValue, ...]],
-    ) -> FrozenDict[str, ParameterValue] | FrozenDict[str, tuple[ParameterValue, ...]]:
-        return FrozenDict(value)
+    fixed: FixedParameters
+    search_space: SearchSpace
 
 
 class EvidencePlan(UTCModel):

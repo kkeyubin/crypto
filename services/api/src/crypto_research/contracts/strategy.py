@@ -1,14 +1,31 @@
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import AfterValidator, Field, PlainSerializer, computed_field, model_validator
 
-from crypto_research.contracts.base import FrozenDict, StrictFrozenModel, UTCModel
+from crypto_research.contracts.base import FrozenMapping, StrictFrozenModel, UTCModel
 
 ParameterValue = bool | int | float | str
+FixedParameters = Annotated[
+    Mapping[str, ParameterValue],
+    AfterValidator(FrozenMapping),
+    PlainSerializer(
+        lambda value: dict(value.items()),
+        return_type=dict[str, ParameterValue],
+    ),
+]
+SearchSpace = Annotated[
+    Mapping[str, tuple[ParameterValue, ...]],
+    AfterValidator(FrozenMapping),
+    PlainSerializer(
+        lambda value: dict(value.items()),
+        return_type=dict[str, tuple[ParameterValue, ...]],
+    ),
+]
 
 
 class StrategyFamily(StrEnum):
@@ -124,17 +141,8 @@ class RiskSpec(StrictFrozenModel):
 
 
 class ParameterFamily(StrictFrozenModel):
-    fixed: dict[str, ParameterValue]
-    search_space: dict[str, tuple[ParameterValue, ...]]
-
-    @field_validator("fixed", "search_space", mode="after")
-    @classmethod
-    def freeze_mapping(
-        cls,
-        value: dict[str, ParameterValue]
-        | dict[str, tuple[ParameterValue, ...]],
-    ) -> FrozenDict[str, ParameterValue] | FrozenDict[str, tuple[ParameterValue, ...]]:
-        return FrozenDict(value)
+    fixed: FixedParameters
+    search_space: SearchSpace
 
 
 class EvidencePlan(UTCModel):

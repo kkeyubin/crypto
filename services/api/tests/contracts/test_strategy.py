@@ -190,7 +190,11 @@ def test_strategy_nested_collections_are_deeply_immutable() -> None:
     original_hash = spec.content_hash
 
     with pytest.raises(TypeError):
+        dict.__setitem__(spec.parameters.fixed, "side", "short")
+    with pytest.raises(TypeError):
         spec.parameters.fixed["side"] = "short"
+    with pytest.raises(AttributeError):
+        spec.parameters.fixed._FrozenMapping__items = (("side", "short"),)
     with pytest.raises(TypeError):
         spec.parameters.search_space["breakout_bps"] = (3.0,)
     with pytest.raises(AttributeError):
@@ -200,15 +204,25 @@ def test_strategy_nested_collections_are_deeply_immutable() -> None:
 
     assert isinstance(spec.provenance, tuple)
     assert isinstance(spec.nison_context, tuple)
+    assert isinstance(spec.parameters.search_space["breakout_bps"], tuple)
+    assert not hasattr(spec.parameters.fixed, "__dict__")
+    assert isinstance(
+        object.__getattribute__(spec.parameters.fixed, "_FrozenMapping__items"), tuple
+    )
     assert spec.content_hash == original_hash
 
 
 def test_parameter_mappings_keep_object_schema_and_json_serialization() -> None:
     spec = build_spec()
     parameter_schema = StrategySpec.model_json_schema()["$defs"]["ParameterFamily"]
+    dumped_parameters = spec.model_dump(mode="json")["parameters"]
 
     assert parameter_schema["properties"]["fixed"]["type"] == "object"
+    assert "additionalProperties" in parameter_schema["properties"]["fixed"]
     assert parameter_schema["properties"]["search_space"]["type"] == "object"
+    assert "additionalProperties" in parameter_schema["properties"]["search_space"]
+    assert dumped_parameters["fixed"] == {"side": "long"}
+    assert isinstance(dumped_parameters["fixed"], dict)
     assert json.loads(spec.model_dump_json())["parameters"]["fixed"] == {"side": "long"}
 
 

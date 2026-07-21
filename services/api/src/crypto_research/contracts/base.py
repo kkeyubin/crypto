@@ -1,3 +1,4 @@
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta
 from typing import NoReturn, TypeVar
 
@@ -12,22 +13,33 @@ Key = TypeVar("Key")
 Value = TypeVar("Value")
 
 
-class FrozenDict(dict[Key, Value]):
-    """A JSON-serializable mapping that rejects in-place mutation."""
+class FrozenMapping(Mapping[Key, Value]):
+    """A mapping backed only by immutable key/value pairs."""
 
-    @staticmethod
-    def _immutable(*args: object, **kwargs: object) -> NoReturn:
-        del args, kwargs
-        raise TypeError("FrozenDict is immutable")
+    __slots__ = ("__items",)
 
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
-    __ior__ = _immutable
+    def __init__(self, values: Mapping[Key, Value]) -> None:
+        object.__setattr__(self, "_FrozenMapping__items", tuple(values.items()))
+
+    def __getitem__(self, key: Key) -> Value:
+        for item_key, item_value in self.__items:
+            if item_key == key:
+                return item_value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[Key]:
+        return (key for key, _ in self.__items)
+
+    def __len__(self) -> int:
+        return len(self.__items)
+
+    def __setattr__(self, name: str, value: object) -> NoReturn:
+        del name, value
+        raise AttributeError("FrozenMapping is immutable")
+
+    def __delattr__(self, name: str) -> NoReturn:
+        del name
+        raise AttributeError("FrozenMapping is immutable")
 
 
 class UTCModel(StrictFrozenModel):
