@@ -18,20 +18,36 @@ interface UserAction extends FocusIntent {
   readonly canceled: boolean;
 }
 
-interface PendingMutation extends FocusIntent {
-  readonly kind: MutationKind;
+interface MutationExpectation {
   readonly expectedEnabled: boolean;
   readonly committedUpdatedAt: string;
 }
 
-function isStrictlyNewerOpposite(symbol: SymbolView, pending: PendingMutation): boolean {
+interface PendingMutation extends FocusIntent, MutationExpectation {
+  readonly kind: MutationKind;
+}
+
+type ActionNotice =
+  | {
+    readonly kind: MutationKind;
+    readonly actionToken: number;
+    readonly symbol: string;
+    readonly expectedEnabled: boolean;
+    readonly committedUpdatedAt: string;
+  }
+  | {
+    readonly kind: "disableError" | "enableError";
+    readonly actionToken: number;
+  };
+
+function isStrictlyNewerOpposite(symbol: SymbolView, expected: MutationExpectation): boolean {
   const listedUpdatedAt = Date.parse(symbol.updated_at);
-  const committedUpdatedAt = Date.parse(pending.committedUpdatedAt);
+  const committedUpdatedAt = Date.parse(expected.committedUpdatedAt);
   return (
     Number.isFinite(listedUpdatedAt) &&
     Number.isFinite(committedUpdatedAt) &&
     listedUpdatedAt > committedUpdatedAt &&
-    symbol.enabled !== pending.expectedEnabled
+    symbol.enabled !== expected.expectedEnabled
   );
 }
 
@@ -85,10 +101,20 @@ export function SymbolsPage() {
   const [pendingMutations, setPendingMutations] = useState<Record<string, PendingMutation>>({});
   const nextActionToken = useRef(0);
   const latestUserAction = useRef<UserAction | null>(null);
-  const [actionNotice, setActionNotice] = useState<{
-    kind: "disabled" | "enabled" | "disableError" | "enableError";
-    symbol?: string;
-  } | null>(null);
+  const [actionNotice, setActionNotice] = useState<ActionNotice | null>(null);
+
+  const reportActionNotice = useCallback((candidate: ActionNotice) => {
+    setActionNotice((current) => {
+      const latestStartedOrReported = Math.max(
+        nextActionToken.current,
+        current?.actionToken ?? 0,
+      );
+      if (candidate.actionToken < latestStartedOrReported || current?.actionToken === candidate.actionToken) {
+        return current;
+      }
+      return candidate;
+    });
+  }, []);
 
   const beginUserAction = useCallback((symbol: string): number => {
     const token = nextActionToken.current + 1;
@@ -129,7 +155,7 @@ export function SymbolsPage() {
       return { updated: await disableSymbol(symbol), actionToken };
     } catch {
       abandonUserAction(actionToken);
-      setActionNotice({ kind: "disableError" });
+      reportActionNotice({ kind: "disableError", actionToken });
       return null;
     }
   };
@@ -141,7 +167,7 @@ export function SymbolsPage() {
       return { updated: await enableSymbol(symbol), actionToken };
     } catch {
       abandonUserAction(actionToken);
-      setActionNotice({ kind: "enableError" });
+      reportActionNotice({ kind: "enableError", actionToken });
       return null;
     }
   };
@@ -200,9 +226,30 @@ export function SymbolsPage() {
     }
     const latestCompleted = completed.sort((left, right) => right.token - left.token)[0];
     if (latestCompleted !== undefined) {
-      setActionNotice({ kind: latestCompleted.kind, symbol: latestCompleted.symbol });
+      reportActionNotice({
+        kind: latestCompleted.kind,
+        actionToken: latestCompleted.token,
+        symbol: latestCompleted.symbol,
+        expectedEnabled: latestCompleted.expectedEnabled,
+        committedUpdatedAt: latestCompleted.committedUpdatedAt,
+      });
     }
-  }, [abandonUserAction, pendingMutations, symbols]);
+  }, [abandonUserAction, pendingMutations, reportActionNotice, symbols]);
+
+  useEffect(() => {
+    if (
+      symbols.status !== "ready" ||
+      actionNotice === null ||
+      !("symbol" in actionNotice)
+    ) {
+      return;
+    }
+    const item = symbols.dashboard.items.find((candidate) => candidate.symbol.symbol === actionNotice.symbol);
+    if (item === undefined || !isStrictlyNewerOpposite(item.symbol, actionNotice)) {
+      return;
+    }
+    setActionNotice((current) => current?.actionToken === actionNotice.actionToken ? null : current);
+  }, [actionNotice, symbols]);
   const normalizedFilter = filter.trim().toUpperCase();
   const visibleItems = symbols.status === "ready"
     ? symbols.dashboard.items.filter((item) => item.symbol.symbol.includes(normalizedFilter))

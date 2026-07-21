@@ -1202,6 +1202,266 @@ test("keeps focus with the most recent mutation when an earlier symbol finishes 
   expect(within(disabledPepe).getByRole("button", { name: "重新启用 PEPEUSDT 数据采集" })).toHaveFocus();
 });
 
+test("keeps the newer successful notice when its evidence completes before an older symbol", async () => {
+  const user = userEvent.setup();
+  const btcDelete = deferred<Response>();
+  const pepeDelete = deferred<Response>();
+  const btcProfile = deferred<Response>();
+  const pepeProfile = deferred<Response>();
+  const committed = new Set<string>();
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === "DELETE" && path === "/api/symbols/BTCUSDT") {
+      return btcDelete.promise;
+    }
+    if (init?.method === "DELETE" && path === "/api/symbols/PEPEUSDT") {
+      return pepeDelete.promise;
+    }
+    const symbolName = path.includes("PEPEUSDT") ? "PEPEUSDT" : "BTCUSDT";
+    if (committed.has(symbolName) && path.endsWith("/profile")) {
+      return symbolName === "BTCUSDT" ? btcProfile.promise : pepeProfile.promise;
+    }
+    if (committed.has(symbolName) && path.endsWith("/eligibility")) {
+      return jsonResponse({
+        symbol: symbolName,
+        eligible: false,
+        reason_codes: ["data_not_ready"],
+        evaluated_at: "2026-07-21T10:01:00Z",
+      });
+    }
+    if (committed.has(symbolName) && (
+      path.includes("/partitions") || path.includes("/gaps") || path.includes("/streams")
+    )) {
+      return jsonResponse([]);
+    }
+    return dashboardResponse(path);
+  }));
+
+  render(<SymbolsPage />);
+  const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+  const pepe = screen.getByRole("article", { name: "PEPEUSDT 数据证据" });
+  await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 BTCUSDT" })).getByRole("button", { name: "确认停用" }));
+  await user.click(within(pepe).getByRole("button", { name: "停用 PEPEUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 PEPEUSDT" })).getByRole("button", { name: "确认停用" }));
+
+  committed.add("PEPEUSDT");
+  pepeDelete.resolve(jsonResponse({
+    ...baseSymbol,
+    symbol: "PEPEUSDT",
+    enabled: false,
+    data_status: "disabled",
+    updated_at: "2026-07-21T10:02:00Z",
+  }));
+  pepeProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
+
+  expect(await screen.findByRole("status", { name: "币种已停用" })).toHaveTextContent(
+    "PEPEUSDT 已停用；历史数据已保留。",
+  );
+
+  committed.add("BTCUSDT");
+  btcDelete.resolve(jsonResponse({
+    ...baseSymbol,
+    symbol: "BTCUSDT",
+    enabled: false,
+    data_status: "disabled",
+    updated_at: "2026-07-21T10:01:00Z",
+  }));
+  btcProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
+
+  await waitFor(() => expect(
+    within(screen.getByRole("article", { name: "BTCUSDT 数据证据" }))
+      .getByRole("button", { name: "重新启用 BTCUSDT 数据采集" }),
+  ).toBeInTheDocument());
+  await act(async () => {
+    for (let index = 0; index < 10; index += 1) {
+      await Promise.resolve();
+    }
+  });
+  const notices = screen.getAllByRole("status", { name: "币种已停用" });
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toHaveTextContent("PEPEUSDT 已停用；历史数据已保留。");
+  expect(notices[0]).not.toHaveTextContent("BTCUSDT");
+});
+
+test("does not let an older success overwrite a newer mutation failure", async () => {
+  const user = userEvent.setup();
+  const btcDelete = deferred<Response>();
+  const pepeDelete = deferred<Response>();
+  const btcProfile = deferred<Response>();
+  let btcCommitted = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === "DELETE" && path === "/api/symbols/BTCUSDT") {
+      return btcDelete.promise;
+    }
+    if (init?.method === "DELETE" && path === "/api/symbols/PEPEUSDT") {
+      return pepeDelete.promise;
+    }
+    if (btcCommitted && path.endsWith("BTCUSDT/profile")) {
+      return btcProfile.promise;
+    }
+    if (btcCommitted && path.endsWith("BTCUSDT/eligibility")) {
+      return jsonResponse({
+        symbol: "BTCUSDT",
+        eligible: false,
+        reason_codes: ["data_not_ready"],
+        evaluated_at: "2026-07-21T10:01:00Z",
+      });
+    }
+    if (btcCommitted && (
+      path.includes("BTCUSDT/partitions") || path.includes("BTCUSDT/gaps") || path.includes("BTCUSDT/streams")
+    )) {
+      return jsonResponse([]);
+    }
+    return dashboardResponse(path);
+  }));
+
+  render(<SymbolsPage />);
+  const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+  const pepe = screen.getByRole("article", { name: "PEPEUSDT 数据证据" });
+  await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 BTCUSDT" })).getByRole("button", { name: "确认停用" }));
+  await user.click(within(pepe).getByRole("button", { name: "停用 PEPEUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog", { name: "确认停用 PEPEUSDT" })).getByRole("button", { name: "确认停用" }));
+
+  pepeDelete.resolve(jsonResponse({ detail: "temporarily unavailable" }, 503));
+  const newerFailure = await screen.findByRole("alert");
+  expect(newerFailure).toHaveTextContent("停用失败。采集状态未改变，请重试。");
+
+  btcCommitted = true;
+  btcDelete.resolve(jsonResponse({
+    ...baseSymbol,
+    symbol: "BTCUSDT",
+    enabled: false,
+    data_status: "disabled",
+    updated_at: "2026-07-21T10:01:00Z",
+  }));
+  btcProfile.resolve(jsonResponse({ detail: "not ready" }, 404));
+
+  await waitFor(() => expect(
+    within(screen.getByRole("article", { name: "BTCUSDT 数据证据" }))
+      .getByRole("button", { name: "重新启用 BTCUSDT 数据采集" }),
+  ).toBeInTheDocument());
+  await waitFor(() => {
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent("停用失败。采集状态未改变，请重试。");
+    expect(screen.queryByRole("status", { name: "币种已停用" })).not.toBeInTheDocument();
+  });
+});
+
+test.each([
+  ["strictly newer", "2026-07-21T10:02:00Z", false],
+  ["invalid timestamp", "not-a-date", true],
+] as const)("reconciles a settled success notice against a later %s opposite list row", async (_case, listedUpdatedAt, noticeRemains) => {
+  const user = userEvent.setup();
+  let disabled = false;
+  let configured = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === "DELETE" && path === "/api/symbols/BTCUSDT") {
+      disabled = true;
+      return jsonResponse({
+        ...baseSymbol,
+        symbol: "BTCUSDT",
+        enabled: false,
+        data_status: "disabled",
+        updated_at: "2026-07-21T10:01:00Z",
+      });
+    }
+    if (init?.method === "POST" && path === "/api/symbols") {
+      configured = true;
+      return jsonResponse({
+        ...baseSymbol,
+        symbol: "SOLUSDT",
+        data_status: "requested",
+        metadata_status: "metadata_unverified",
+      });
+    }
+    if (init?.method === "POST" && path === "/api/symbols/SOLUSDT/backfills") {
+      return jsonResponse([]);
+    }
+    if (path.startsWith("/api/symbols?")) {
+      return jsonResponse([
+        {
+          ...baseSymbol,
+          symbol: "BTCUSDT",
+          enabled: configured ? true : !disabled,
+          data_status: configured ? "data_ready" : disabled ? "disabled" : "data_ready",
+          updated_at: configured ? listedUpdatedAt : disabled ? "2026-07-21T10:01:00Z" : baseSymbol.updated_at,
+        },
+        ...(configured ? [{
+          ...baseSymbol,
+          symbol: "SOLUSDT",
+          data_status: "requested",
+          metadata_status: "metadata_unverified",
+        }] : []),
+      ]);
+    }
+    if (path === "/api/operations/market-data") {
+      return dashboardResponse(path);
+    }
+    if (path.includes("SOLUSDT/profile")) {
+      return jsonResponse({ detail: "not ready" }, 404);
+    }
+    if (path.includes("SOLUSDT/eligibility")) {
+      return jsonResponse({
+        symbol: "SOLUSDT",
+        eligible: false,
+        reason_codes: ["data_not_ready"],
+        evaluated_at: "2026-07-21T10:00:00Z",
+      });
+    }
+    if (path.includes("SOLUSDT/partitions") || path.includes("SOLUSDT/gaps") || path.includes("SOLUSDT/streams")) {
+      return jsonResponse([]);
+    }
+    if (disabled && !configured && path.includes("BTCUSDT/profile")) {
+      return jsonResponse({ detail: "not ready" }, 404);
+    }
+    if (disabled && !configured && path.includes("BTCUSDT/eligibility")) {
+      return jsonResponse({
+        symbol: "BTCUSDT",
+        eligible: false,
+        reason_codes: ["data_not_ready"],
+        evaluated_at: "2026-07-21T10:01:00Z",
+      });
+    }
+    if (disabled && !configured && (
+      path.includes("BTCUSDT/partitions") || path.includes("BTCUSDT/gaps") || path.includes("BTCUSDT/streams")
+    )) {
+      return jsonResponse([]);
+    }
+    return dashboardResponse(path);
+  }));
+
+  render(<SymbolsPage />);
+  const btc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+  await user.click(within(btc).getByRole("button", { name: "停用 BTCUSDT 数据采集" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "确认停用" }));
+  expect(await screen.findByRole("status", { name: "币种已停用" })).toHaveTextContent(
+    "BTCUSDT 已停用；历史数据已保留。",
+  );
+
+  await user.click(screen.getByRole("button", { name: "添加币种" }));
+  const form = screen.getByRole("form", { name: "添加监控币种" });
+  await user.type(within(form).getByLabelText("币种代码"), "SOLUSDT");
+  fireEvent.change(within(form).getByLabelText("历史开始日（UTC）"), { target: { value: "2026-07-01" } });
+  fireEvent.change(within(form).getByLabelText("历史结束日（UTC，包含整天）"), { target: { value: "2026-07-20" } });
+  await user.click(within(form).getByRole("button", { name: "添加并开始回填" }));
+
+  const enabledBtc = await screen.findByRole("article", { name: "BTCUSDT 数据证据" });
+  if (noticeRemains) {
+    expect(screen.getByRole("status", { name: "币种已停用" })).toHaveTextContent(
+      "BTCUSDT 已停用；历史数据已保留。",
+    );
+    expect(within(enabledBtc).getByRole("button", { name: "重新启用 BTCUSDT 数据采集" })).toBeInTheDocument();
+  } else {
+    await waitFor(() => expect(screen.queryByRole("status", { name: "币种已停用" })).not.toBeInTheDocument());
+    expect(within(enabledBtc).getByRole("button", { name: "停用 BTCUSDT 数据采集" })).toBeInTheDocument();
+  }
+});
+
 test("suppresses committed notice and focus when a newer opposite server state wins", async () => {
   const user = userEvent.setup();
   const newerList = deferred<Response>();

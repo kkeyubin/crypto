@@ -32,6 +32,7 @@ The initial implementation and every review correction were driven by a failing 
 22. The committed override treated every opposite-direction list row as stale, so even a strictly newer authoritative server mutation could not supersede local state.
 23. Recoverable states and ready cards owned unconditional per-item focus flags, allowing an earlier mutation that finished later, a background reload, or a completed operation to steal focus from the user's latest action.
 24. Mutation success notices depended on the first `refreshSymbol` promise, so a reload-aborted promise suppressed the notice even when the retained override's internal restart later installed authoritative evidence.
+25. Mutation notices had no action token or retained commit evidence, so an older completion could overwrite a newer success or failure, and an already-rendered success could contradict a later strictly newer opposite dashboard state.
 
 Focused tests were observed failing for the missing behavior and then passing after each minimal correction.
 
@@ -85,7 +86,8 @@ Focused tests were observed failing for the missing behavior and then passing af
 - A fresh evidence bundle is installed atomically before reporting the completed evidence state. Old eligibility, profile, partitions, gaps, or streams are never carried forward. Refresh failure or timeout becomes a symbol-scoped retry state and does not emit a false success notice. Focus moves to the recovery owner and replacement action only while that mutation still owns the latest uncancelled user focus intent.
 - The hook registers each returned mutation as a symbol-scoped committed override before evidence loading starts. Older list rows and equal-time opposite rows cannot replace it; equal-time matching identity acknowledges it. A strictly newer valid `updated_at` supersedes it in either direction, while invalid dates fail closed by retaining local truth. Supersede aborts old evidence, renders the listed state, and revalidates it under the winning generation. Different symbols and later mutations use independent tokens.
 - User actions receive monotonically increasing page-level focus tokens. Only the latest action may focus its recovery surface; moving focus outside that symbol cancels the token, and successful transfer to the replacement action consumes it. Background revalidation has no focus token, and slower earlier symbols cannot steal focus when they finish.
-- Mutation notices are reconciled from dashboard evidence rather than an individual request promise. A pending mutation emits one success notice only when ready evidence matches the expected enabled state; a strictly newer opposite server state clears the pending outcome without a false notice or focus transfer.
+- Mutation notices are reconciled from dashboard evidence rather than an individual request promise. Every notice carries its page action token; success notices also retain the symbol, expected enabled state, and committed `updated_at`. A single global latest-started/latest-reported watermark prevents any older completion or failure from writing over a newer action result, including when different symbols settle in reverse order.
+- A pending mutation emits one success notice only when ready evidence matches the expected enabled state. Every later authoritative dashboard update rechecks a settled success against its retained commit evidence: a strictly newer opposite state clears the stale notice, while invalid timestamps fail closed. The same supersede path clears pending outcomes without a false notice or focus transfer.
 - Re-enable POSTs the card's immutable `history_start`, `history_end`, and `include_agg_trades` values through the existing `/api/symbols` endpoint. It never creates backfills automatically, and both the copy and completion notice say so.
 - Every successful `createBackfills` path triggers a fresh dashboard load, including partial-success retry. A failed backfill still leaves the newly configured symbol visible and retryable.
 - Once a valid add submission starts, the form cannot be collapsed while the add request is busy or a backfill recovery remains pending. Partial failure preserves the retry-only state and lock; successful recovery releases it. Unmount aborts active add/backfill requests and fences all later state writes.
@@ -103,7 +105,7 @@ Review-hardening states reuse the same surface, border, focus, warning, and resp
 All commands below were run after the final review corrections:
 
 - `npm run contracts:check-types` — passed.
-- `npm run web:test -- --run` — 4 files, 55 tests passed.
+- `npm run web:test -- --run` — 4 files, 59 tests passed.
 - `npm run web:build` — passed; 56 modules transformed.
 - `cd services/api && .venv/bin/pytest -q tests/routes/test_symbols.py tests/routes/test_data.py tests/routes/test_operations.py tests/routes/test_control.py` — 26 tests passed, including the real archive-planner range test.
 - `cd services/api && .venv/bin/ruff check src tests` — passed.
