@@ -1249,7 +1249,7 @@ git commit -m "feat: define runtime audit contracts"
 
 **Interfaces:**
 - Consumes: four Pydantic root models.
-- Produces: committed deterministic JSON Schema files and TypeScript declarations; `export_schemas.py --check` exits nonzero on drift.
+- Produces: committed deterministic JSON Schema files and TypeScript declarations. `contracts/jsonschema/` is generated-only: normal export owns and replaces its complete `*.schema.json` set, while `--check` is read-only and exits nonzero for missing, modified, or stale files.
 
 - [ ] **Step 1: Write the failing schema-drift test**
 
@@ -1302,20 +1302,24 @@ def render(model: type) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--output", type=Path, default=OUTPUT)
     args = parser.parse_args()
-    OUTPUT.mkdir(parents=True, exist_ok=True)
-    drift = []
-    for model in MODELS:
-        target = OUTPUT / f"{model.__name__}.schema.json"
-        expected = render(model)
-        if args.check:
-            if not target.exists() or target.read_text() != expected:
-                drift.append(str(target.relative_to(ROOT)))
-        else:
-            target.write_text(expected)
-    if drift:
-        print("schema drift: " + ", ".join(drift), file=sys.stderr)
-        return 1
+    expected = {f"{model.__name__}.schema.json": render(model) for model in MODELS}
+    actual = {path.name for path in args.output.glob("*.schema.json")} if args.output.exists() else set()
+    if args.check:
+        diagnostics = [f"missing: {name}" for name in sorted(set(expected) - actual)]
+        diagnostics.extend(f"stale: {name}" for name in sorted(actual - set(expected)))
+        diagnostics.extend(f"modified: {name}" for name in sorted(set(expected) & actual) if (args.output / name).read_text() != expected[name])
+        if diagnostics:
+            print("schema drift:\n" + "\n".join(diagnostics), file=sys.stderr)
+            return 1
+        return 0
+    args.output.mkdir(parents=True, exist_ok=True)
+    for stale in args.output.glob("*.schema.json"):
+        if stale.name not in expected:
+            stale.unlink()
+    for name, contents in expected.items():
+        (args.output / name).write_text(contents)
     return 0
 
 
@@ -1337,7 +1341,8 @@ if __name__ == "__main__":
   "engines": { "node": ">=24 <25" },
   "scripts": {
     "contracts:types": "node contracts/generate-types.mjs",
-    "contracts:check-types": "tsc --noEmit --strict --lib es2015 contracts/types/*.ts"
+    "contracts:check-types": "tsc --noEmit --strict --lib es2015 contracts/types/*.ts",
+    "contracts:test-generation": "node contracts/test-generate-types.mjs"
   },
   "devDependencies": {
     "json-schema-to-typescript": "^15.0.4",
@@ -1349,22 +1354,26 @@ if __name__ == "__main__":
 ```javascript
 // contracts/generate-types.mjs
 import { compileFromFile } from "json-schema-to-typescript";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+const generatedHeader = "// Generated. Do not edit.";
+const expectedRoots = ["AIAssessment", "DataManifest", "MarketSnapshot", "StrategySpec"];
 const inputDir = path.resolve("contracts/jsonschema");
 const outputDir = path.resolve("contracts/types");
 const files = (await readdir(inputDir)).filter((name) => name.endsWith(".schema.json")).sort();
-const roots = [];
+const roots = files.map((file) => file.replace(".schema.json", ""));
+if (roots.join("\n") !== [...expectedRoots].sort().join("\n")) throw new Error("schema set mismatch");
 await mkdir(outputDir, { recursive: true });
-for (const existing of await readdir(outputDir)) {
-  if (existing.endsWith(".ts")) await rm(path.join(outputDir, existing));
+for (const existing of await readdir(outputDir, { withFileTypes: true })) {
+  if (!existing.isFile() || !existing.name.endsWith(".ts")) continue;
+  const target = path.join(outputDir, existing.name);
+  if ((await readFile(target, "utf8")).split("\n", 1)[0] === generatedHeader) await rm(target);
 }
 for (const file of files) {
   const root = file.replace(".schema.json", "");
   const declaration = await compileFromFile(path.join(inputDir, file), { bannerComment: "" });
-  await writeFile(path.join(outputDir, `${root}.ts`), "// Generated. Do not edit.\n\n" + declaration);
-  roots.push(root);
+  await writeFile(path.join(outputDir, `${root}.ts`), `${generatedHeader}\n\n${declaration}`);
 }
 const index = roots.map((root) => `export type { ${root} } from "./${root}";`).join("\n");
 await writeFile(path.join(outputDir, "index.ts"), "// Generated. Do not edit.\n\n" + index + "\n");
@@ -1384,9 +1393,10 @@ nvm use
 npm install
 npm run contracts:types
 npm run contracts:check-types
+npm run contracts:test-generation
 ```
 
-Expected: schema check exits 0, npm creates `package-lock.json`, TypeScript type-checking passes with an explicit ES2015 library for transitive declaration compatibility, and `contracts/types/index.ts` exports the four root model types from isolated generated modules without duplicate nested declarations.
+Expected: schema check exits 0 without writing files, normal export removes stale generated schemas, npm creates `package-lock.json`, TypeScript type-checking passes with an explicit ES2015 library for transitive declaration compatibility, the generator safety test preserves manual TypeScript and removes only header-marked generated files, and `contracts/types/index.ts` exports the four root model types from isolated generated modules without duplicate nested declarations.
 
 - [ ] **Step 6: Run all backend checks**
 

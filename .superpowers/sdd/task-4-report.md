@@ -77,3 +77,29 @@ The exporter uses `model_json_schema(mode="serialization")`, stable model order,
 sorted JSON keys, two-space indentation, and a trailing newline. The generator
 sorts input schemas, removes only prior `.ts` generated outputs, and rebuilds the
 index deterministically. No concerns remain.
+
+## Review-fix evidence
+
+The schema exporter now accepts `--output` for isolated verification. In
+`--check` mode it neither creates the output directory nor writes any file, and
+it compares the actual `*.schema.json` names with the exact four expected roots.
+Its diagnostics identify every missing, modified, and stale file on separate
+lines. Normal mode owns the generated-only `contracts/jsonschema/` boundary:
+it creates the directory, writes all four current schemas, and removes stale
+`*.schema.json` artifacts.
+
+Focused tests cover a missing schema (and the no-directory-creation guarantee),
+a modified schema, and a stale extra schema without changing committed files:
+`4 passed in 3.80s`.
+
+`contracts/generate-types.mjs` now requires that its input has exactly the four
+schema roots. It removes only `.ts` files whose first line is exactly the
+generated header. `npm run contracts:test-generation` uses temporary input and
+output directories to prove a manual `.ts` survives, a header-marked stale file
+is removed, the exact root-only index is rebuilt, and a second generation is
+byte-identical.
+
+Fresh review-fix verification ran the focused schema tests, schema `--check`,
+the generator safety test, two TypeScript generations with identical SHA-256
+manifests, `contracts:check-types`, full API tests (`54 passed in 6.30s`), and
+Ruff (`All checks passed!`). No warnings or concerns remain.

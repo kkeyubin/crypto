@@ -20,23 +20,47 @@ def render(model: type) -> str:
     return json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
+def expected_schemas() -> dict[str, str]:
+    return {f"{model.__name__}.schema.json": render(model) for model in MODELS}
+
+
+def check(output: Path, expected: dict[str, str]) -> list[str]:
+    actual = {path.name for path in output.glob("*.schema.json")} if output.exists() else set()
+    expected_names = set(expected)
+    diagnostics = [f"missing: {name}" for name in sorted(expected_names - actual)]
+    diagnostics.extend(f"stale: {name}" for name in sorted(actual - expected_names))
+    diagnostics.extend(
+        f"modified: {name}"
+        for name in sorted(expected_names & actual)
+        if (output / name).read_text() != expected[name]
+    )
+    return diagnostics
+
+
+def write(output: Path, expected: dict[str, str]) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    expected_names = set(expected)
+    for stale in output.glob("*.schema.json"):
+        if stale.name not in expected_names:
+            stale.unlink()
+    for name, contents in expected.items():
+        (output / name).write_text(contents)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--output", type=Path, default=OUTPUT)
     args = parser.parse_args()
-    OUTPUT.mkdir(parents=True, exist_ok=True)
-    drift = []
-    for model in MODELS:
-        target = OUTPUT / f"{model.__name__}.schema.json"
-        expected = render(model)
-        if args.check:
-            if not target.exists() or target.read_text() != expected:
-                drift.append(str(target.relative_to(ROOT)))
-        else:
-            target.write_text(expected)
-    if drift:
-        print("schema drift: " + ", ".join(drift), file=sys.stderr)
+    expected = expected_schemas()
+    if args.check:
+        diagnostics = check(args.output, expected)
+        if not diagnostics:
+            return 0
+        print("schema drift:\n" + "\n".join(diagnostics), file=sys.stderr)
         return 1
+    # contracts/jsonschema is generated-only; normal mode owns its schema files.
+    write(args.output, expected)
     return 0
 
 

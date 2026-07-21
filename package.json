@@ -6,7 +6,8 @@
   },
   "scripts": {
     "contracts:types": "node contracts/generate-types.mjs",
-    "contracts:check-types": "tsc --noEmit --strict --lib es2015 contracts/types/*.ts"
+    "contracts:check-types": "tsc --noEmit --strict --lib es2015 contracts/types/*.ts",
+    "contracts:test-generation": "node contracts/test-generate-types.mjs"
   },
   "devDependencies": {
     "json-schema-to-typescript": "^15.0.4",
