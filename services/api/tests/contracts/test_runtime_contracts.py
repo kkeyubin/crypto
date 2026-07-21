@@ -6,7 +6,12 @@ from pydantic import ValidationError
 
 from crypto_research.contracts.ai import AIAssessment, AIOpinion, PrincipleCitation
 from crypto_research.contracts.manifest import DataManifest, DataType
-from crypto_research.contracts.market import BestBidAsk, MarketSnapshot, OHLCVBar
+from crypto_research.contracts.market import (
+    BestBidAsk,
+    FundingObservation,
+    MarketSnapshot,
+    OHLCVBar,
+)
 from crypto_research.contracts.strategy import InstrumentRef
 
 NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -47,6 +52,51 @@ def test_snapshot_rejects_best_bid_ask_after_cutoff() -> None:
                 timestamp=NOW + timedelta(seconds=1), bid=1, ask=1
             ),
         )
+
+
+def test_snapshot_rejects_funding_after_cutoff() -> None:
+    with pytest.raises(ValidationError, match="after snapshot cutoff"):
+        MarketSnapshot(
+            snapshot_id=uuid4(),
+            instrument=INSTRUMENT,
+            cutoff=NOW,
+            data_manifest_id=uuid4(),
+            strategy_spec_hash="a" * 64,
+            bars=[],
+            funding=FundingObservation(
+                timestamp=NOW + timedelta(seconds=1), rate=0.0001
+            ),
+        )
+
+
+@pytest.mark.parametrize("timestamp", [NOW - timedelta(seconds=1), NOW])
+def test_snapshot_accepts_and_serializes_funding_at_or_before_cutoff(
+    timestamp: datetime,
+) -> None:
+    funding = FundingObservation(timestamp=timestamp, rate=-0.0001)
+    snapshot = MarketSnapshot(
+        snapshot_id=uuid4(),
+        instrument=INSTRUMENT,
+        cutoff=NOW,
+        data_manifest_id=uuid4(),
+        strategy_spec_hash="a" * 64,
+        bars=[],
+        funding=funding,
+    )
+
+    assert snapshot.funding == funding
+    assert snapshot.model_dump(mode="json")["funding"] == funding.model_dump(
+        mode="json"
+    )
+
+
+def test_funding_observation_is_strict_and_frozen() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        FundingObservation(timestamp=NOW, rate=0.0001, create_order=True)
+
+    funding = FundingObservation(timestamp=NOW, rate=0.0001)
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        funding.rate = 0.0002
 
 
 @pytest.mark.parametrize(

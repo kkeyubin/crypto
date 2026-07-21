@@ -954,7 +954,7 @@ from pydantic import ValidationError
 
 from crypto_research.contracts.ai import AIAssessment, AIOpinion, PrincipleCitation
 from crypto_research.contracts.manifest import DataManifest, DataType
-from crypto_research.contracts.market import MarketSnapshot, OHLCVBar
+from crypto_research.contracts.market import FundingObservation, MarketSnapshot, OHLCVBar
 from crypto_research.contracts.strategy import InstrumentRef
 
 NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -971,6 +971,36 @@ def test_snapshot_rejects_bar_after_cutoff() -> None:
             strategy_spec_hash="a" * 64,
             bars=[OHLCVBar(timestamp=NOW + timedelta(minutes=1), open=1, high=1, low=1, close=1, volume=1)],
         )
+
+
+def test_snapshot_rejects_funding_after_cutoff() -> None:
+    with pytest.raises(ValidationError, match="after snapshot cutoff"):
+        MarketSnapshot(
+            snapshot_id=uuid4(),
+            instrument=INSTRUMENT,
+            cutoff=NOW,
+            data_manifest_id=uuid4(),
+            strategy_spec_hash="a" * 64,
+            bars=[],
+            funding=FundingObservation(
+                timestamp=NOW + timedelta(seconds=1), rate=0.0001
+            ),
+        )
+
+
+def test_snapshot_serializes_funding_at_cutoff() -> None:
+    funding = FundingObservation(timestamp=NOW, rate=-0.0001)
+    snapshot = MarketSnapshot(
+        snapshot_id=uuid4(),
+        instrument=INSTRUMENT,
+        cutoff=NOW,
+        data_manifest_id=uuid4(),
+        strategy_spec_hash="a" * 64,
+        bars=[],
+        funding=funding,
+    )
+
+    assert snapshot.model_dump(mode="json")["funding"] == funding.model_dump(mode="json")
 
 
 def test_ai_schema_rejects_order_authority() -> None:
@@ -1053,6 +1083,11 @@ class BestBidAsk(UTCModel):
         return self
 
 
+class FundingObservation(UTCModel):
+    timestamp: datetime
+    rate: float
+
+
 class MarketSnapshot(UTCModel):
     schema_version: str = "1.0.0"
     snapshot_id: UUID
@@ -1062,7 +1097,7 @@ class MarketSnapshot(UTCModel):
     strategy_spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     bars: tuple[OHLCVBar, ...]
     best_bid_ask: BestBidAsk | None = None
-    funding_rate: float | None = None
+    funding: FundingObservation | None = None
     deterministic_signal_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -1070,6 +1105,8 @@ class MarketSnapshot(UTCModel):
         timestamps = [bar.timestamp for bar in self.bars]
         if self.best_bid_ask is not None:
             timestamps.append(self.best_bid_ask.timestamp)
+        if self.funding is not None:
+            timestamps.append(self.funding.timestamp)
         if any(timestamp > self.cutoff for timestamp in timestamps):
             raise ValueError("market observation occurs after snapshot cutoff")
         return self

@@ -38,6 +38,11 @@ class BestBidAsk(UTCModel):
         return self
 
 
+class FundingObservation(UTCModel):
+    timestamp: datetime
+    rate: float
+
+
 class MarketSnapshot(UTCModel):
     schema_version: str = "1.0.0"
     snapshot_id: UUID
@@ -47,7 +52,7 @@ class MarketSnapshot(UTCModel):
     strategy_spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     bars: tuple[OHLCVBar, ...]
     best_bid_ask: BestBidAsk | None = None
-    funding_rate: float | None = None
+    funding: FundingObservation | None = None
     deterministic_signal_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -55,6 +60,8 @@ class MarketSnapshot(UTCModel):
         timestamps = [bar.timestamp for bar in self.bars]
         if self.best_bid_ask is not None:
             timestamps.append(self.best_bid_ask.timestamp)
+        if self.funding is not None:
+            timestamps.append(self.funding.timestamp)
         if any(timestamp > self.cutoff for timestamp in timestamps):
             raise ValueError("market observation occurs after snapshot cutoff")
         return self
