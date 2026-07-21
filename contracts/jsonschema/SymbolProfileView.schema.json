@@ -1,0 +1,75 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "calculated_at": {
+      "format": "date-time",
+      "title": "Calculated At",
+      "type": "string"
+    },
+    "coverage_end": {
+      "format": "date-time",
+      "title": "Coverage End",
+      "type": "string"
+    },
+    "coverage_fraction": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Coverage Fraction",
+      "type": "number"
+    },
+    "coverage_start": {
+      "format": "date-time",
+      "title": "Coverage Start",
+      "type": "string"
+    },
+    "funding_rate_mean": {
+      "title": "Funding Rate Mean",
+      "type": "number"
+    },
+    "jump_frequency": {
+      "minimum": 0,
+      "title": "Jump Frequency",
+      "type": "number"
+    },
+    "median_hourly_volume": {
+      "minimum": 0,
+      "title": "Median Hourly Volume",
+      "type": "number"
+    },
+    "median_spread_bps": {
+      "minimum": 0,
+      "title": "Median Spread Bps",
+      "type": "number"
+    },
+    "realized_volatility": {
+      "minimum": 0,
+      "title": "Realized Volatility",
+      "type": "number"
+    },
+    "sample_count": {
+      "exclusiveMinimum": 0,
+      "title": "Sample Count",
+      "type": "integer"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "symbol",
+    "calculated_at",
+    "coverage_start",
+    "coverage_end",
+    "sample_count",
+    "coverage_fraction",
+    "realized_volatility",
+    "jump_frequency",
+    "median_spread_bps",
+    "median_hourly_volume",
+    "funding_rate_mean"
+  ],
+  "title": "SymbolProfileView",
+  "type": "object"
+}

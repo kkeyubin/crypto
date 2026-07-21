@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "DataType": {
+      "enum": [
+        "kline_1m",
+        "mark_price",
+        "funding",
+        "agg_trade",
+        "best_bid_ask"
+      ],
+      "title": "DataType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "data_types": {
+      "items": {
+        "$ref": "#/$defs/DataType"
+      },
+      "minItems": 1,
+      "title": "Data Types",
+      "type": "array"
+    },
+    "end": {
+      "format": "date-time",
+      "title": "End",
+      "type": "string"
+    },
+    "include_agg_trades": {
+      "default": false,
+      "title": "Include Agg Trades",
+      "type": "boolean"
+    },
+    "start": {
+      "format": "date-time",
+      "title": "Start",
+      "type": "string"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "symbol",
+    "data_types",
+    "start",
+    "end"
+  ],
+  "title": "BackfillRequest",
+  "type": "object"
+}

@@ -4,10 +4,20 @@ from pathlib import Path
 
 EXPECTED_ROOTS = {
     "AIAssessment.schema.json",
+    "AddSymbolRequest.schema.json",
+    "BackfillRequest.schema.json",
+    "DataGapView.schema.json",
+    "DataPartitionView.schema.json",
     "DataManifest.schema.json",
+    "EligibilityView.schema.json",
+    "IngestionJobView.schema.json",
+    "MarketDataHealthView.schema.json",
     "MarketSnapshot.schema.json",
     "StrategySpec.schema.json",
     "StrategySpecRecord.schema.json",
+    "StreamStateView.schema.json",
+    "SymbolProfileView.schema.json",
+    "SymbolView.schema.json",
 }
 
 

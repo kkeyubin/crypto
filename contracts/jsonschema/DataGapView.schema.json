@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "DataGapStatus": {
+      "enum": [
+        "open",
+        "repaired"
+      ],
+      "title": "DataGapStatus",
+      "type": "string"
+    },
+    "DataType": {
+      "enum": [
+        "kline_1m",
+        "mark_price",
+        "funding",
+        "agg_trade",
+        "best_bid_ask"
+      ],
+      "title": "DataType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "data_type": {
+      "$ref": "#/$defs/DataType"
+    },
+    "end": {
+      "format": "date-time",
+      "title": "End",
+      "type": "string"
+    },
+    "gap_id": {
+      "format": "uuid",
+      "title": "Gap Id",
+      "type": "string"
+    },
+    "opened_at": {
+      "format": "date-time",
+      "title": "Opened At",
+      "type": "string"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "repaired_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Repaired At"
+    },
+    "start": {
+      "format": "date-time",
+      "title": "Start",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/DataGapStatus"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "gap_id",
+    "symbol",
+    "data_type",
+    "start",
+    "end",
+    "reason",
+    "status",
+    "opened_at"
+  ],
+  "title": "DataGapView",
+  "type": "object"
+}

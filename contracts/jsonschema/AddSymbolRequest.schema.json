@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "history_end": {
+      "format": "date-time",
+      "title": "History End",
+      "type": "string"
+    },
+    "history_start": {
+      "format": "date-time",
+      "title": "History Start",
+      "type": "string"
+    },
+    "include_agg_trades": {
+      "default": false,
+      "title": "Include Agg Trades",
+      "type": "boolean"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "symbol",
+    "history_start",
+    "history_end"
+  ],
+  "title": "AddSymbolRequest",
+  "type": "object"
+}

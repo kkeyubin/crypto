@@ -12,10 +12,20 @@ const schemaSource = path.join(root, "contracts", "jsonschema");
 const generatedHeader = "// Generated. Do not edit.\n";
 const expectedRoots = [
   "AIAssessment",
+  "AddSymbolRequest",
+  "BackfillRequest",
+  "DataGapView",
   "DataManifest",
+  "DataPartitionView",
+  "EligibilityView",
+  "IngestionJobView",
+  "MarketDataHealthView",
   "MarketSnapshot",
   "StrategySpec",
   "StrategySpecRecord",
+  "StreamStateView",
+  "SymbolProfileView",
+  "SymbolView",
 ];
 const temporaryRoot = await mkdtemp(path.join(tmpdir(), "crypto-contract-types-"));
 const inputDir = path.join(temporaryRoot, "jsonschema");

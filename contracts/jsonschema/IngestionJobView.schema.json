@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "DataType": {
+      "enum": [
+        "kline_1m",
+        "mark_price",
+        "funding",
+        "agg_trade",
+        "best_bid_ask"
+      ],
+      "title": "DataType",
+      "type": "string"
+    },
+    "IngestionJobStatus": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "IngestionJobStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "data_type": {
+      "$ref": "#/$defs/DataType"
+    },
+    "job_id": {
+      "format": "uuid",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "requested_end": {
+      "format": "date-time",
+      "title": "Requested End",
+      "type": "string"
+    },
+    "requested_start": {
+      "format": "date-time",
+      "title": "Requested Start",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/IngestionJobStatus"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "job_id",
+    "symbol",
+    "data_type",
+    "status",
+    "requested_start",
+    "requested_end",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "IngestionJobView",
+  "type": "object"
+}

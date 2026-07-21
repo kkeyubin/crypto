@@ -9,8 +9,11 @@ from crypto_research.contracts.ai import AIAssessment, AIOpinion, PrincipleCitat
 from crypto_research.contracts.manifest import (
     DataManifest,
     DataType,
+    DeduplicationMethod,
     MissingInterval,
     RepairRecord,
+    SourceKind,
+    ValidationState,
 )
 from crypto_research.contracts.market import (
     BestBidAsk,
@@ -27,6 +30,22 @@ NON_FINITE_VALUES = [
     pytest.param(float("inf"), id="positive-infinity"),
     pytest.param(float("-inf"), id="negative-infinity"),
 ]
+
+
+def manifest_fields() -> dict[str, object]:
+    return {
+        "source_kind": SourceKind.BINANCE_ARCHIVE,
+        "source_object_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
+        "raw_path": "raw/binance/usdm/BTCUSDT/kline_1m/date=2025-01-01/source.zip",
+        "normalized_path": "normalized/binance/usdm/BTCUSDT/kline_1m/date=2025-01-01/data.parquet",
+        "source_checksum": "b" * 64,
+        "normalized_checksum": "c" * 64,
+        "row_count": 1,
+        "validation_state": ValidationState.VALIDATED,
+        "primary_key_fields": ("open_time",),
+        "deduplication_method": DeduplicationMethod.REJECT_DUPLICATES,
+        "duplicates_removed": 0,
+    }
 
 
 def test_snapshot_rejects_bar_after_cutoff() -> None:
@@ -240,7 +259,7 @@ def test_runtime_contract_collections_are_immutable() -> None:
     assert isinstance(snapshot.bars, tuple)
 
 
-def test_manifest_requires_sha256() -> None:
+def test_manifest_requires_source_sha256() -> None:
     with pytest.raises(ValidationError):
         DataManifest(
             manifest_id=uuid4(),
@@ -249,9 +268,9 @@ def test_manifest_requires_sha256() -> None:
             start=NOW,
             end=NOW + timedelta(minutes=1),
             retrieved_at=NOW,
-            checksum="bad",
-            schema_version="1.0.0",
+            schema_version="2.0.0",
             normalization_version="1.0.0",
+            **{**manifest_fields(), "source_checksum": "bad"},
         )
 
 
@@ -278,9 +297,9 @@ def test_manifest_validates_time_range(
             start=start,
             end=end,
             retrieved_at=retrieved_at,
-            checksum="a" * 64,
-            schema_version="1.0.0",
+            schema_version="2.0.0",
             normalization_version="1.0.0",
+            **manifest_fields(),
         )
 
 
@@ -292,9 +311,9 @@ def test_manifest_collections_are_immutable() -> None:
         start=NOW,
         end=NOW + timedelta(minutes=1),
         retrieved_at=NOW + timedelta(minutes=1),
-        checksum="a" * 64,
-        schema_version="1.0.0",
+        schema_version="2.0.0",
         normalization_version="1.0.0",
+        **manifest_fields(),
         missing_intervals=(),
         repair_history=(),
     )
@@ -304,6 +323,31 @@ def test_manifest_collections_are_immutable() -> None:
 
     assert isinstance(manifest.missing_intervals, tuple)
     assert isinstance(manifest.repair_history, tuple)
+
+
+def test_manifest_rejects_future_repair_records() -> None:
+    future = datetime.now(UTC) + timedelta(minutes=5)
+
+    with pytest.raises(ValidationError, match="timestamps cannot be in the future"):
+        DataManifest(
+            manifest_id=uuid4(),
+            instrument=INSTRUMENT,
+            data_type=DataType.KLINE_1M,
+            start=NOW,
+            end=NOW + timedelta(minutes=1),
+            retrieved_at=NOW + timedelta(minutes=1),
+            schema_version="2.0.0",
+            normalization_version="1.0.0",
+            **manifest_fields(),
+            repair_history=(
+                RepairRecord(
+                    started_at=future,
+                    completed_at=future,
+                    source="archive",
+                    result="repaired",
+                ),
+            ),
+        )
 
 
 def test_missing_interval_requires_positive_duration() -> None:
@@ -339,9 +383,9 @@ def test_manifest_rejects_missing_interval_outside_coverage(
             start=NOW,
             end=NOW + timedelta(minutes=1),
             retrieved_at=NOW + timedelta(minutes=1),
-            checksum="a" * 64,
-            schema_version="1.0.0",
+            schema_version="2.0.0",
             normalization_version="1.0.0",
+            **manifest_fields(),
             missing_intervals=(MissingInterval(start=missing_start, end=missing_end),),
         )
 
@@ -359,9 +403,19 @@ def test_strict_contracts_parse_json_uuid_datetime_and_enum_strings() -> None:
         "start": NOW.isoformat(),
         "end": (NOW + timedelta(minutes=1)).isoformat(),
         "retrieved_at": (NOW + timedelta(minutes=1)).isoformat(),
-        "checksum": "a" * 64,
-        "schema_version": "1.0.0",
+        "schema_version": "2.0.0",
         "normalization_version": "1.0.0",
+        "source_kind": "binance_archive",
+        "source_object_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
+        "raw_path": "raw/binance/usdm/BTCUSDT/kline_1m/date=2025-01-01/source.zip",
+        "normalized_path": "normalized/binance/usdm/BTCUSDT/kline_1m/date=2025-01-01/data.parquet",
+        "source_checksum": "b" * 64,
+        "normalized_checksum": "c" * 64,
+        "row_count": 1,
+        "validation_state": "validated",
+        "primary_key_fields": ["open_time"],
+        "deduplication_method": "reject_duplicates",
+        "duplicates_removed": 0,
     }
 
     manifest = DataManifest.model_validate_json(json.dumps(payload))

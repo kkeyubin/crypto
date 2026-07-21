@@ -1,0 +1,50 @@
+{
+  "$defs": {
+    "EligibilityReasonCode": {
+      "enum": [
+        "insufficient_history",
+        "stale_live_data",
+        "unrepaired_gap",
+        "insufficient_liquidity",
+        "metadata_unverified",
+        "insufficient_coverage",
+        "data_not_ready",
+        "source_degraded"
+      ],
+      "title": "EligibilityReasonCode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "eligible": {
+      "title": "Eligible",
+      "type": "boolean"
+    },
+    "evaluated_at": {
+      "format": "date-time",
+      "title": "Evaluated At",
+      "type": "string"
+    },
+    "reason_codes": {
+      "items": {
+        "$ref": "#/$defs/EligibilityReasonCode"
+      },
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "symbol",
+    "eligible",
+    "reason_codes",
+    "evaluated_at"
+  ],
+  "title": "EligibilityView",
+  "type": "object"
+}

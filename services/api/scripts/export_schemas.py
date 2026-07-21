@@ -5,18 +5,38 @@ from pathlib import Path
 
 from crypto_research.contracts import (
     AIAssessment,
+    AddSymbolRequest,
+    BackfillRequest,
+    DataGapView,
+    DataPartitionView,
     DataManifest,
+    EligibilityView,
+    IngestionJobView,
+    MarketDataHealthView,
     MarketSnapshot,
     StrategySpec,
     StrategySpecRecord,
+    StreamStateView,
+    SymbolProfileView,
+    SymbolView,
 )
 
 MODELS = [
     AIAssessment,
+    AddSymbolRequest,
+    BackfillRequest,
+    DataGapView,
+    DataPartitionView,
     DataManifest,
+    EligibilityView,
+    IngestionJobView,
+    MarketDataHealthView,
     MarketSnapshot,
     StrategySpec,
     StrategySpecRecord,
+    StreamStateView,
+    SymbolProfileView,
+    SymbolView,
 ]
 ROOT = Path(__file__).resolve().parents[3]
 OUTPUT = ROOT / "contracts" / "jsonschema"

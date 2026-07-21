@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "MetadataStatus": {
+      "enum": [
+        "metadata_unverified",
+        "profile_building",
+        "eligible",
+        "ineligible"
+      ],
+      "title": "MetadataStatus",
+      "type": "string"
+    },
+    "SymbolDataStatus": {
+      "enum": [
+        "requested",
+        "backfilling",
+        "data_ready",
+        "degraded",
+        "failed",
+        "disabled"
+      ],
+      "title": "SymbolDataStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "data_status": {
+      "$ref": "#/$defs/SymbolDataStatus"
+    },
+    "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "history_end": {
+      "format": "date-time",
+      "title": "History End",
+      "type": "string"
+    },
+    "history_start": {
+      "format": "date-time",
+      "title": "History Start",
+      "type": "string"
+    },
+    "include_agg_trades": {
+      "title": "Include Agg Trades",
+      "type": "boolean"
+    },
+    "metadata_status": {
+      "$ref": "#/$defs/MetadataStatus"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "symbol",
+    "enabled",
+    "history_start",
+    "history_end",
+    "include_agg_trades",
+    "data_status",
+    "metadata_status",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "SymbolView",
+  "type": "object"
+}

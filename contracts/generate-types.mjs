@@ -5,10 +5,20 @@ import path from "node:path";
 const GENERATED_HEADER = "// Generated. Do not edit.";
 const EXPECTED_ROOTS = [
   "AIAssessment",
+  "AddSymbolRequest",
+  "BackfillRequest",
+  "DataGapView",
+  "DataPartitionView",
   "DataManifest",
+  "EligibilityView",
+  "IngestionJobView",
+  "MarketDataHealthView",
   "MarketSnapshot",
   "StrategySpec",
   "StrategySpecRecord",
+  "StreamStateView",
+  "SymbolProfileView",
+  "SymbolView",
 ];
 
 const DEEP_READONLY = `type DeepReadonly<T> =

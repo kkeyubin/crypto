@@ -11,6 +11,15 @@
       "title": "DataType",
       "type": "string"
     },
+    "DeduplicationMethod": {
+      "enum": [
+        "reject_duplicates",
+        "keep_first",
+        "keep_last"
+      ],
+      "title": "DeduplicationMethod",
+      "type": "string"
+    },
     "InstrumentRef": {
       "additionalProperties": false,
       "properties": {
@@ -89,17 +98,38 @@
       ],
       "title": "RepairRecord",
       "type": "object"
+    },
+    "SourceKind": {
+      "enum": [
+        "binance_archive",
+        "binance_websocket",
+        "binance_rest"
+      ],
+      "title": "SourceKind",
+      "type": "string"
+    },
+    "ValidationState": {
+      "enum": [
+        "pending",
+        "validated",
+        "rejected"
+      ],
+      "title": "ValidationState",
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "properties": {
-    "checksum": {
-      "pattern": "^[0-9a-f]{64}$",
-      "title": "Checksum",
-      "type": "string"
-    },
     "data_type": {
       "$ref": "#/$defs/DataType"
+    },
+    "deduplication_method": {
+      "$ref": "#/$defs/DeduplicationMethod"
+    },
+    "duplicates_removed": {
+      "minimum": 0,
+      "title": "Duplicates Removed",
+      "type": "integer"
     },
     "end": {
       "format": "date-time",
@@ -123,7 +153,31 @@
       "type": "array"
     },
     "normalization_version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
       "title": "Normalization Version",
+      "type": "string"
+    },
+    "normalized_checksum": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Normalized Checksum",
+      "type": "string"
+    },
+    "normalized_path": {
+      "minLength": 1,
+      "title": "Normalized Path",
+      "type": "string"
+    },
+    "primary_key_fields": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Primary Key Fields",
+      "type": "array"
+    },
+    "raw_path": {
+      "minLength": 1,
+      "title": "Raw Path",
       "type": "string"
     },
     "repair_history": {
@@ -139,14 +193,37 @@
       "title": "Retrieved At",
       "type": "string"
     },
+    "row_count": {
+      "exclusiveMinimum": 0,
+      "title": "Row Count",
+      "type": "integer"
+    },
     "schema_version": {
+      "const": "2.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
+      "type": "string"
+    },
+    "source_checksum": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Checksum",
+      "type": "string"
+    },
+    "source_kind": {
+      "$ref": "#/$defs/SourceKind"
+    },
+    "source_object_url": {
+      "pattern": "^https://",
+      "title": "Source Object Url",
       "type": "string"
     },
     "start": {
       "format": "date-time",
       "title": "Start",
       "type": "string"
+    },
+    "validation_state": {
+      "$ref": "#/$defs/ValidationState"
     }
   },
   "required": [
@@ -156,9 +233,18 @@
     "start",
     "end",
     "retrieved_at",
-    "checksum",
-    "schema_version",
-    "normalization_version"
+    "normalization_version",
+    "source_kind",
+    "source_object_url",
+    "raw_path",
+    "normalized_path",
+    "source_checksum",
+    "normalized_checksum",
+    "row_count",
+    "validation_state",
+    "primary_key_fields",
+    "deduplication_method",
+    "duplicates_removed"
   ],
   "title": "DataManifest",
   "type": "object"

@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "DataPartitionStatus": {
+      "enum": [
+        "candidate",
+        "approved",
+        "rejected"
+      ],
+      "title": "DataPartitionStatus",
+      "type": "string"
+    },
+    "DataType": {
+      "enum": [
+        "kline_1m",
+        "mark_price",
+        "funding",
+        "agg_trade",
+        "best_bid_ask"
+      ],
+      "title": "DataType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approved_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Approved At"
+    },
+    "checksum": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Checksum",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "data_type": {
+      "$ref": "#/$defs/DataType"
+    },
+    "end": {
+      "format": "date-time",
+      "title": "End",
+      "type": "string"
+    },
+    "parquet_path": {
+      "minLength": 1,
+      "title": "Parquet Path",
+      "type": "string"
+    },
+    "partition_id": {
+      "format": "uuid",
+      "title": "Partition Id",
+      "type": "string"
+    },
+    "row_count": {
+      "exclusiveMinimum": 0,
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "start": {
+      "format": "date-time",
+      "title": "Start",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/DataPartitionStatus"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "version": {
+      "exclusiveMinimum": 0,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "partition_id",
+    "symbol",
+    "data_type",
+    "start",
+    "end",
+    "parquet_path",
+    "checksum",
+    "row_count",
+    "version",
+    "status",
+    "created_at"
+  ],
+  "title": "DataPartitionView",
+  "type": "object"
+}

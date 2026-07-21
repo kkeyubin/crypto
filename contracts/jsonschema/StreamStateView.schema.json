@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "StreamStatus": {
+      "enum": [
+        "connecting",
+        "connected",
+        "degraded",
+        "disconnected"
+      ],
+      "title": "StreamStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "last_event_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Last Event At"
+    },
+    "status": {
+      "$ref": "#/$defs/StreamStatus"
+    },
+    "stream_name": {
+      "minLength": 1,
+      "title": "Stream Name",
+      "type": "string"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{3,32}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "symbol",
+    "stream_name",
+    "status",
+    "last_event_at",
+    "updated_at"
+  ],
+  "title": "StreamStateView",
+  "type": "object"
+}
