@@ -18,10 +18,15 @@ from crypto_research.contracts.market import (
     MarketSnapshot,
     OHLCVBar,
 )
-from crypto_research.contracts.strategy import InstrumentRef
+from crypto_research.contracts.strategy import ExecutionSpec, InstrumentRef, RiskSpec
 
 NOW = datetime(2025, 1, 1, tzinfo=UTC)
 INSTRUMENT = InstrumentRef(venue="BINANCE", market="USD_M_PERPETUAL", symbol="PEPEUSDT")
+NON_FINITE_VALUES = [
+    pytest.param(float("nan"), id="nan"),
+    pytest.param(float("inf"), id="positive-infinity"),
+    pytest.param(float("-inf"), id="negative-infinity"),
+]
 
 
 def test_snapshot_rejects_bar_after_cutoff() -> None:
@@ -105,6 +110,14 @@ def test_funding_observation_is_strict_and_frozen() -> None:
         funding.rate = 0.0002
 
 
+@pytest.mark.parametrize("value", NON_FINITE_VALUES)
+def test_funding_observation_rejects_non_finite_rate(value: float) -> None:
+    with pytest.raises(ValidationError) as error:
+        FundingObservation(timestamp=NOW, rate=value)
+
+    assert "finite_number" in {item["type"] for item in error.value.errors()}
+
+
 @pytest.mark.parametrize(
     ("bar", "message"),
     [
@@ -148,6 +161,29 @@ def test_ohlcv_rejects_numeric_strings(field: str) -> None:
 def test_best_bid_ask_requires_non_negative_spread() -> None:
     with pytest.raises(ValidationError, match="ask must be"):
         BestBidAsk(timestamp=NOW, bid=2, ask=1)
+
+
+@pytest.mark.parametrize("value", NON_FINITE_VALUES)
+@pytest.mark.parametrize("financial_field", ["ohlcv_high", "maker_fee", "risk_fraction"])
+def test_positive_financial_fields_reject_non_finite_values(
+    value: float, financial_field: str
+) -> None:
+    with pytest.raises(ValidationError) as error:
+        if financial_field == "ohlcv_high":
+            OHLCVBar(
+                timestamp=NOW,
+                open=1,
+                high=value,
+                low=1,
+                close=1,
+                volume=1,
+            )
+        elif financial_field == "maker_fee":
+            ExecutionSpec(maker_fee_bps=value)
+        else:
+            RiskSpec(risk_fraction=value)
+
+    assert "finite_number" in {item["type"] for item in error.value.errors()}
 
 
 def test_ai_schema_rejects_order_authority() -> None:

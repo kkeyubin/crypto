@@ -57,3 +57,22 @@ chronology tuple, and fixed-parameter index mutations.
 ## Concerns
 
 None.
+
+## Final non-finite review follow-up
+
+A final re-review identified JSON-noncompliant `NaN`, `Infinity`, and
+`-Infinity` as a remaining scalar gap. Test-first coverage produced `21 failed,
+69 passed`: unconstrained strategy parameters and funding accepted all three;
+some constrained financial fields accepted positive infinity or emitted only a
+range error; canonical hashing serialized the non-standard constants.
+
+`StrictFrozenModel` now sets `allow_inf_nan=False`, yielding deterministic
+`finite_number` validation errors across parameter, funding, OHLC, fee, and risk
+examples. Canonical hashing also sets `allow_nan=False` as defense in depth.
+Parameterized coverage proves every valid executable BB/RB and observation
+family record constructed by the contract round-trips through JSON.
+
+Final GREEN verification: focused contracts `90 passed`; full API `117
+passed`; Ruff including the deploy entrypoint, schema drift, contract generation
+and types/no-drift, Web `10 passed`, production build, and whitespace checks all
+passed.

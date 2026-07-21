@@ -20,10 +20,16 @@ from crypto_research.contracts.strategy import (
     StrategySpec,
     StrategyState,
     VolmanRules,
+    _canonical_content_hash,
 )
 
 DEFAULT_EXECUTION = ExecutionSpec()
 DEFAULT_RISK = RiskSpec()
+NON_FINITE_VALUES = [
+    pytest.param(float("nan"), id="nan"),
+    pytest.param(float("inf"), id="positive-infinity"),
+    pytest.param(float("-inf"), id="negative-infinity"),
+]
 
 
 def build_spec(
@@ -108,6 +114,53 @@ def test_strategy_record_json_round_trip() -> None:
 
     assert restored == record
     assert restored.model_dump_json() == record.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("mode", "family", "execution", "risk"),
+    [
+        pytest.param(
+            StrategyMode.EXECUTABLE,
+            StrategyFamily.BB,
+            DEFAULT_EXECUTION,
+            DEFAULT_RISK,
+            id="executable-bb",
+        ),
+        pytest.param(
+            StrategyMode.EXECUTABLE,
+            StrategyFamily.RB,
+            DEFAULT_EXECUTION,
+            DEFAULT_RISK,
+            id="executable-rb",
+        ),
+        *[
+            pytest.param(
+                StrategyMode.OBSERVATION,
+                family,
+                None,
+                None,
+                id=f"observation-{family.value.lower()}",
+            )
+            for family in StrategyFamily
+        ],
+    ],
+)
+def test_every_valid_strategy_record_mode_family_round_trips_json(
+    mode: StrategyMode,
+    family: StrategyFamily,
+    execution: ExecutionSpec | None,
+    risk: RiskSpec | None,
+) -> None:
+    record = StrategySpecRecord.from_spec(
+        build_spec(
+            mode=mode,
+            family=family,
+            execution=execution,
+            risk=risk,
+        )
+    )
+
+    assert StrategySpecRecord.model_validate_json(record.model_dump_json()) == record
 
 
 def test_strategy_record_rejects_tampered_hash() -> None:
@@ -274,6 +327,36 @@ def test_integer_contract_fields_reject_booleans() -> None:
 def test_risk_values_reject_numeric_strings() -> None:
     with pytest.raises(ValidationError):
         RiskSpec(risk_fraction="0.01")
+
+
+@pytest.mark.parametrize("value", NON_FINITE_VALUES)
+@pytest.mark.parametrize("parameter_field", ["fixed", "search_space"])
+def test_strategy_parameters_reject_non_finite_values(
+    value: float, parameter_field: str
+) -> None:
+    values: dict[str, object] = {
+        "fixed": {"threshold": 1.0},
+        "search_space": {"threshold": (1.0,)},
+    }
+    values[parameter_field] = (
+        {"threshold": value}
+        if parameter_field == "fixed"
+        else {"threshold": (value,)}
+    )
+
+    with pytest.raises(ValidationError) as error:
+        ParameterFamily.model_validate(values)
+
+    assert "finite_number" in {item["type"] for item in error.value.errors()}
+
+
+@pytest.mark.parametrize("value", NON_FINITE_VALUES)
+def test_canonical_strategy_hash_rejects_non_finite_values(value: float) -> None:
+    with pytest.raises(
+        ValueError,
+        match="Out of range float values are not JSON compliant",
+    ):
+        _canonical_content_hash({"threshold": value})
 
 
 def test_evidence_plan_rejects_naive_timestamps() -> None:

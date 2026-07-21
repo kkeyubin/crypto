@@ -662,7 +662,12 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class StrictFrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        extra="forbid",
+        frozen=True,
+        strict=True,
+    )
 
 
 Key = TypeVar("Key")
@@ -904,6 +909,7 @@ class _StrategySpecPayload(StrictFrozenModel):
 def _canonical_content_hash(payload: Mapping[str, object]) -> str:
     canonical_json = json.dumps(
         payload,
+        allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode()

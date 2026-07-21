@@ -191,6 +191,7 @@ class _StrategySpecPayload(StrictFrozenModel):
 def _canonical_content_hash(payload: Mapping[str, object]) -> str:
     canonical_json = json.dumps(
         payload,
+        allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
