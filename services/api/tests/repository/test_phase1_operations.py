@@ -165,6 +165,20 @@ def test_runbooks_parameterize_the_real_checkout_and_verify_private_backup_first
     assert '"/srv/crypto-research/data/${raw_path}"' not in operations
 
 
+def test_smoke_upgrade_uses_the_observed_private_environment_path_only() -> None:
+    operations = read_text("docs/runbooks/binance-data-operations.md")
+    recovery = read_text("docs/runbooks/market-data-recovery.md")
+    readme = read_text("README.md")
+    report = read_text(".superpowers/sdd/task-8-report.md")
+    documents = (operations, recovery, readme, report)
+    expected = "/home/keyubin/crypto-research-phase0-smoke/config/runtime.env"
+
+    for document in documents:
+        assert expected in document
+        assert "/home/keyubin/crypto-research-phase0-smoke/runtime.env" not in document
+        assert 'CRYPTO_ENV_FILE="$CRYPTO_CHECKOUT/runtime.env"' not in document
+
+
 def test_acceptance_candidates_require_all_official_checksums_before_posts() -> None:
     operations = read_text("docs/runbooks/binance-data-operations.md")
 

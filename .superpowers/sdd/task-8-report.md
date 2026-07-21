@@ -32,12 +32,14 @@ The implementation now plans funding from complete monthly archives only and rej
 
 The runbooks now require live `.CHECKSUM` preflight for every candidate before any POST, parameterize checkout/environment/data paths, and separate a fresh installation from an existing smoke upgrade. Downloaded-object verification uses `set -euo pipefail`, requires a nonempty successful catalog query, and aborts on any official download, local hash, or comparison failure. The upgrade gate discovers and stops the full server profile, preserves the existing mode-`0600` `runtime.env` and `POSTGRES_PASSWORD`, dumps PostgreSQL, archives the data root, records sanitized volume/config/source identity, verifies all artifacts and checksums, and creates `VERIFIED` only after validation. Phase 1 recovery now covers data, gaps, audit evidence, and eligibility only; it makes no later-phase operational claims.
 
+A later read-only Compose gate confirmed the smoke environment file is `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env` at mode `0600`, not a checkout-root `runtime.env`. All smoke upgrade examples use the observed path. The Phase 1 candidate was staged separately; the existing stack remained untouched.
+
 ## Local verification
 
 Executed on 2026-07-22 in `/Users/kyle/Documents/crypto/.worktrees/phase-1-binance-data`:
 
 - focused Task 8 repository/config/entrypoint/healthcheck tests — passed;
-- `cd services/api && .venv/bin/pytest -q` — `614 passed, 1 skipped` after re-review remediation;
+- `cd services/api && .venv/bin/pytest -q` — `615 passed, 1 skipped` after re-review remediation;
 - `.venv/bin/ruff check src tests migrations ../../deploy/api-entrypoint.py ../../deploy/market-worker-healthcheck.py` — passed after the final hardening;
 - `.venv/bin/python scripts/export_schemas.py --check` — passed;
 - `source /Users/kyle/.nvm/nvm.sh && nvm use` — Node `v24.15.0`, npm `11.12.1`;
@@ -60,7 +62,7 @@ Not executed locally:
 
 ## Read-only server baseline
 
-At `2026-07-22T02:03+08:00`, the existing `/home/keyubin/crypto-research-phase0-smoke` stack was inventoried without mutation. PostgreSQL/API/Web were healthy with `unless-stopped`; Web alone was bound to `127.0.0.1:8088`; API and PostgreSQL had no host port. The stack used `crypto-research_default`, volume `crypto-research_postgres-data`, and the API bind `/home/keyubin/crypto-research-phase0-smoke/data` → `/srv/crypto-research/data`. Data size was `4.0K`, database size `7518kB`, no `alembic_version` table existed, free space was `688G`, and `runtime.env` was mode `0600` with only three key names recorded. The copied source identifies SHA `0226feba8bbefec207c7eee5b40c93c68a22e922`. Existing containers/data/configuration were not changed.
+At `2026-07-22T02:03+08:00`, the existing `/home/keyubin/crypto-research-phase0-smoke` stack was inventoried without mutation. PostgreSQL/API/Web were healthy with `unless-stopped`; Web alone was bound to `127.0.0.1:8088`; API and PostgreSQL had no host port. The stack used `crypto-research_default`, volume `crypto-research_postgres-data`, and the API bind `/home/keyubin/crypto-research-phase0-smoke/data` → `/srv/crypto-research/data`. Data size was `4.0K`, database size `7518kB`, no `alembic_version` table existed, free space was `688G`, and `/home/keyubin/crypto-research-phase0-smoke/config/runtime.env` was mode `0600` with only three key names recorded. The copied source identifies SHA `0226feba8bbefec207c7eee5b40c93c68a22e922`. Existing containers/data/configuration were not changed.
 
 ## Pending completion gates
 

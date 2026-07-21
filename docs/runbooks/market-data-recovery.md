@@ -8,7 +8,7 @@ For the existing smoke stack:
 
 ```bash
 export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase0-smoke
-export CRYPTO_ENV_FILE="$CRYPTO_CHECKOUT/runtime.env"
+export CRYPTO_ENV_FILE=/home/keyubin/crypto-research-phase0-smoke/config/runtime.env
 export CRYPTO_DATA_ROOT="$CRYPTO_CHECKOUT/data"
 export CRYPTO_BACKUP_ROOT=/home/keyubin/crypto-research-backups
 export CRYPTO_COMPOSE_FILE="$CRYPTO_CHECKOUT/deploy/compose.yaml"

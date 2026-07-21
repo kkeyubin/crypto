@@ -72,7 +72,7 @@ The verified smoke installation is `/home/keyubin/crypto-research-phase0-smoke`;
 5. Validate the candidate Compose model before using the same `crypto-research` project/volume identity.
 
 ```bash
-export CRYPTO_ENV_FILE=/home/keyubin/crypto-research-phase0-smoke/runtime.env
+export CRYPTO_ENV_FILE=/home/keyubin/crypto-research-phase0-smoke/config/runtime.env
 export CRYPTO_DATA_ROOT=/home/keyubin/crypto-research-phase0-smoke/data
 export CRYPTO_BACKUP_ROOT=/home/keyubin/crypto-research-backups
 export CRYPTO_CHECKOUT=/home/keyubin/crypto-research-phase1-candidate
