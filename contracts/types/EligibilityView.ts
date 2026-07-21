@@ -9,6 +9,14 @@ type DeepReadonly<T> =
         ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
         : T;
 
+type EligibilityViewShape = {
+  [k: string]: unknown;
+} & {
+  eligible: Eligible;
+  evaluated_at: EvaluatedAt;
+  reason_codes: ReasonCodes;
+  symbol: Symbol;
+};
 export type Eligible = boolean;
 export type EvaluatedAt = string;
 export type EligibilityReasonCode =
@@ -22,12 +30,5 @@ export type EligibilityReasonCode =
   | "source_degraded";
 export type ReasonCodes = EligibilityReasonCode[];
 export type Symbol = string;
-
-interface EligibilityViewShape {
-  eligible: Eligible;
-  evaluated_at: EvaluatedAt;
-  reason_codes: ReasonCodes;
-  symbol: Symbol;
-}
 
 export type EligibilityView = DeepReadonly<EligibilityViewShape>;

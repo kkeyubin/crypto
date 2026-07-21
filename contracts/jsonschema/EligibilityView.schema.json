@@ -16,6 +16,46 @@
     }
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eligible": {
+            "const": false
+          }
+        },
+        "required": [
+          "eligible"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eligible": {
+            "const": true
+          }
+        },
+        "required": [
+          "eligible"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "eligible": {
       "title": "Eligible",

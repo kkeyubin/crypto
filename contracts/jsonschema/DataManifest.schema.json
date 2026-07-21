@@ -77,12 +77,10 @@
           "type": "string"
         },
         "result": {
-          "title": "Result",
-          "type": "string"
+          "$ref": "#/$defs/RepairResult"
         },
         "source": {
-          "title": "Source",
-          "type": "string"
+          "$ref": "#/$defs/RepairSource"
         },
         "started_at": {
           "format": "date-time",
@@ -98,6 +96,24 @@
       ],
       "title": "RepairRecord",
       "type": "object"
+    },
+    "RepairResult": {
+      "enum": [
+        "repaired",
+        "partial",
+        "failed",
+        "source_pending"
+      ],
+      "title": "RepairResult",
+      "type": "string"
+    },
+    "RepairSource": {
+      "enum": [
+        "binance_archive",
+        "binance_rest"
+      ],
+      "title": "RepairSource",
+      "type": "string"
     },
     "SourceKind": {
       "enum": [
@@ -200,7 +216,6 @@
     },
     "schema_version": {
       "const": "2.0.0",
-      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },
@@ -213,7 +228,6 @@
       "$ref": "#/$defs/SourceKind"
     },
     "source_object_url": {
-      "pattern": "^https://",
       "title": "Source Object Url",
       "type": "string"
     },
@@ -233,6 +247,7 @@
     "start",
     "end",
     "retrieved_at",
+    "schema_version",
     "normalization_version",
     "source_kind",
     "source_object_url",

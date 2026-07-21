@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +47,34 @@ def test_committed_json_schema_set_has_input_and_record_contracts() -> None:
     output = api_root.parents[1] / "contracts" / "jsonschema"
 
     assert {path.name for path in output.glob("*.schema.json")} == EXPECTED_ROOTS
+
+
+def test_eligibility_schema_matches_reason_code_cardinality_to_eligibility() -> None:
+    api_root = Path(__file__).resolve().parents[2]
+    schema_path = api_root.parents[1] / "contracts" / "jsonschema" / "EligibilityView.schema.json"
+    schema = json.loads(schema_path.read_text())
+
+    assert schema["allOf"] == [
+        {
+            "if": {"properties": {"eligible": {"const": False}}, "required": ["eligible"]},
+            "then": {"properties": {"reason_codes": {"minItems": 1}}},
+        },
+        {
+            "if": {"properties": {"eligible": {"const": True}}, "required": ["eligible"]},
+            "then": {"properties": {"reason_codes": {"maxItems": 0}}},
+        },
+    ]
+
+
+def test_manifest_schema_requires_v2_and_does_not_exclude_websocket_urls() -> None:
+    api_root = Path(__file__).resolve().parents[2]
+    schema_path = api_root.parents[1] / "contracts" / "jsonschema" / "DataManifest.schema.json"
+    schema = json.loads(schema_path.read_text())
+
+    assert "schema_version" in schema["required"]
+    assert schema["properties"]["schema_version"]["const"] == "2.0.0"
+    assert schema["properties"]["source_object_url"]["type"] == "string"
+    assert "pattern" not in schema["properties"]["source_object_url"]
 
 
 def test_check_reports_missing_schema_without_creating_output(

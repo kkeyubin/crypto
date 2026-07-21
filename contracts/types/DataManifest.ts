@@ -29,8 +29,8 @@ export type NormalizedPath = string;
 export type PrimaryKeyFields = [string, ...string[]];
 export type RawPath = string;
 export type CompletedAt = string;
-export type Result = string;
-export type Source = string;
+export type RepairResult = "repaired" | "partial" | "failed" | "source_pending";
+export type RepairSource = "binance_archive" | "binance_rest";
 export type StartedAt = string;
 export type RepairHistory = RepairRecord[];
 export type RetrievedAt = string;
@@ -58,7 +58,7 @@ interface DataManifestShape {
   repair_history?: RepairHistory;
   retrieved_at: RetrievedAt;
   row_count: RowCount;
-  schema_version?: SchemaVersion;
+  schema_version: SchemaVersion;
   source_checksum: SourceChecksum;
   source_kind: SourceKind;
   source_object_url: SourceObjectUrl;
@@ -76,8 +76,8 @@ export interface MissingInterval {
 }
 export interface RepairRecord {
   completed_at: CompletedAt;
-  result: Result;
-  source: Source;
+  result: RepairResult;
+  source: RepairSource;
   started_at: StartedAt;
 }
 

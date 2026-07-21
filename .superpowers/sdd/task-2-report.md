@@ -76,3 +76,71 @@ validation, generated-schema root lists, deterministic type generation, and
 the generated `DataManifest` required fields. No API routes, persistence,
 archive implementation, trading, signals, credentials, or AI behavior were
 added. No outstanding concerns.
+
+## Review-fix evidence
+
+### RED
+
+Added source-kind URL relation tests, closed `RepairRecord` enum tests,
+explicit-v2 omission coverage, numeric-string coverage, Schema condition
+assertions, and a generated-output atomicity regression. The first runtime
+contract command failed as intended because `RepairResult` and `RepairSource`
+did not exist:
+
+```bash
+cd services/api && .venv/bin/pytest -q tests/contracts/test_runtime_contracts.py tests/contracts/test_data.py tests/contracts/test_schema_export.py
+# collection error: cannot import name 'RepairResult'
+```
+
+Before schema regeneration, the conditional schema assertion also failed as
+intended with `KeyError: 'allOf'`.
+
+The first regeneration exposed a generator bug: `allOf` causes
+`json-schema-to-typescript` to emit `export type EligibilityView = ...`, while
+the wrapper expected an interface. More importantly, the generator deleted old
+generated files before compiling all roots. The new regression corrupted one
+expected temporary schema, seeded all old generated outputs, and failed with an
+`AssertionError` showing `AIAssessment.ts` had already been replaced after the
+generation failure.
+
+### GREEN
+
+`DataManifest` now parses and validates source URLs against the exact archive,
+REST, and routed WebSocket allowlists. It rejects cross-kind URLs, noncanonical
+hosts/schemes/ports/userinfo/fragments, traversal (including encoded traversal),
+and empty or malformed stream identifiers. `RepairRecord` now uses the exact
+`RepairSource` and `RepairResult` enums. `schema_version` is an explicit required
+`Literal["2.0.0"]` field.
+
+The schema exporter owns `EligibilityView`'s two JSON Schema `if`/`then`
+conditions for `reason_codes` cardinality. The type generator now compiles every
+root in memory before deleting any generated file, preserves manual files, and
+wraps either a generated root interface or root type alias in `DeepReadonly`.
+The generator regression confirms every pre-existing generated output remains
+byte-identical on a compile failure.
+
+Focused contracts passed:
+
+```bash
+cd services/api && .venv/bin/pytest -q tests/contracts
+# 152 passed in 3.22s
+```
+
+Final verification passed:
+
+```bash
+cd services/api && .venv/bin/pytest -q
+# 202 passed, 1 skipped in 7.31s
+cd services/api && .venv/bin/ruff check src tests
+# All checks passed!
+cd services/api && .venv/bin/python scripts/export_schemas.py --check
+source /Users/kyle/.nvm/nvm.sh && nvm use
+npm run contracts:types
+npm run contracts:test-generation
+npm run contracts:check-types
+git diff --check
+```
+
+No expected generated TypeScript files are deleted; `DataManifest.ts` and
+`EligibilityView.ts` are regenerated with the reviewed changes. No concerns
+remain.

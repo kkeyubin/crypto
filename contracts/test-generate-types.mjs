@@ -35,7 +35,17 @@ try {
   await cp(schemaSource, inputDir, { recursive: true });
   await mkdir(outputDir, { recursive: true });
   await writeFile(path.join(outputDir, "manual.ts"), "export const manual = true;\n");
-  await writeFile(path.join(outputDir, "Stale.ts"), `${generatedHeader}export type Stale = string;\n`);
+  const previousGenerated = new Map(
+    [...expectedRoots, "index", "Stale"].map((rootName) => [
+      `${rootName}.ts`,
+      `${generatedHeader}export type ${rootName}BeforeFailure = string;\n`,
+    ]),
+  );
+  await Promise.all(
+    [...previousGenerated].map(([name, contents]) =>
+      writeFile(path.join(outputDir, name), contents),
+    ),
+  );
 
   const arguments_ = [
     path.join(root, "contracts", "generate-types.mjs"),
@@ -44,6 +54,17 @@ try {
     "--output",
     outputDir,
   ];
+
+  await writeFile(path.join(inputDir, "EligibilityView.schema.json"), "{\n");
+  await assert.rejects(execFileAsync(process.execPath, arguments_));
+  for (const [name, contents] of previousGenerated) {
+    assert.equal(await readFile(path.join(outputDir, name), "utf8"), contents);
+  }
+  await cp(
+    path.join(schemaSource, "EligibilityView.schema.json"),
+    path.join(inputDir, "EligibilityView.schema.json"),
+  );
+
   await execFileAsync(process.execPath, arguments_);
   assert.equal(await readFile(path.join(outputDir, "manual.ts"), "utf8"), "export const manual = true;\n");
   await assert.rejects(readFile(path.join(outputDir, "Stale.ts"), "utf8"));
@@ -72,7 +93,8 @@ try {
   for (const rootName of expectedRoots) {
     const declaration = await readFile(path.join(outputDir, `${rootName}.ts`), "utf8");
     assert.match(declaration, /type DeepReadonly<T> =/);
-    assert.match(declaration, new RegExp(`interface ${rootName}Shape \\{`));
+    const shapeKind = rootName === "EligibilityView" ? "type" : "interface";
+    assert.match(declaration, new RegExp(`${shapeKind} ${rootName}Shape`));
     assert.match(
       declaration,
       new RegExp(`export type ${rootName} = DeepReadonly<${rootName}Shape>;`),

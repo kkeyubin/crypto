@@ -44,6 +44,17 @@ OUTPUT = ROOT / "contracts" / "jsonschema"
 
 def render(model: type) -> str:
     schema = model.model_json_schema(mode="serialization")
+    if model is EligibilityView:
+        schema["allOf"] = [
+            {
+                "if": {"properties": {"eligible": {"const": False}}, "required": ["eligible"]},
+                "then": {"properties": {"reason_codes": {"minItems": 1}}},
+            },
+            {
+                "if": {"properties": {"eligible": {"const": True}}, "required": ["eligible"]},
+                "then": {"properties": {"reason_codes": {"maxItems": 0}}},
+            },
+        ]
     return json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 

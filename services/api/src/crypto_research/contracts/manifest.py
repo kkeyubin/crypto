@@ -1,9 +1,10 @@
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
+from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from crypto_research.contracts.base import UTCModel
 from crypto_research.contracts.strategy import InstrumentRef
@@ -35,6 +36,18 @@ class DeduplicationMethod(StrEnum):
     KEEP_LAST = "keep_last"
 
 
+class RepairSource(StrEnum):
+    BINANCE_ARCHIVE = "binance_archive"
+    BINANCE_REST = "binance_rest"
+
+
+class RepairResult(StrEnum):
+    REPAIRED = "repaired"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    SOURCE_PENDING = "source_pending"
+
+
 class MissingInterval(UTCModel):
     start: datetime
     end: datetime
@@ -49,8 +62,8 @@ class MissingInterval(UTCModel):
 class RepairRecord(UTCModel):
     started_at: datetime
     completed_at: datetime
-    source: str
-    result: str
+    source: RepairSource
+    result: RepairResult
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "RepairRecord":
@@ -66,10 +79,10 @@ class DataManifest(UTCModel):
     start: datetime
     end: datetime
     retrieved_at: datetime
-    schema_version: Literal["2.0.0"] = "2.0.0"
+    schema_version: Literal["2.0.0"]
     normalization_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
     source_kind: SourceKind
-    source_object_url: str = Field(pattern=r"^https://")
+    source_object_url: str
     raw_path: str = Field(min_length=1)
     normalized_path: str = Field(min_length=1)
     source_checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -87,6 +100,31 @@ class DataManifest(UTCModel):
     def validate_relative_path(cls, value: str) -> str:
         if value.startswith("/") or ".." in value.split("/"):
             raise ValueError("manifest paths must be relative and cannot traverse parents")
+        return value
+
+    @field_validator("source_object_url")
+    @classmethod
+    def validate_source_object_url(cls, value: str, info: ValidationInfo) -> str:
+        source_kind = info.data.get("source_kind")
+        if not isinstance(source_kind, SourceKind):
+            return value
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("source URL must have a valid port") from error
+        if parsed.username is not None or parsed.password is not None or port is not None:
+            raise ValueError("source URL cannot contain userinfo or a port")
+        if parsed.fragment:
+            raise ValueError("source URL cannot contain a fragment")
+        if _contains_path_traversal(parsed.path):
+            raise ValueError("source URL path cannot traverse parents")
+        if source_kind is SourceKind.BINANCE_ARCHIVE:
+            _validate_archive_url(parsed)
+        elif source_kind is SourceKind.BINANCE_REST:
+            _validate_rest_url(parsed)
+        else:
+            _validate_websocket_url(parsed)
         return value
 
     @field_validator("primary_key_fields")
@@ -117,3 +155,58 @@ class DataManifest(UTCModel):
         ):
             raise ValueError("missing interval must be within manifest range")
         return self
+
+
+def _contains_path_traversal(path: str) -> bool:
+    decoded_path = path
+    while True:
+        unquoted_path = unquote(decoded_path)
+        if unquoted_path == decoded_path:
+            break
+        decoded_path = unquoted_path
+    return any(part in {".", ".."} for part in decoded_path.split("/"))
+
+
+def _validate_archive_url(parsed: object) -> None:
+    if not (
+        parsed.scheme == "https"
+        and parsed.netloc == "data.binance.vision"
+        and parsed.path.startswith("/data/futures/um/")
+        and parsed.path.endswith(".zip")
+        and not parsed.query
+    ):
+        raise ValueError("source URL must be a canonical Binance archive ZIP URL")
+
+
+def _validate_rest_url(parsed: object) -> None:
+    if not (
+        parsed.scheme == "https"
+        and parsed.netloc == "fapi.binance.com"
+        and parsed.path.startswith("/fapi/v1/")
+    ):
+        raise ValueError("source URL must be a canonical Binance REST URL")
+
+
+def _validate_websocket_url(parsed: object) -> None:
+    if parsed.scheme != "wss" or parsed.netloc != "fstream.binance.com":
+        raise ValueError("source URL must be a canonical Binance WebSocket URL")
+    prefix = next(
+        (candidate for candidate in ("/public/", "/market/") if parsed.path.startswith(candidate)),
+        None,
+    )
+    if prefix is None:
+        raise ValueError("source URL must use the public or market WebSocket path")
+    endpoint = parsed.path.removeprefix(prefix)
+    if endpoint.startswith("ws/"):
+        stream_identifier = endpoint.removeprefix("ws/")
+        if not stream_identifier or "/" in stream_identifier or parsed.query:
+            raise ValueError("source URL must use a non-empty WebSocket stream identifier")
+        return
+    if endpoint != "stream":
+        raise ValueError("source URL must use a WebSocket ws or stream endpoint")
+    streams = parse_qs(parsed.query, keep_blank_values=True).get("streams", [])
+    has_empty_stream = any(
+        not stream or any(not item for item in stream.split("/")) for stream in streams
+    )
+    if not streams or has_empty_stream:
+        raise ValueError("source URL must carry non-empty stream identifiers")

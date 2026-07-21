@@ -12,6 +12,8 @@ from crypto_research.contracts.manifest import (
     DeduplicationMethod,
     MissingInterval,
     RepairRecord,
+    RepairResult,
+    RepairSource,
     SourceKind,
     ValidationState,
 )
@@ -46,6 +48,105 @@ def manifest_fields() -> dict[str, object]:
         "deduplication_method": DeduplicationMethod.REJECT_DUPLICATES,
         "duplicates_removed": 0,
     }
+
+
+def manifest(**overrides: object) -> DataManifest:
+    return DataManifest(
+        manifest_id=uuid4(),
+        instrument=INSTRUMENT,
+        data_type=DataType.KLINE_1M,
+        start=NOW,
+        end=NOW + timedelta(minutes=1),
+        retrieved_at=NOW + timedelta(minutes=1),
+        schema_version="2.0.0",
+        normalization_version="1.0.0",
+        **{**manifest_fields(), **overrides},
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "source_object_url"),
+    [
+        (
+            SourceKind.BINANCE_ARCHIVE,
+            "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
+        ),
+        (SourceKind.BINANCE_REST, "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT"),
+        (
+            SourceKind.BINANCE_WEBSOCKET,
+            "wss://fstream.binance.com/public/ws/btcusdt@kline_1m",
+        ),
+        (
+            SourceKind.BINANCE_WEBSOCKET,
+            "wss://fstream.binance.com/market/stream?streams=btcusdt@markPrice@1s/pepeusdt@markPrice@1s",
+        ),
+    ],
+)
+def test_manifest_accepts_canonical_source_urls(
+    source_kind: SourceKind, source_object_url: str
+) -> None:
+    data_manifest = manifest(source_kind=source_kind, source_object_url=source_object_url)
+
+    assert data_manifest.source_object_url == source_object_url
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "source_object_url"),
+    [
+        (SourceKind.BINANCE_ARCHIVE, "https://fapi.binance.com/fapi/v1/klines"),
+        (SourceKind.BINANCE_REST, "https://data.binance.vision/data/futures/um/a.zip"),
+        (SourceKind.BINANCE_ARCHIVE, "http://data.binance.vision/data/futures/um/a.zip"),
+        (SourceKind.BINANCE_WEBSOCKET, "ws://fstream.binance.com/public/ws/btcusdt@aggTrade"),
+        (SourceKind.BINANCE_ARCHIVE, "https://sub.data.binance.vision/data/futures/um/a.zip"),
+        (SourceKind.BINANCE_REST, "https://fapi.binance.com:443/fapi/v1/klines"),
+        (SourceKind.BINANCE_ARCHIVE, "https://data.binance.vision/data/futures/um/../a.zip"),
+        (SourceKind.BINANCE_ARCHIVE, "https://data.binance.vision/data/futures/um/%2e%2e/a.zip"),
+        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/public/ws/"),
+        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/public/ws/btcusdt@aggTrade?x=1"),
+        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/market/stream"),
+        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/market/stream?streams="),
+        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/market/stream?streams=a//b"),
+    ],
+)
+def test_manifest_rejects_noncanonical_or_cross_kind_source_urls(
+    source_kind: SourceKind, source_object_url: str
+) -> None:
+    with pytest.raises(ValidationError, match="source URL"):
+        manifest(source_kind=source_kind, source_object_url=source_object_url)
+
+
+def test_manifest_requires_explicit_v2_schema_version() -> None:
+    payload = manifest().model_dump(mode="python")
+    del payload["schema_version"]
+
+    with pytest.raises(ValidationError):
+        DataManifest.model_validate(payload)
+
+
+def test_repair_record_uses_closed_source_and_result_enums() -> None:
+    record = RepairRecord(
+        started_at=NOW,
+        completed_at=NOW,
+        source=RepairSource.BINANCE_ARCHIVE,
+        result=RepairResult.SOURCE_PENDING,
+    )
+
+    assert record.source is RepairSource.BINANCE_ARCHIVE
+    assert record.result is RepairResult.SOURCE_PENDING
+
+
+@pytest.mark.parametrize("field", ["source", "result"])
+def test_repair_record_rejects_unknown_enum_values(field: str) -> None:
+    payload: dict[str, object] = {
+        "started_at": NOW,
+        "completed_at": NOW,
+        "source": RepairSource.BINANCE_ARCHIVE,
+        "result": RepairResult.REPAIRED,
+    }
+    payload[field] = "unknown"
+
+    with pytest.raises(ValidationError):
+        RepairRecord(**payload)
 
 
 def test_snapshot_rejects_bar_after_cutoff() -> None:
@@ -343,8 +444,8 @@ def test_manifest_rejects_future_repair_records() -> None:
                 RepairRecord(
                     started_at=future,
                     completed_at=future,
-                    source="archive",
-                    result="repaired",
+                    source=RepairSource.BINANCE_ARCHIVE,
+                    result=RepairResult.REPAIRED,
                 ),
             ),
         )
@@ -360,8 +461,8 @@ def test_repair_record_cannot_complete_before_it_starts() -> None:
         RepairRecord(
             started_at=NOW,
             completed_at=NOW - timedelta(seconds=1),
-            source="archive",
-            result="repaired",
+            source=RepairSource.BINANCE_ARCHIVE,
+            result=RepairResult.REPAIRED,
         )
 
 

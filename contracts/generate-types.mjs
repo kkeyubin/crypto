@@ -32,11 +32,16 @@ const DEEP_READONLY = `type DeepReadonly<T> =
 
 function makeRootDeepReadonly(root, declaration) {
   const exportedRoot = `export interface ${root} {`;
-  if (!declaration.includes(exportedRoot)) {
-    throw new Error(`generated declaration is missing root interface: ${root}`);
+  if (declaration.includes(exportedRoot)) {
+    const internalShape = declaration.replace(exportedRoot, `interface ${root}Shape {`);
+    return `${DEEP_READONLY}\n\n${internalShape.trimEnd()}\n\nexport type ${root} = DeepReadonly<${root}Shape>;\n`;
   }
-  const internalShape = declaration.replace(exportedRoot, `interface ${root}Shape {`);
-  return `${DEEP_READONLY}\n\n${internalShape.trimEnd()}\n\nexport type ${root} = DeepReadonly<${root}Shape>;\n`;
+  const exportedType = `export type ${root} =`;
+  if (declaration.includes(exportedType)) {
+    const internalShape = declaration.replace(exportedType, `type ${root}Shape =`);
+    return `${DEEP_READONLY}\n\n${internalShape.trimEnd()}\n\nexport type ${root} = DeepReadonly<${root}Shape>;\n`;
+  }
+  throw new Error(`generated declaration is missing root shape: ${root}`);
 }
 
 function parseArguments(arguments_) {
@@ -68,6 +73,15 @@ if (roots.join("\n") !== expectedRoots.join("\n")) {
     `schema set mismatch: missing=[${missing.join(", ")}], stale=[${stale.join(", ")}]`,
   );
 }
+const generated = await Promise.all(
+  files.map(async (file) => {
+    const root = file.replace(".schema.json", "");
+    const declaration = await compileFromFile(path.join(inputDir, file), {
+      bannerComment: "",
+    });
+    return [root, makeRootDeepReadonly(root, declaration)];
+  }),
+);
 await mkdir(outputDir, { recursive: true });
 for (const existing of await readdir(outputDir, { withFileTypes: true })) {
   if (!existing.isFile() || !existing.name.endsWith(".ts")) continue;
@@ -75,14 +89,10 @@ for (const existing of await readdir(outputDir, { withFileTypes: true })) {
   const firstLine = (await readFile(target, "utf8")).split("\n", 1)[0];
   if (firstLine === GENERATED_HEADER) await rm(target);
 }
-for (const file of files) {
-  const root = file.replace(".schema.json", "");
-  const declaration = await compileFromFile(path.join(inputDir, file), {
-    bannerComment: "",
-  });
+for (const [root, contents] of generated) {
   await writeFile(
     path.join(outputDir, `${root}.ts`),
-    `${GENERATED_HEADER}\n\n${makeRootDeepReadonly(root, declaration)}`,
+    `${GENERATED_HEADER}\n\n${contents}`,
   );
 }
 const index = roots

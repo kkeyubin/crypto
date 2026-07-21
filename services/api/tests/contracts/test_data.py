@@ -24,7 +24,14 @@ from crypto_research.contracts.data import (
     SymbolProfileView,
     SymbolView,
 )
-from crypto_research.contracts.manifest import DataType
+from crypto_research.contracts.manifest import (
+    DataManifest,
+    DataType,
+    DeduplicationMethod,
+    SourceKind,
+    ValidationState,
+)
+from crypto_research.contracts.strategy import InstrumentRef
 
 NOW = datetime(2025, 1, 1, tzinfo=UTC)
 START = NOW - timedelta(days=30)
@@ -134,20 +141,110 @@ def test_ingestion_job_view_rejects_unknown_fields() -> None:
 
 
 def test_data_partition_view_rejects_impossible_counts() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as error:
         DataPartitionView(
             partition_id=uuid4(),
             symbol="BTCUSDT",
             data_type=DataType.KLINE_1M,
             start=START,
             end=NOW,
-            partition_path="normalized/binance/usdm/BTCUSDT/kline_1m/date=2024-12-02/data.parquet",
+            parquet_path="normalized/binance/usdm/BTCUSDT/kline_1m/date=2024-12-02/data.parquet",
             checksum="a" * 64,
             row_count=0,
             version=0,
             status=DataPartitionStatus.APPROVED,
             created_at=NOW,
         )
+
+    assert {item["loc"] for item in error.value.errors()} == {("row_count",), ("version",)}
+
+
+@pytest.mark.parametrize("field", ["row_count", "version"])
+def test_data_partition_view_rejects_numeric_strings(field: str) -> None:
+    payload: dict[str, object] = {
+        "partition_id": uuid4(),
+        "symbol": "BTCUSDT",
+        "data_type": DataType.KLINE_1M,
+        "start": START,
+        "end": NOW,
+        "parquet_path": "normalized/binance/usdm/BTCUSDT/kline_1m/date=2024-12-02/data.parquet",
+        "checksum": "a" * 64,
+        "row_count": 1,
+        "version": 1,
+        "status": DataPartitionStatus.APPROVED,
+        "created_at": NOW,
+    }
+    payload[field] = "1"
+
+    with pytest.raises(ValidationError) as error:
+        DataPartitionView(**payload)
+
+    assert {item["loc"] for item in error.value.errors()} == {(field,)}
+
+
+@pytest.mark.parametrize("field", ["row_count", "duplicates_removed"])
+def test_data_manifest_rejects_numeric_strings(field: str) -> None:
+    payload: dict[str, object] = {
+        "manifest_id": uuid4(),
+        "instrument": InstrumentRef(venue="BINANCE", market="USD_M_PERPETUAL", symbol="BTCUSDT"),
+        "data_type": DataType.KLINE_1M,
+        "start": START,
+        "end": NOW,
+        "retrieved_at": NOW,
+        "schema_version": "2.0.0",
+        "normalization_version": "1.0.0",
+        "source_kind": SourceKind.BINANCE_ARCHIVE,
+        "source_object_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
+        "raw_path": "raw/binance/usdm/BTCUSDT/kline_1m/date=2024-12-02/source.zip",
+        "normalized_path": "normalized/binance/usdm/BTCUSDT/kline_1m/date=2024-12-02/data.parquet",
+        "source_checksum": "b" * 64,
+        "normalized_checksum": "c" * 64,
+        "row_count": 1,
+        "validation_state": ValidationState.VALIDATED,
+        "primary_key_fields": ("open_time",),
+        "deduplication_method": DeduplicationMethod.REJECT_DUPLICATES,
+        "duplicates_removed": 0,
+    }
+    payload[field] = "1"
+
+    with pytest.raises(ValidationError) as error:
+        DataManifest(**payload)
+
+    assert {item["loc"] for item in error.value.errors()} == {(field,)}
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "sample_count",
+        "coverage_fraction",
+        "realized_volatility",
+        "jump_frequency",
+        "median_spread_bps",
+        "median_hourly_volume",
+        "funding_rate_mean",
+    ],
+)
+def test_symbol_profile_view_rejects_numeric_strings(field: str) -> None:
+    payload: dict[str, object] = {
+        "symbol": "BTCUSDT",
+        "calculated_at": NOW,
+        "coverage_start": START,
+        "coverage_end": NOW,
+        "sample_count": 1,
+        "coverage_fraction": 1.0,
+        "realized_volatility": 0.1,
+        "jump_frequency": 0.0,
+        "median_spread_bps": 1.0,
+        "median_hourly_volume": 1.0,
+        "funding_rate_mean": 0.0,
+    }
+    payload[field] = "1"
+
+    with pytest.raises(ValidationError) as error:
+        SymbolProfileView(**payload)
+
+    assert {item["loc"] for item in error.value.errors()} == {(field,)}
 
 
 def test_data_gap_view_requires_positive_utc_interval() -> None:
