@@ -7,6 +7,9 @@ from pydantic import ValidationError
 
 from crypto_research.contracts.ai import AIAssessment, AIOpinion, PrincipleCitation
 from crypto_research.contracts.manifest import (
+    ArchiveCadence,
+    ArchiveDataset,
+    BinanceArchiveSource,
     DataManifest,
     DataType,
     DeduplicationMethod,
@@ -14,7 +17,6 @@ from crypto_research.contracts.manifest import (
     RepairRecord,
     RepairResult,
     RepairSource,
-    SourceKind,
     ValidationState,
 )
 from crypto_research.contracts.market import (
@@ -36,10 +38,16 @@ NON_FINITE_VALUES = [
 
 def manifest_fields() -> dict[str, object]:
     return {
-        "source_kind": SourceKind.BINANCE_ARCHIVE,
-        "source_object_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
-        "raw_path": "raw/binance/usdm/BTCUSDT/kline_1m/date=2025-01-01/source.zip",
-        "normalized_path": "normalized/binance/usdm/BTCUSDT/kline_1m/date=2025-01-01/data.parquet",
+        "source": BinanceArchiveSource(
+            kind="binance_archive",
+            cadence=ArchiveCadence.DAILY,
+            dataset=ArchiveDataset.KLINES,
+            symbol="PEPEUSDT",
+            interval="1m",
+            period_start=NOW,
+        ),
+        "raw_path": "raw/binance/usdm/PEPEUSDT/kline_1m/date=2025-01-01/source.zip",
+        "normalized_path": "normalized/binance/usdm/PEPEUSDT/kline_1m/date=2025-01-01/data.parquet",
         "source_checksum": "b" * 64,
         "normalized_checksum": "c" * 64,
         "row_count": 1,
@@ -62,173 +70,6 @@ def manifest(**overrides: object) -> DataManifest:
         normalization_version="1.0.0",
         **{**manifest_fields(), **overrides},
     )
-
-
-@pytest.mark.parametrize(
-    ("source_kind", "source_object_url"),
-    [
-        (
-            SourceKind.BINANCE_ARCHIVE,
-            "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
-        ),
-        (
-            SourceKind.BINANCE_REST,
-            "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m",
-        ),
-        (
-            SourceKind.BINANCE_WEBSOCKET,
-            "wss://fstream.binance.com/public/ws/btcusdt@kline_1m",
-        ),
-        (
-            SourceKind.BINANCE_WEBSOCKET,
-            "wss://fstream.binance.com/market/stream?streams=btcusdt@markPrice@1s/pepeusdt@markPrice@1s",
-        ),
-    ],
-)
-def test_manifest_accepts_canonical_source_urls(
-    source_kind: SourceKind, source_object_url: str
-) -> None:
-    data_manifest = manifest(source_kind=source_kind, source_object_url=source_object_url)
-
-    assert data_manifest.source_object_url == source_object_url
-
-
-@pytest.mark.parametrize(
-    ("source_kind", "source_object_url"),
-    [
-        (SourceKind.BINANCE_ARCHIVE, "https://fapi.binance.com/fapi/v1/klines"),
-        (SourceKind.BINANCE_REST, "https://data.binance.vision/data/futures/um/a.zip"),
-        (SourceKind.BINANCE_ARCHIVE, "http://data.binance.vision/data/futures/um/a.zip"),
-        (SourceKind.BINANCE_WEBSOCKET, "ws://fstream.binance.com/public/ws/btcusdt@aggTrade"),
-        (SourceKind.BINANCE_ARCHIVE, "https://sub.data.binance.vision/data/futures/um/a.zip"),
-        (SourceKind.BINANCE_REST, "https://fapi.binance.com:443/fapi/v1/klines"),
-        (SourceKind.BINANCE_ARCHIVE, "https://data.binance.vision/data/futures/um/../a.zip"),
-        (SourceKind.BINANCE_ARCHIVE, "https://data.binance.vision/data/futures/um/%2e%2e/a.zip"),
-        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/public/ws/"),
-        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/public/ws/btcusdt@aggTrade?x=1"),
-        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/market/stream"),
-        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/market/stream?streams="),
-        (SourceKind.BINANCE_WEBSOCKET, "wss://fstream.binance.com/market/stream?streams=a//b"),
-    ],
-)
-def test_manifest_rejects_noncanonical_or_cross_kind_source_urls(
-    source_kind: SourceKind, source_object_url: str
-) -> None:
-    with pytest.raises(ValidationError, match="source URL"):
-        manifest(source_kind=source_kind, source_object_url=source_object_url)
-
-
-@pytest.mark.parametrize(
-    "source_object_url",
-    [
-        "https://fapi.binance.com/fapi/v1/klines?limit=500&interval=1m&symbol=BTCUSDT",
-        "https://fapi.binance.com/fapi/v1/markPriceKlines?symbol=PEPEUSDT&interval=1m",
-        "https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT&fromId=1&limit=1000",
-        "https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&startTime=1&endTime=2",
-    ],
-)
-def test_manifest_accepts_only_public_rest_dataset_endpoints(source_object_url: str) -> None:
-    assert manifest(
-        source_kind=SourceKind.BINANCE_REST, source_object_url=source_object_url
-    ).source_object_url == source_object_url
-
-
-@pytest.mark.parametrize(
-    "source_object_url",
-    [
-        "https://fapi.binance.com/fapi/v1/order?symbol=BTCUSDT",
-        "https://fapi.binance.com/fapi/v1/account?symbol=BTCUSDT",
-        "https://fapi.binance.com/fapi/v1/listenKey?symbol=BTCUSDT",
-        "https://fapi.binance.com/fapi/v1/exchangeInfo?symbol=BTCUSDT",
-        "https://fapi.binance.com/fapi/v1/klines/?symbol=BTCUSDT&interval=1m",
-        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&orderId=1",
-        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&symbol=PEPEUSDT&interval=1m",
-        "https://fapi.binance.com/fapi/v1/klines?symbol=&interval=1m",
-        "https://fapi.binance.com/fapi/v1/klines?symbol=btcusdt&interval=1m",
-        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=5m",
-        "https://fapi.binance.com/fapi/v1/klines?interval=1m",
-        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&signature=x",
-        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&APIKEY=x",
-        "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&listen_key=x",
-    ],
-)
-def test_manifest_rejects_private_or_malformed_rest_urls(source_object_url: str) -> None:
-    with pytest.raises(ValidationError, match="source URL"):
-        manifest(source_kind=SourceKind.BINANCE_REST, source_object_url=source_object_url)
-
-
-@pytest.mark.parametrize(
-    ("path", "query"),
-    [
-        (
-            "/fapi/v1/klines",
-            "symbol=BTCUSDT&interval=1m&startTime=0&endTime=9223372036854775807&limit=1500",
-        ),
-        (
-            "/fapi/v1/markPriceKlines",
-            "symbol=BTCUSDT&interval=1m&startTime=1&endTime=1&limit=1500",
-        ),
-        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&startTime=0&endTime=3600000&limit=1000"),
-        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&fromId=0&limit=1"),
-        ("/fapi/v1/fundingRate", "symbol=BTCUSDT&startTime=0&endTime=0&limit=1000"),
-    ],
-)
-def test_manifest_accepts_bounded_canonical_rest_numeric_parameters(
-    path: str, query: str
-) -> None:
-    source_object_url = f"https://fapi.binance.com{path}?{query}"
-
-    assert manifest(
-        source_kind=SourceKind.BINANCE_REST, source_object_url=source_object_url
-    ).source_object_url == source_object_url
-
-
-@pytest.mark.parametrize(
-    ("path", "query"),
-    [
-        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&startTime=01"),
-        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&startTime=-1"),
-        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&startTime=1.0"),
-        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&startTime=1e3"),
-        (
-            "/fapi/v1/klines",
-            "symbol=BTCUSDT&interval=1m&startTime=9223372036854775808",
-        ),
-        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&limit=0"),
-        ("/fapi/v1/klines", "symbol=BTCUSDT&interval=1m&limit=1501"),
-        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&limit=1001"),
-        ("/fapi/v1/fundingRate", "symbol=BTCUSDT&limit=1001"),
-        ("/fapi/v1/fundingRate", "symbol=BTCUSDT&startTime=2&endTime=1"),
-        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&fromId=1&startTime=1"),
-        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&fromId=1&endTime=1"),
-        ("/fapi/v1/aggTrades", "symbol=BTCUSDT&startTime=0&endTime=3600001"),
-    ],
-)
-def test_manifest_rejects_noncanonical_or_inconsistent_rest_numeric_parameters(
-    path: str, query: str
-) -> None:
-    with pytest.raises(ValidationError, match="source URL"):
-        manifest(
-            source_kind=SourceKind.BINANCE_REST,
-            source_object_url=f"https://fapi.binance.com{path}?{query}",
-        )
-
-
-@pytest.mark.parametrize(
-    "source_object_url",
-    [
-        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&apiKey=x",
-        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&signature=x",
-        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&listenKey=x",
-        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&streams=pepeusdt@aggTrade",
-        "wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade&foo=x",
-        "wss://fstream.binance.com/public/stream?Streams=btcusdt@aggTrade",
-    ],
-)
-def test_manifest_rejects_noncanonical_combined_websocket_queries(source_object_url: str) -> None:
-    with pytest.raises(ValidationError, match="source URL"):
-        manifest(source_kind=SourceKind.BINANCE_WEBSOCKET, source_object_url=source_object_url)
-
 
 def test_manifest_requires_explicit_v2_schema_version() -> None:
     payload = manifest().model_dump(mode="python")
@@ -621,8 +462,14 @@ def test_strict_contracts_parse_json_uuid_datetime_and_enum_strings() -> None:
         "retrieved_at": (NOW + timedelta(minutes=1)).isoformat(),
         "schema_version": "2.0.0",
         "normalization_version": "1.0.0",
-        "source_kind": "binance_archive",
-        "source_object_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
+        "source": {
+            "kind": "binance_archive",
+            "cadence": "daily",
+            "dataset": "klines",
+            "symbol": "BTCUSDT",
+            "interval": "1m",
+            "period_start": NOW.isoformat(),
+        },
         "raw_path": "raw/binance/usdm/BTCUSDT/kline_1m/date=2025-01-01/source.zip",
         "normalized_path": "normalized/binance/usdm/BTCUSDT/kline_1m/date=2025-01-01/data.parquet",
         "source_checksum": "b" * 64,

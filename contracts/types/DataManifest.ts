@@ -36,9 +36,28 @@ export type RepairHistory = RepairRecord[];
 export type RetrievedAt = string;
 export type RowCount = number;
 export type SchemaVersion = "2.0.0";
+export type Source = BinanceArchiveSource | BinanceRestSource | BinanceWebSocketSource;
+export type ArchiveCadence = "daily" | "monthly";
+export type ArchiveDataset = "klines" | "mark_price_klines" | "funding_rate" | "agg_trades";
+export type Interval = "1m" | null;
+export type Kind = "binance_archive";
+export type PeriodStart = string;
+export type ResolvedUrl = string;
+export type Symbol1 = string;
+export type EndTime = number | null;
+export type BinanceRestEndpoint = "klines" | "mark_price_klines" | "funding_rate" | "agg_trades";
+export type FromId = number | null;
+export type Interval1 = "1m" | null;
+export type Kind1 = "binance_rest";
+export type Limit = number;
+export type ResolvedUrl1 = string;
+export type StartTime = number | null;
+export type Symbol2 = string;
+export type Kind2 = "binance_websocket";
+export type ResolvedUrl2 = string;
+export type BinanceStream = "kline_1m" | "mark_price" | "agg_trade" | "best_bid_ask";
+export type Symbol3 = string;
 export type SourceChecksum = string;
-export type SourceKind = "binance_archive" | "binance_websocket" | "binance_rest";
-export type SourceObjectUrl = string;
 export type Start1 = string;
 export type ValidationState = "pending" | "validated" | "rejected";
 
@@ -59,9 +78,8 @@ interface DataManifestShape {
   retrieved_at: RetrievedAt;
   row_count: RowCount;
   schema_version: SchemaVersion;
+  source: Source;
   source_checksum: SourceChecksum;
-  source_kind: SourceKind;
-  source_object_url: SourceObjectUrl;
   start: Start1;
   validation_state: ValidationState;
 }
@@ -79,6 +97,32 @@ export interface RepairRecord {
   result: RepairResult;
   source: RepairSource;
   started_at: StartedAt;
+}
+export interface BinanceArchiveSource {
+  cadence: ArchiveCadence;
+  dataset: ArchiveDataset;
+  interval?: Interval;
+  kind: Kind;
+  period_start: PeriodStart;
+  resolved_url: ResolvedUrl;
+  symbol: Symbol1;
+}
+export interface BinanceRestSource {
+  end_time?: EndTime;
+  endpoint: BinanceRestEndpoint;
+  from_id?: FromId;
+  interval?: Interval1;
+  kind: Kind1;
+  limit: Limit;
+  resolved_url: ResolvedUrl1;
+  start_time?: StartTime;
+  symbol: Symbol2;
+}
+export interface BinanceWebSocketSource {
+  kind: Kind2;
+  resolved_url: ResolvedUrl2;
+  stream: BinanceStream;
+  symbol: Symbol3;
 }
 
 export type DataManifest = DeepReadonly<DataManifestShape>;

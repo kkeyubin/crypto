@@ -25,10 +25,12 @@ from crypto_research.contracts.data import (
     SymbolView,
 )
 from crypto_research.contracts.manifest import (
+    ArchiveCadence,
+    ArchiveDataset,
+    BinanceArchiveSource,
     DataManifest,
     DataType,
     DeduplicationMethod,
-    SourceKind,
     ValidationState,
 )
 from crypto_research.contracts.strategy import InstrumentRef
@@ -193,8 +195,14 @@ def test_data_manifest_rejects_numeric_strings(field: str) -> None:
         "retrieved_at": NOW,
         "schema_version": "2.0.0",
         "normalization_version": "1.0.0",
-        "source_kind": SourceKind.BINANCE_ARCHIVE,
-        "source_object_url": "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/example.zip",
+        "source": BinanceArchiveSource(
+            kind="binance_archive",
+            cadence=ArchiveCadence.DAILY,
+            dataset=ArchiveDataset.KLINES,
+            symbol="BTCUSDT",
+            interval="1m",
+            period_start=NOW,
+        ),
         "raw_path": "raw/binance/usdm/BTCUSDT/kline_1m/date=2024-12-02/source.zip",
         "normalized_path": "normalized/binance/usdm/BTCUSDT/kline_1m/date=2024-12-02/data.parquet",
         "source_checksum": "b" * 64,

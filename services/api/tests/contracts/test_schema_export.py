@@ -66,15 +66,28 @@ def test_eligibility_schema_matches_reason_code_cardinality_to_eligibility() -> 
     ]
 
 
-def test_manifest_schema_requires_v2_and_does_not_exclude_websocket_urls() -> None:
+def test_manifest_schema_requires_v2_and_exposes_closed_structured_sources() -> None:
     api_root = Path(__file__).resolve().parents[2]
     schema_path = api_root.parents[1] / "contracts" / "jsonschema" / "DataManifest.schema.json"
     schema = json.loads(schema_path.read_text())
 
     assert "schema_version" in schema["required"]
     assert schema["properties"]["schema_version"]["const"] == "2.0.0"
-    assert schema["properties"]["source_object_url"]["type"] == "string"
-    assert "pattern" not in schema["properties"]["source_object_url"]
+    assert "source_kind" not in schema["properties"]
+    assert "source_object_url" not in schema["properties"]
+
+    source_schema = schema["properties"]["source"]
+    assert source_schema["discriminator"]["propertyName"] == "kind"
+    assert set(source_schema["discriminator"]["mapping"]) == {
+        "binance_archive",
+        "binance_rest",
+        "binance_websocket",
+    }
+    for variant in source_schema["oneOf"]:
+        name = variant["$ref"].removeprefix("#/$defs/")
+        definition = schema["$defs"][name]
+        assert definition["additionalProperties"] is False
+        assert definition["properties"]["resolved_url"]["readOnly"] is True
 
 
 def test_check_reports_missing_schema_without_creating_output(

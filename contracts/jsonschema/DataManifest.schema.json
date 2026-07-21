@@ -1,5 +1,213 @@
 {
   "$defs": {
+    "ArchiveCadence": {
+      "enum": [
+        "daily",
+        "monthly"
+      ],
+      "title": "ArchiveCadence",
+      "type": "string"
+    },
+    "ArchiveDataset": {
+      "enum": [
+        "klines",
+        "mark_price_klines",
+        "funding_rate",
+        "agg_trades"
+      ],
+      "title": "ArchiveDataset",
+      "type": "string"
+    },
+    "BinanceArchiveSource": {
+      "additionalProperties": false,
+      "properties": {
+        "cadence": {
+          "$ref": "#/$defs/ArchiveCadence"
+        },
+        "dataset": {
+          "$ref": "#/$defs/ArchiveDataset"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "const": "1m",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval"
+        },
+        "kind": {
+          "const": "binance_archive",
+          "title": "Kind",
+          "type": "string"
+        },
+        "period_start": {
+          "format": "date-time",
+          "title": "Period Start",
+          "type": "string"
+        },
+        "resolved_url": {
+          "readOnly": true,
+          "title": "Resolved Url",
+          "type": "string"
+        },
+        "symbol": {
+          "pattern": "^[A-Z0-9]{3,32}$",
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "cadence",
+        "dataset",
+        "symbol",
+        "period_start",
+        "resolved_url"
+      ],
+      "title": "BinanceArchiveSource",
+      "type": "object"
+    },
+    "BinanceRestEndpoint": {
+      "enum": [
+        "klines",
+        "mark_price_klines",
+        "funding_rate",
+        "agg_trades"
+      ],
+      "title": "BinanceRestEndpoint",
+      "type": "string"
+    },
+    "BinanceRestSource": {
+      "additionalProperties": false,
+      "properties": {
+        "end_time": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Time"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/BinanceRestEndpoint"
+        },
+        "from_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Id"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "const": "1m",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval"
+        },
+        "kind": {
+          "const": "binance_rest",
+          "title": "Kind",
+          "type": "string"
+        },
+        "limit": {
+          "title": "Limit",
+          "type": "integer"
+        },
+        "resolved_url": {
+          "readOnly": true,
+          "title": "Resolved Url",
+          "type": "string"
+        },
+        "start_time": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Time"
+        },
+        "symbol": {
+          "pattern": "^[A-Z0-9]{3,32}$",
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "endpoint",
+        "symbol",
+        "limit",
+        "resolved_url"
+      ],
+      "title": "BinanceRestSource",
+      "type": "object"
+    },
+    "BinanceStream": {
+      "enum": [
+        "kline_1m",
+        "mark_price",
+        "agg_trade",
+        "best_bid_ask"
+      ],
+      "title": "BinanceStream",
+      "type": "string"
+    },
+    "BinanceWebSocketSource": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "binance_websocket",
+          "title": "Kind",
+          "type": "string"
+        },
+        "resolved_url": {
+          "readOnly": true,
+          "title": "Resolved Url",
+          "type": "string"
+        },
+        "stream": {
+          "$ref": "#/$defs/BinanceStream"
+        },
+        "symbol": {
+          "pattern": "^[A-Z0-9]{3,32}$",
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "stream",
+        "symbol",
+        "resolved_url"
+      ],
+      "title": "BinanceWebSocketSource",
+      "type": "object"
+    },
     "DataType": {
       "enum": [
         "kline_1m",
@@ -115,15 +323,6 @@
       "title": "RepairSource",
       "type": "string"
     },
-    "SourceKind": {
-      "enum": [
-        "binance_archive",
-        "binance_websocket",
-        "binance_rest"
-      ],
-      "title": "SourceKind",
-      "type": "string"
-    },
     "ValidationState": {
       "enum": [
         "pending",
@@ -219,16 +418,31 @@
       "title": "Schema Version",
       "type": "string"
     },
+    "source": {
+      "discriminator": {
+        "mapping": {
+          "binance_archive": "#/$defs/BinanceArchiveSource",
+          "binance_rest": "#/$defs/BinanceRestSource",
+          "binance_websocket": "#/$defs/BinanceWebSocketSource"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/BinanceArchiveSource"
+        },
+        {
+          "$ref": "#/$defs/BinanceRestSource"
+        },
+        {
+          "$ref": "#/$defs/BinanceWebSocketSource"
+        }
+      ],
+      "title": "Source"
+    },
     "source_checksum": {
       "pattern": "^[0-9a-f]{64}$",
       "title": "Source Checksum",
-      "type": "string"
-    },
-    "source_kind": {
-      "$ref": "#/$defs/SourceKind"
-    },
-    "source_object_url": {
-      "title": "Source Object Url",
       "type": "string"
     },
     "start": {
@@ -249,8 +463,7 @@
     "retrieved_at",
     "schema_version",
     "normalization_version",
-    "source_kind",
-    "source_object_url",
+    "source",
     "raw_path",
     "normalized_path",
     "source_checksum",

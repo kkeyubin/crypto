@@ -101,6 +101,14 @@ try {
     );
     assert.doesNotMatch(declaration, new RegExp(`export interface ${rootName} \\{`));
     assert.doesNotMatch(declaration, /\[k: string\]: unknown;/);
+    if (rootName === "DataManifest") {
+      assert.match(
+        declaration,
+        /export type Source = BinanceArchiveSource \| BinanceRestSource \| BinanceWebSocketSource;/,
+      );
+      assert.match(declaration, /resolved_url: ResolvedUrl;/);
+      assert.doesNotMatch(declaration, /source_kind|source_object_url/);
+    }
   }
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });

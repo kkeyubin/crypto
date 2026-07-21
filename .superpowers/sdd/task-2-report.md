@@ -238,3 +238,53 @@ git diff --check
 ```
 
 All checks passed. No concerns remain.
+
+## Structured provenance refactor evidence
+
+### RED
+
+Added `tests/contracts/test_manifest_provenance.py` before replacing the URL
+parser boundary. The first run failed during collection because the structured
+source types had not yet been defined:
+
+```bash
+cd services/api && .venv/bin/pytest -q tests/contracts/test_manifest_provenance.py
+# ImportError: cannot import name 'ArchiveCadence'
+```
+
+### GREEN
+
+Replaced `source_kind` and caller-provided `source_object_url` with a strict,
+frozen, discriminated `source` union: archive, REST, and WebSocket sources all
+derive their public `resolved_url` with `computed_field`. Immutable source
+specification maps own the official archive paths, REST endpoint/query order,
+WebSocket routes, and their `DataType` mappings. The manifest now rejects a
+source whose symbol or derived type disagrees with its instrument or
+`data_type`.
+
+The new coverage exercises daily and monthly URLs for every archive dataset,
+canonical REST and WebSocket URLs, strict endpoint/time/cursor rules,
+discriminated JSON parsing, source mismatch rejection, caller-supplied URL
+rejection, and the read-only computed URL round trip. Schema and TypeScript
+generation tests assert the closed union, `readOnly` URL schema fields, no
+legacy URL properties, and no root unknown index signature.
+
+Final verification:
+
+```bash
+cd services/api && .venv/bin/pytest -q
+# 215 passed, 1 skipped in 8.25s
+cd services/api && .venv/bin/ruff check src tests
+# All checks passed!
+cd services/api && .venv/bin/python scripts/export_schemas.py --check
+source /Users/kyle/.nvm/nvm.sh && nvm use
+npm run contracts:types
+npm run contracts:test-generation
+npm run contracts:check-types
+npm run web:test -- --run
+npm run web:build
+git diff --check
+```
+
+All verification completed successfully using Node v24.15.0 selected by NVM.
+No concerns remain.
